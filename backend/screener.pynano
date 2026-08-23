@@ -1,0 +1,111 @@
+import pandas as pd
+import yfinance as yf
+import feedparser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def get_market_universe() -> list:
+    """미국 주식 주요 유니버스 (S&P 500 + NASDAQ 100 대형주 풀)"""
+    try:
+        sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]['Symbol'].tolist()
+        nasdaq = pd.read_html("https://en.wikipedia.org/wiki/NASDAQ-100")[4]['Ticker'].tolist()
+        return list(set([t.replace('.', '-') for t in sp500 + nasdaq]))
+    except Exception:
+        return ["AAPL", "NVDA", "TSLA", "MSFT", "AMZN", "GOOGL", "META", "AMD", "NFLX", "PLTR", "AVGO", "COST", "JPM"]
+
+def fetch_ticker_news(ticker: str) -> list:
+    """야후 파이낸스 Ticker별 공식 RSS 피드를 통해 해당 종목의 정밀 실시간 뉴스 수집"""
+    news_list = []
+    try:
+        feed_url = f"https://finance.yahoo.com/rss/headline?s={ticker}"
+        feed = feedparser.parse(feed_url)
+        for entry in feed.entries[:6]:
+            publisher = "YAHOO FINANCE"
+            if hasattr(entry, 'source') and entry.source:
+                publisher = entry.source.get('title', 'YAHOO FINANCE').upper()
+            
+            news_list.append({
+                "title": entry.title,
+                "publisher": publisher,
+                "link": entry.link
+            })
+    except Exception:
+        pass
+        
+    # 만약 RSS 수집이 안 될 경우 yfinance stock.news API로 2차 백업
+    if not news_list:
+        try:
+            stock = yf.Ticker(ticker)
+            raw_news = stock.news
+            if raw_news:
+                for item in raw_news[:6]:
+                    news_list.append({
+                        "title": item.get('title', 'Institutional Market Wire'),
+                        "publisher": item.get('publisher', 'YAHOO FINANCE').upper(),
+                        "link": item.get('link', 'https://finance.yahoo.com')
+                    })
+        except Exception:
+            pass
+            
+    return news_list
+
+def analyze_ticker(ticker: str, mode: str = "value_momentum") -> dict:
+    try:
+        stock = yf.Ticker(ticker)
+        df = stock.history(period="6mo")
+        if df.empty or len(df) < 50:
+            return None
+            
+        price_start = df['Close'].iloc[0]
+        price_end = df['Close'].iloc[-1]
+        mom_score = (price_end - price_start) / price_start * 100
+
+        info = stock.info
+        pe = info.get('trailingPE', 20) or 20
+        pb = info.get('priceToBook', 3) or 3
+        val_score = max(0, 50 - pe) + max(0, 15 - pb)
+
+        if mode == "momentum":
+            total_score = mom_score * 1.5
+        elif mode == "value":
+            total_score = val_score * 2.0
+        else:
+            total_score = (mom_score * 0.6) + (val_score * 0.4)
+
+        history = []
+        for date, row in df.iterrows():
+            history.append({
+                "time": date.strftime('%Y-%m-%d'),
+                "open": float(round(row['Open'], 2)),
+                "high": float(round(row['High'], 2)),
+                "low": float(round(row['Low'], 2)),
+                "close": float(round(row['Close'], 2))
+            })
+
+            
+        # 해당 알파 종목 밀착형 뉴스 수집
+        news_list = fetch_ticker_news(ticker)
+
+        return {
+            "ticker": ticker.upper(),
+            "price": float(round(price_end, 2)),
+            "change": float(round(mom_score / 4, 2)),
+            "mom_score": float(round(mom_score, 2)),
+            "value_score": float(round(val_score, 2)),
+            "total_score": float(round(total_score, 2)),
+            "history": history,
+            "news": news_list
+        }
+    except Exception:
+        return None
+
+def run_quant_scanner(mode: str = "value_momentum") -> list:
+    tickers = get_market_universe()
+    results = []
+    with ThreadPoolExecutor(max_workers=14) as executor:
+        futures = {executor.submit(analyze_ticker, t, mode): t for t in tickers}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+    results.sort(key=lambda x: x['total_score'], reverse=True)
+    return results[:10]

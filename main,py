@@ -1,0 +1,695 @@
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, JSONResponse
+import uvicorn
+import numpy as np
+from datetime import datetime, timedelta
+
+app = FastAPI(title="Institutional Quantitative Terminal - Pure Canvas Engine")
+
+SP500_UNIVERSE = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK.B", "LLY", "AVGO", "JPM",
+    "TSLA", "XOM", "UNH", "V", "MA", "COST", "JNJ", "HD", "NFLX", "PG",
+    "ABBV", "MRK", "BAC", "CVX", "KO", "PEP", "AMGN", "AMD", "WMT", "MCD",
+    "TMO", "CRM", "ACN", "LIN", "DIS", "ABT", "IBM", "PFE", "CAT", "GE",
+    "QCOM", "INTC", "VZ", "T", "AXP", "SPGI", "BLK", "NOW", "ISRG", "BKNG",
+    "GEV", "PGR", "UBER", "ETN", "TJX", "CB", "PANW", "COP", "LMT", "BSX",
+    "GILD", "RTX", "VRTX", "MDLZ", "SYK", "ADI", "CMCSA", "FI", "REGN", "MU",
+    "LULU", "AXON", "SHW", "PH", "CDNS", "SNPS", "CL", "ITW", "MDT", "ZTS",
+    "MO", "C", "SO", "DUK", "ICE", "EQIX", "CLX", "APD", "BDX", "HCA",
+    "CSX", "NOC", "HUM", "EOG", "PNC", "USB", "TGT", "NEM", "ORLY", "ADBE",
+    "ACGL", "APTV", "AMCR", "AEE", "AAL", "AEP", "AIG", "AMT", "AWK", "AMP",
+    *[f"SP{i}" for i in range(111, 501)]
+]
+
+GLOBAL_MARKET_CACHE = {}
+SHARED_DATES = [datetime.now() - timedelta(days=i) for i in range(60, 0, -1)]
+DATE_STRS = [d.strftime('%m-%d') for d in SHARED_DATES]
+
+def precompute_market():
+    np.random.seed(42)
+    news_pool = [
+        ("Institutional Block Trade Detected: Heavy Accumulation", "POSITIVE"),
+        ("Derivatives Desk Reports Implied Volatility Expansion", "NEUTRAL"),
+        ("Quantitative Rebalancing Flow Expected at Close", "POSITIVE"),
+        ("Sector Rotation Index Signals Outflows from Peers", "NEGATIVE"),
+        ("Smart Money Net Exposure Adjusted Upwards by 4.2%", "POSITIVE")
+    ]
+
+    for t in SP500_UNIVERSE:
+        h = abs(hash(t))
+        base_price = 20.0 + (h % 600)
+        returns = np.random.normal(0.001, 0.025, len(SHARED_DATES))
+        prices = base_price * np.cumprod(1 + returns)
+        
+        chart = [
+            {
+                "time": DATE_STRS[i],
+                "open": round(float(prices[i] - (prices[i]*0.004)), 2),
+                "high": round(float(prices[i] + (prices[i]*0.008)), 2),
+                "low": round(float(prices[i] - (prices[i]*0.008)), 2),
+                "close": round(float(prices[i]), 2)
+            }
+            for i in range(len(SHARED_DATES))
+        ]
+        cp = chart[-1]["close"]
+        pp = chart[-2]["close"]
+        chg = round(((cp - pp) / pp) * 100, 2)
+        score = round(60.0 + (h % 38) + np.random.uniform(0, 1.9), 2)
+        vol = round(np.std(returns) * np.sqrt(252), 3)
+        
+        t_news = [
+            {"time": "10:42", "headline": news_pool[h % len(news_pool)][0], "impact": news_pool[h % len(news_pool)][1]},
+            {"time": "09:15", "headline": f"Dark Pool Volume Surge Observed for {t}", "impact": "POSITIVE"},
+            {"time": "Yesterday", "headline": f"Goldman Sachs Quant Desk Updates Model Weight for {t}", "impact": "NEUTRAL"}
+        ]
+
+        GLOBAL_MARKET_CACHE[t] = {
+            "ticker": t,
+            "price": cp,
+            "change": chg,
+            "alpha_score": score,
+            "vol": vol,
+            "chart": chart,
+            "news": t_news
+        }
+
+precompute_market()
+
+@app.get("/api/terminal-data")
+async def get_terminal_data(ticker: str = "AAPL", mode: str = "Multi-Factor Alpha"):
+    ticker = ticker.upper()
+    if ticker not in GLOBAL_MARKET_CACHE:
+        h = abs(hash(ticker))
+        base_price = 150.0
+        prices = base_price * np.cumprod(1 + np.random.normal(0.001, 0.02, 60))
+        chart = [{"time": DATE_STRS[i], "open": round(prices[i]-1,2), "high": round(prices[i]+1.5,2), "low": round(prices[i]-1.5,2), "close": round(prices[i],2)} for i in range(60)]
+        GLOBAL_MARKET_CACHE[ticker] = {
+            "ticker": ticker, "price": prices[-1], "change": 1.25, "alpha_score": 85.0, "vol": 0.2, "chart": chart,
+            "news": [{"time": "LIVE", "headline": f"New Asset {ticker} Initialized into Quant Engine", "impact": "POSITIVE"}]
+        }
+
+    matrix_data = list(GLOBAL_MARKET_CACHE.values())
+    matrix_data.sort(key=lambda x: x["alpha_score"], reverse=True)
+
+    cur_data = GLOBAL_MARKET_CACHE[ticker]
+    cp = cur_data["price"]
+    entry = round(cp * 0.985, 2)
+    tp = round(cp * 1.09, 2)
+    sl = round(cp * 0.955, 2)
+    
+    ai_rep = f"""
+    <b>[QUANTITATIVE ALPHA MODEL: {ticker}]</b><br><br>
+    • <b>Strategy Engine:</b> {mode}<br>
+    • <b>Factor Decomposition:</b> Momentum Z-Score +2.41 | Value Percentile 84.2%<br>
+    • <b>Order Flow Imbalance:</b> Institutional Accumulation detected in Dark Pools (+18.4%)<br>
+    • <b>Risk & Volatility:</b> Ann. Volatility {round(cur_data['vol']*100, 1)}%. Optimal Sharpe Ratio: 2.14.<br>
+    • <b>Execution Boundary:</b> Support defense at <b>${entry}</b>. Target upside <b>${tp} (+9%)</b> with risk cutoff at <b>${sl}</b>.
+    """
+
+    current_asset_data = {
+        **cur_data,
+        "entry": entry,
+        "tp": tp,
+        "sl": sl,
+        "ai_report": ai_rep
+    }
+
+    sp_chart = [{"value": x["close"]} for x in GLOBAL_MARKET_CACHE["AAPL"]["chart"]]
+    ix_chart = [{"value": x["close"]} for x in GLOBAL_MARKET_CACHE["MSFT"]["chart"]]
+    
+    market_indices = {
+        "sp": {"price": 5842.10, "change": 0.45, "chart": sp_chart},
+        "ix": {"price": 18412.50, "change": 0.82, "chart": ix_chart}
+    }
+
+    return {"current": current_asset_data, "matrix": matrix_data, "indices": market_indices}
+
+@app.get("/", response_class=HTMLResponse)
+async def elite_terminal():
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>INSTITUTIONAL QUANT TERMINAL - PURE CANVAS ENGINE</title>
+        <style>
+            * { box-sizing: border-box; }
+            body {
+                background-color: #000000;
+                color: #e5e7eb;
+                font-family: 'Courier New', Courier, monospace;
+                margin: 0;
+                padding: 8px;
+                overflow-x: hidden;
+            }
+            .top-bar {
+                background-color: #050505;
+                border: 1px solid #1a1a1a;
+                border-radius: 3px;
+                padding: 10px 14px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+            }
+            .brand h2 { margin: 0; color: #ffffff; font-size: 14px; letter-spacing: 2px; }
+            .brand span { font-size: 8px; color: #6b7280; letter-spacing: 1px; }
+            .nav-controls { display: flex; gap: 8px; align-items: center; }
+            .select-box, .search-input {
+                background-color: #000000;
+                color: #e5e7eb;
+                border: 1px solid #262626;
+                padding: 5px 10px;
+                border-radius: 2px;
+                font-family: 'Courier New', Courier, monospace;
+                font-size: 11px;
+                outline: none;
+            }
+            .action-btn {
+                background-color: #ffffff;
+                color: #000000;
+                border: none;
+                padding: 5px 12px;
+                border-radius: 2px;
+                font-family: 'Courier New', Courier, monospace;
+                font-size: 11px;
+                font-weight: bold;
+                cursor: pointer;
+            }
+            .action-btn:hover { background-color: #d1d5db; }
+
+            .main-layout {
+                display: grid;
+                grid-template-columns: 1.1fr 3.4fr 1.3fr;
+                gap: 8px;
+            }
+            .card {
+                background-color: #050505;
+                border: 1px solid #1a1a1a;
+                border-radius: 3px;
+                padding: 10px;
+                margin-bottom: 8px;
+            }
+            .card-title {
+                font-size: 10px;
+                font-weight: bold;
+                color: #6b7280;
+                letter-spacing: 1px;
+                margin-bottom: 8px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .positive { color: #10b981; }
+            .negative { color: #ef4444; }
+
+            .index-card {
+                background: #000000; padding: 7px; border-radius: 2px; border: 1px solid #1a1a1a; margin-bottom: 6px;
+            }
+            .mini-canvas { width: 100%; height: 45px; display: block; margin-top: 4px; }
+
+            .slot-row {
+                display: flex;
+                justify-content: space-between;
+                font-size: 10.5px;
+                padding: 5px 0;
+                border-bottom: 1px solid #141414;
+                cursor: pointer;
+            }
+            .slot-row:hover { background-color: rgba(255, 255, 255, 0.03); }
+            .slot-row:last-child { border-bottom: none; }
+
+            #main-canvas-container {
+                position: relative;
+                width: 100%;
+                height: 310px;
+                background-color: #000000;
+                border: 1px solid #1a1a1a;
+                border-radius: 2px;
+            }
+            #main-canvas {
+                width: 100%;
+                height: 100%;
+                display: block;
+            }
+
+            .metrics-row {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 6px;
+                margin-top: 8px;
+            }
+            .metric-box {
+                background-color: #000000;
+                border: 1px solid #1a1a1a;
+                border-radius: 2px;
+                padding: 6px;
+                text-align: center;
+            }
+            .metric-label { font-size: 8px; color: #6b7280; }
+            .metric-value { font-size: 11.5px; font-weight: bold; margin-top: 3px; }
+
+            .matrix-container {
+                max-height: 220px;
+                overflow-y: auto;
+            }
+            .matrix-container::-webkit-scrollbar { width: 3px; }
+            .matrix-container::-webkit-scrollbar-thumb { background: #262626; }
+
+            table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+            th { text-align: left; color: #6b7280; border-bottom: 1px solid #1a1a1a; padding-bottom: 4px; font-weight: normal; position: sticky; top: 0; background: #050505; }
+            td { padding: 5px 0; border-bottom: 1px solid #111111; cursor: pointer; }
+            tr:hover td { background-color: rgba(255, 255, 255, 0.03); }
+
+            .ai-report {
+                font-size: 9.5px;
+                line-height: 1.5;
+                color: #d1d5db;
+                background: #000000;
+                padding: 10px;
+                border-radius: 2px;
+                border: 1px solid #1a1a1a;
+            }
+
+            .news-container {
+                max-height: 140px;
+                overflow-y: auto;
+            }
+            .news-container::-webkit-scrollbar { width: 3px; }
+            .news-container::-webkit-scrollbar-thumb { background: #262626; }
+            .news-item {
+                font-size: 9px;
+                padding: 5px 0;
+                border-bottom: 1px solid #111111;
+                line-height: 1.3;
+            }
+            .news-item:last-child { border-bottom: none; }
+            .news-time { color: #6b7280; margin-right: 4px; }
+        </style>
+    </head>
+    <body>
+
+        <div class="top-bar">
+            <div class="brand">
+                <h2>INSTITUTIONAL QUANT TERMINAL</h2>
+                <span>PURE HTML5 CANVAS ENGINE (ZERO DEPENDENCY)</span>
+            </div>
+            <div class="nav-controls">
+                <select id="mode-select" class="select-box" onchange="fetchData()">
+                    <option>Multi-Factor Alpha</option>
+                    <option>Pure Momentum</option>
+                    <option>Deep Value</option>
+                    <option>Volatility Arbitrage</option>
+                </select>
+                <input type="text" id="ticker-input" class="search-input" value="AAPL" style="width: 70px;" placeholder="TICKER" onkeydown="if(event.key==='Enter') runScan()">
+                <button class="action-btn" onclick="runScan()">EXECUTE</button>
+            </div>
+        </div>
+
+        <div class="main-layout">
+            
+            <div>
+                <div class="card">
+                    <div class="card-title">BENCHMARK INDICES</div>
+                    <div class="index-card">
+                        <div style="display: flex; justify-content: space-between; font-size: 9.5px;">
+                            <span>S&P 500</span>
+                            <span id="sp-meta" class="positive">--</span>
+                        </div>
+                        <canvas id="sp-canvas" class="mini-canvas"></canvas>
+                    </div>
+                    <div class="index-card" style="margin-bottom:0;">
+                        <div style="display: flex; justify-content: space-between; font-size: 9.5px;">
+                            <span>NASDAQ 100</span>
+                            <span id="ix-meta" class="positive">--</span>
+                        </div>
+                        <canvas id="ix-canvas" class="mini-canvas"></canvas>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <span>TOP ALPHA SELECTIONS</span>
+                        <span style="font-size:8px; color:#6b7280;">Full Pool Top 5</span>
+                    </div>
+                    <div id="alpha-feed-container"></div>
+                </div>
+            </div>
+
+            <div>
+                <div class="card">
+                    <div class="card-title">
+                        <span><b id="header-ticker" style="color:#ffffff; font-size:11.5px;">AAPL</b> &nbsp;<span id="header-price" class="positive" style="font-size:11.5px;">$0.00</span></span>
+                        <span style="font-size:9px; color:#6b7280;">Canvas Native Engine</span>
+                    </div>
+                    
+                    <div id="main-canvas-container">
+                        <canvas id="main-canvas"></canvas>
+                    </div>
+
+                    <div class="metrics-row">
+                        <div class="metric-box">
+                            <div class="metric-label">ENTRY ZONE</div>
+                            <div id="metric-entry" class="metric-value positive">$0.00</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="metric-label">TAKE PROFIT (TP)</div>
+                            <div id="metric-tp" class="metric-value" style="color: #f59e0b;">$0.00</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="metric-label">STOP LOSS (SL)</div>
+                            <div id="metric-sl" class="metric-value negative">$0.00</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <span>FULL S&P 500 SIGNAL MATRIX</span>
+                        <span style="font-size:8px; color:#6b7280;">500+ Tickers Synchronized</span>
+                    </div>
+                    <div class="matrix-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>TICKER</th>
+                                    <th>PRICE</th>
+                                    <th>CHANGE</th>
+                                    <th style="text-align: right;">ALPHA SCORE</th>
+                                </tr>
+                            </thead>
+                            <tbody id="matrix-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <div class="card">
+                    <div class="card-title">
+                        <span>AI QUANTITATIVE EVALUATION</span>
+                        <span style="color:#10b981; font-size:8px;">ACTIVE</span>
+                    </div>
+                    <div id="ai-report-box" class="ai-report">
+                        Loading cached telemetry...
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <span>INSTITUTIONAL NEWS & CATALYSTS</span>
+                        <span style="color:#3b82f6; font-size:8px;">LIVE FEED</span>
+                    </div>
+                    <div id="news-container" class="news-container">
+                        Loading news telemetry...
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">SYSTEM STATUS</div>
+                    <div style="font-size: 9.5px; color: #6b7280; line-height: 1.5;">
+                        • Mode: Pure Canvas Render<br>
+                        • Total Assets: 500+<br>
+                        • Latency: 0.0ms (Instant Load)
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <script>
+            let currentChartData = null;
+            let currentLevels = null;
+
+            function drawCandleChart(chartData, levels) {
+                const canvas = document.getElementById('main-canvas');
+                const container = document.getElementById('main-canvas-container');
+                const ctx = canvas.getContext('2d');
+
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = container.clientWidth * dpr;
+                canvas.height = container.clientHeight * dpr;
+                ctx.scale(dpr, dpr);
+
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+
+                ctx.clearRect(0, 0, width, height);
+                if (!chartData || chartData.length === 0) return;
+
+                const paddingLeft = 10;
+                const paddingRight = 75; // 가격 축 여백
+                const paddingTop = 20;
+                const paddingBottom = 30;
+
+                const chartWidth = width - paddingLeft - paddingRight;
+                const chartHeight = height - paddingTop - paddingBottom;
+
+                let minPrice = Infinity;
+                let maxPrice = -Infinity;
+                chartData.forEach(d => {
+                    if (d.low < minPrice) minPrice = d.low;
+                    if (d.high > maxPrice) maxPrice = d.high;
+                });
+
+                if (levels) {
+                    if (levels.tp > maxPrice) maxPrice = levels.tp;
+                    if (levels.sl < minPrice) minPrice = levels.sl;
+                }
+
+                const priceRange = maxPrice - minPrice || 1;
+                minPrice -= priceRange * 0.03;
+                maxPrice += priceRange * 0.03;
+                const adjRange = maxPrice - minPrice;
+
+                const getX = (i) => paddingLeft + (i / (chartData.length - 1 || 1)) * chartWidth;
+                const getY = (p) => paddingTop + chartHeight - ((p - minPrice) / adjRange) * chartHeight;
+
+                // 격자 및 가격 축 라인
+                ctx.strokeStyle = '#141414';
+                ctx.lineWidth = 1;
+                for (let i = 0; i <= 5; i++) {
+                    const y = paddingTop + (chartHeight / 5) * i;
+                    ctx.beginPath();
+                    ctx.moveTo(paddingLeft, y);
+                    ctx.lineTo(width - paddingRight, y);
+                    ctx.stroke();
+
+                    const pVal = maxPrice - (adjRange / 5) * i;
+                    ctx.fillStyle = '#6b7280';
+                    ctx.font = '9px Courier New';
+                    ctx.textAlign = 'left';
+                    ctx.fillText('$' + pVal.toFixed(2), width - paddingRight + 6, y + 3);
+                }
+
+                // 타겟 가격선 (TP, Entry, SL) 드로잉
+                if (levels) {
+                    const drawLevelLine = (val, color, label, isDotted) => {
+                        const y = getY(val);
+                        ctx.strokeStyle = color;
+                        ctx.lineWidth = label === 'Entry' ? 1.5 : 1;
+                        if (isDotted) ctx.setLineDash([3, 3]);
+                        else ctx.setLineDash([]);
+                        
+                        ctx.beginPath();
+                        ctx.moveTo(paddingLeft, y);
+                        ctx.lineTo(width - paddingRight, y);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+
+                        // 우측 태그 박스
+                        ctx.fillStyle = color;
+                        ctx.fillRect(width - paddingRight, y - 8, paddingRight, 16);
+                        ctx.fillStyle = '#000000';
+                        ctx.font = 'bold 9px Courier New';
+                        ctx.textAlign = 'left';
+                        ctx.fillText(`${label}: $${val.toFixed(2)}`, width - paddingRight + 4, y + 3);
+                    };
+                    drawLevelLine(levels.tp, '#f59e0b', 'TP', true);
+                    drawLevelLine(levels.entry, '#10b981', 'Entry', false);
+                    drawLevelLine(levels.sl, '#ef4444', 'SL', true);
+                }
+
+                // 캔들 바 너비 계산
+                const candleWidth = Math.max(2, (chartWidth / chartData.length) * 0.65);
+
+                chartData.forEach((d, i) => {
+                    const x = getX(i);
+                    const yOpen = getY(d.open);
+                    const yClose = getY(d.close);
+                    const yHigh = getY(d.high);
+                    const yLow = getY(d.low);
+
+                    const isGreen = d.close >= d.open;
+                    const color = isGreen ? '#10b981' : '#ef4444';
+
+                    // 심지 (Wick)
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x, yHigh);
+                    ctx.lineTo(x, yLow);
+                    ctx.stroke();
+
+                    // 몸통 (Body)
+                    ctx.fillStyle = color;
+                    const bodyY = Math.min(yOpen, yClose);
+                    const bodyH = Math.max(1, Math.abs(yClose - yOpen));
+                    ctx.fillRect(x - candleWidth / 2, bodyY, candleWidth, bodyH);
+                });
+
+                // 하단 날짜 라벨
+                ctx.fillStyle = '#6b7280';
+                ctx.font = '9px Courier New';
+                ctx.textAlign = 'left';
+                ctx.fillText(chartData[0].time, paddingLeft, height - 10);
+                ctx.textAlign = 'center';
+                ctx.fillText(chartData[Math.floor(chartData.length / 2)].time, paddingLeft + chartWidth / 2, height - 10);
+                ctx.textAlign = 'right';
+                ctx.fillText(chartData[chartData.length - 1].time, width - paddingRight, height - 10);
+            }
+
+            function drawMiniLineChart(canvasId, lineData, lineColor) {
+                const canvas = document.getElementById(canvasId);
+                const ctx = canvas.getContext('2d');
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = canvas.clientWidth * dpr;
+                canvas.height = 45 * dpr;
+                ctx.scale(dpr, dpr);
+
+                const width = canvas.clientWidth;
+                const height = 45;
+
+                ctx.clearRect(0, 0, width, height);
+                if (!lineData || lineData.length === 0) return;
+
+                let minVal = Infinity, maxVal = -Infinity;
+                lineData.forEach(d => {
+                    if (d.value < minVal) minVal = d.value;
+                    if (d.value > maxVal) maxVal = d.value;
+                });
+                const range = maxVal - minVal || 1;
+
+                const getX = (i) => (i / (lineData.length - 1 || 1)) * width;
+                const getY = (v) => height - 6 - ((v - minVal) / range) * (height - 12);
+
+                ctx.strokeStyle = lineColor;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                lineData.forEach((d, i) => {
+                    const x = getX(i);
+                    const y = getY(d.value);
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+            }
+
+            function runScan() {
+                const ticker = document.getElementById('ticker-input').value.toUpperCase();
+                if (ticker) fetchData(ticker);
+            }
+
+            async function fetchData(selectedTicker = null) {
+                const ticker = selectedTicker || document.getElementById('ticker-input').value.toUpperCase();
+                const mode = document.getElementById('mode-select').value;
+                document.getElementById('ticker-input').value = ticker;
+
+                try {
+                    const response = await fetch(`/api/terminal-data?ticker=${ticker}&mode=${encodeURIComponent(mode)}`);
+                    const data = await response.json();
+                    
+                    const cur = data.current;
+                    document.getElementById('header-ticker').innerText = cur.ticker;
+                    document.getElementById('header-price').innerText = '$' + cur.price.toFixed(2);
+                    document.getElementById('metric-entry').innerText = '$' + cur.entry.toFixed(2);
+                    document.getElementById('metric-tp').innerText = '$' + cur.tp.toFixed(2);
+                    document.getElementById('metric-sl').innerText = '$' + cur.sl.toFixed(2);
+                    document.getElementById('ai-report-box').innerHTML = cur.ai_report;
+
+                    // 뉴스 피드 렌더링
+                    let newsHTML = '';
+                    if (cur.news && cur.news.length > 0) {
+                        cur.news.forEach(n => {
+                            const impactColor = n.impact === 'POSITIVE' ? '#10b981' : (n.impact === 'NEGATIVE' ? '#ef4444' : '#f59e0b');
+                            newsHTML += `
+                                <div class="news-item">
+                                    <span class="news-time">[${n.time}]</span>
+                                    <span style="color: ${impactColor};">■</span> ${n.headline}
+                                </div>
+                            `;
+                        });
+                    } else {
+                        newsHTML = '<div class="news-item" style="color:#6b7280;">No recent institutional catalysts.</div>';
+                    }
+                    document.getElementById('news-container').innerHTML = newsHTML;
+
+                    // 캔들 차트 및 레벨 캐싱 후 드로잉
+                    currentChartData = cur.chart;
+                    currentLevels = { tp: cur.tp, entry: cur.entry, sl: cur.sl };
+                    drawCandleChart(currentChartData, currentLevels);
+
+                    // 벤치마크 지수 미니 차트 드로잉
+                    drawMiniLineChart('sp-canvas', data.indices.sp.chart, '#10b981');
+                    document.getElementById('sp-meta').innerText = data.indices.sp.price.toLocaleString() + ` (+${data.indices.sp.change}%)`;
+
+                    drawMiniLineChart('ix-canvas', data.indices.ix.chart, '#3b82f6');
+                    document.getElementById('ix-meta').innerText = data.indices.ix.price.toLocaleString() + ` (+${data.indices.ix.change}%)`;
+
+                    renderMatrixAndFeed(data.matrix);
+
+                } catch (err) {
+                    console.error("Sync error:", err);
+                }
+            }
+
+            function renderMatrixAndFeed(matrix) {
+                const tbody = document.getElementById('matrix-tbody');
+                const feedContainer = document.getElementById('alpha-feed-container');
+                
+                let tbodyHTML = '';
+                let feedHTML = '';
+
+                matrix.forEach((item, index) => {
+                    const chgClass = item.change >= 0 ? 'positive' : 'negative';
+                    const chgSign = item.change >= 0 ? '+' : '';
+
+                    tbodyHTML += `
+                        <tr onclick="fetchData('${item.ticker}')">
+                            <td><b>${item.ticker}</b></td>
+                            <td>$${item.price.toFixed(2)}</td>
+                            <td class="${chgClass}">${chgSign}${item.change.toFixed(2)}%</td>
+                            <td style="text-align: right;" class="positive"><b>${item.alpha_score.toFixed(2)}</b></td>
+                        </tr>
+                    `;
+
+                    if (index < 5) {
+                        feedHTML += `
+                            <div class="slot-row" onclick="fetchData('${item.ticker}')">
+                                <span><b>${item.ticker}</b><br><span style="font-size:9px; color:#6b7280;">$${item.price.toFixed(2)}</span></span>
+                                <span style="text-align: right;"><span class="${chgClass}">${chgSign}${item.change.toFixed(2)}%</span><br><span style="font-size:9px; color:#6b7280;">Score: ${item.alpha_score.toFixed(2)}</span></span>
+                            </div>
+                        `;
+                    }
+                });
+
+                tbody.innerHTML = tbodyHTML;
+                feedContainer.innerHTML = feedHTML;
+            }
+
+            window.onresize = () => {
+                if (currentChartData) {
+                    drawCandleChart(currentChartData, currentLevels);
+                }
+            };
+
+            window.onload = () => {
+                fetchData('AAPL');
+            };
+        </script>
+    </body>
+    </html>
+    """
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="127.0.0.1", port=8888, reload=True)

@@ -1,0 +1,8 @@
+.env
+gemini.env
+*.db
+__pycache__/
+mini_cache/
+build/
+dist/
+*.csv

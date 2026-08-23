@@ -1,0 +1,132 @@
+import pandas as pd
+import numpy as np
+
+cache_file = "sp500_cache.csv"
+df_all = pd.read_csv(cache_file, parse_dates=['Date'])
+
+print(f"--- Optimized Quant Backtest (Relaxed Filters + Original TP/SL) ---")
+
+# 원본의 높은 승률을 기록했던 익절/손절 비율로 복원 (+17% 익절, -20% 손절)
+stop_loss_pct = -20.0
+take_profit_pct = 17.0
+
+all_trades = []
+unique_tickers = df_all['Ticker'].unique()
+
+for ticker in unique_tickers:
+    try:
+        df = df_all[df_all['Ticker'] == ticker].copy()
+        df.set_index('Date', inplace=True)
+        df.sort_index(inplace=True)
+
+        if len(df) < 120:
+            continue
+
+        if 'Close' not in df.columns or 'Volume' not in df.columns:
+            continue
+
+        prices = df['Close']
+        volumes = df['Volume']
+
+        # 1. 기본 지표 (RSI, SMA50)
+        delta = prices.diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        df['SMA50'] = prices.rolling(50).mean()
+
+        # 2. 완화된 3대 필터 지표 (스퀴즈 40% + MACD 반전 + 거래량 1.5배)
+        window = 20
+        ma20 = prices.rolling(window=window).mean()
+        std20 = prices.rolling(window=window).std()
+        upper = ma20 + (std20 * 2)
+        lower = ma20 - (std20 * 2)
+        bandwidth = (upper - lower) / ma20
+        
+        df['Squeeze'] = bandwidth <= bandwidth.rolling(window=120).quantile(0.4)
+
+        exp12 = prices.ewm(span=12, adjust=False).mean()
+        exp26 = prices.ewm(span=26, adjust=False).mean()
+        macd = exp12 - exp26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        macd_hist = macd - signal
+        df['Hist_Turning'] = (macd_hist > macd_hist.shift(1)) & (macd_hist.shift(1) <= macd_hist.shift(2))
+
+        vol_sma_20 = volumes.rolling(window=window).mean()
+        df['Volume_Spike'] = volumes >= (vol_sma_20 * 1.5)
+
+        df_valid = df.dropna().copy()
+
+        # 날짜별 순회하며 조건에 맞는 모든 매수 타이밍 포착
+        i = 0
+        while i < len(df_valid) - 5:
+            row = df_valid.iloc[i]
+
+            if (row['RSI'] < 45 and
+                row['Close'] > row['SMA50'] and
+                row['Squeeze'] and
+                row['Hist_Turning'] and
+                row['Volume_Spike']):
+
+                buy_date = df_valid.index[i]
+                buy_price = float(row['Close'])
+
+                future_df = df_valid.iloc[i+1:]
+                if future_df.empty:
+                    break
+
+                future_prices = future_df['Close']
+                roi_series = ((future_prices - buy_price) / buy_price) * 100
+
+                status = "Held"
+                final_roi = roi_series.iloc[-1]
+                exit_date = roi_series.index[-1]
+
+                for date, roi in roi_series.items():
+                    if roi >= take_profit_pct:
+                        final_roi = take_profit_pct
+                        status = "Take Profit (+17%)"
+                        exit_date = date
+                        break
+                    elif roi <= stop_loss_pct:
+                        final_roi = stop_loss_pct
+                        status = "Stop Loss (-20%)"
+                        exit_date = date
+                        break
+
+                # 기간 내 청산되지 않은 경우 최종 ROI 기준으로 승패 판정
+                if status == "Held":
+                    if final_roi >= 0:
+                        status = "Win (End of Period)"
+                    else:
+                        status = "Loss (End of Period)"
+
+                all_trades.append({
+                    'Ticker': ticker,
+                    'BuyDate': buy_date,
+                    'BuyPrice': buy_price,
+                    'ExitDate': exit_date,
+                    'Status': status,
+                    'ROI': final_roi
+                })
+
+            i += 1
+
+    except Exception as e:
+        continue
+
+# 결과 요약 출력
+df_trades = pd.DataFrame(all_trades)
+if not df_trades.empty:
+    total_trades = len(df_trades)
+    wins = len(df_trades[df_trades['Status'].str.contains('Take Profit|Win')])
+    losses = len(df_trades[df_trades['Status'].str.contains('Stop Loss|Loss')])
+    win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0
+
+    print(f"\n==============================")
+    print(f" 총 거래 횟수: {total_trades}")
+    print(f" 승률: {win_rate:.2f}% ({wins}승 / {losses}패)")
+    print(f" 적용 기준: 익절 +17% / 손절 -20% + 완화된 3대 필터")
+    print(f"==============================")
+else:
+    print("\n조건을 만족하는 거래가 없습니다.")
