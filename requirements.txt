@@ -1,4 +1,5 @@
 fastapi
 uvicorn
-pandas
+pandas 
 yfinance
+python-dotenv
