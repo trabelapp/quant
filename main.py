@@ -21,29 +21,28 @@ import yfinance as yf
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
-from google import genai
+from openai import OpenAI  # Llama 연동을 위한 OpenAI 호환 클라이언트
 
 # ---------------------------------------------------------------------------
-# Config / API key & Database Setup[cite: 2]
+# Config / API key & Database Setup
 # ---------------------------------------------------------------------------
 load_dotenv()
 
-API_KEY = os.environ.get("GEMINI_API_KEY")
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "http://localhost:11434/v1")
+AI_API_KEY = os.environ.get("AI_API_KEY", "ollama")
+AI_MODEL = os.environ.get("AI_MODEL", "llama3")
 
-# 실제 이메일 발송을 위한 SMTP 설정 (본인의 메일 계정 및 앱 비밀번호 입력)[cite: 2]
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your_email@gmail.com")
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "your_app_password")
 
 ai_client = None
-if API_KEY:
-    try:
-        ai_client = genai.Client(api_key=API_KEY)
-    except Exception as e:
-        print(f"[System Warning] AI Client Error: {e}")
+try:
+    ai_client = OpenAI(base_url=AI_BASE_URL, api_key=AI_API_KEY)
+except Exception as e:
+    print(f"[System Warning] AI Client Error: {e}")
 
-GEMINI_MODEL = "gemini-3.6-flash"
 DB_FILE = "users.db"
 
 def init_db():
@@ -64,7 +63,7 @@ def init_db():
 init_db()
 
 # ---------------------------------------------------------------------------
-# Security & Policy Helpers[cite: 2]
+# Security & Policy Helpers
 # ---------------------------------------------------------------------------
 def validate_password_policy(password: str) -> tuple[bool, str]:
     if len(password) < 16:
@@ -80,12 +79,11 @@ def validate_password_policy(password: str) -> tuple[bool, str]:
     return True, ""
 
 def validate_email_format(email: str) -> bool:
-    # 국제 표준 이메일 형식 정규식 검증 (모든 도메인 허용)[cite: 2]
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
     return bool(re.match(pattern, email))
 
 # ---------------------------------------------------------------------------
-# Cache TTLs & App Initialization[cite: 2]
+# Cache TTLs & App Initialization
 # ---------------------------------------------------------------------------
 UNIVERSE_TTL = 6 * 3600       
 HISTORICAL_TTL = 180           
@@ -128,7 +126,6 @@ def get_logged_in_user(request: Request) -> Optional[str]:
     return None
 
 def send_reset_email(to_email: str, code: str):
-    """실제로 SMTP를 통해 6자리 인증번호를 발송합니다."""[cite: 2]
     try:
         msg = MIMEMultipart()
         msg['From'] = SENDER_EMAIL
@@ -148,7 +145,7 @@ def send_reset_email(to_email: str, code: str):
         return False
 
 # ---------------------------------------------------------------------------
-# Ticker Universe & Data Fetching[cite: 2]
+# Ticker Universe & Data Fetching
 # ---------------------------------------------------------------------------
 def get_trading_universe() -> List[str]:
     entry = CACHE["universe"]
@@ -171,7 +168,10 @@ def _split_batch_result(data, tickers: List[str]):
         return {t: None for t in tickers}
     if len(tickers) == 1:
         t = tickers[0]
-        df = data.dropna(how="all")
+        try:
+            df = data[t].dropna(how="all") if isinstance(data.columns, pd.MultiIndex) else data.dropna(how="all")
+        except Exception:
+            df = data.dropna(how="all")
         result[t] = df if len(df) >= 10 else None
         return result
     top_level = set()
@@ -281,36 +281,44 @@ async def get_market_summary():
     def _summary():
         if not ai_client: return "AI 모듈 대기중"
         try:
-            resp = ai_client.models.generate_content(model=GEMINI_MODEL, contents=f"오늘 날짜: {_today_str()}. 글로벌 주식시장 매크로 환경을 헤지펀드 관점에서 3줄로 요약해줘.")
-            return resp.text.replace("\n", "<br>")
-        except Exception:
+            resp = ai_client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": f"오늘 날짜: {_today_str()}. 글로벌 주식시장 매크로 환경을 헤지펀드 관점에서 3줄로 요약해줘."}]
+            )
+            return resp.choices[0].message.content.replace("\n", "<br>")
+        except Exception as e:
+            print(f"[AI Error] {e}")
             return "미 연준 금리 및 기관 수급 양호. 기술주 중심 모멘텀 지속."
     result = await asyncio.to_thread(_summary)
     CACHE["market_summary"] = {"data": result, "ts": time.time()}
     return result
 
-async def get_gemini_report(ticker: str, price: float, change: float, mode: str, rsi: float, macd_val: float, short_info: dict):
+async def get_ai_report(ticker: str, price: float, change: float, mode: str, rsi: float, macd_val: float, short_info: dict):
     cache_key = f"{ticker}_{mode}"
     entry = CACHE["ai_reports"].get(cache_key)
     if entry and _is_fresh(entry["ts"], AI_REPORT_TTL):
         return entry["data"]
     def _ai():
-        if not ai_client: return "Gemini API Key 미설정"
+        if not ai_client: return "AI Client 미설정"
         try:
-            prompt = f"종목: {ticker}, 가격: ${price}, 등락율: {change}%, RSI: {rsi}, 공매도 비중: {short_info.get('short_percent_of_float')}%, 전략모드: {mode}. 헤지펀드 수석 퀀트 애널리스트 관점에서 진단 리포트를 4개 핵심 섹션으로 작성해줘."
-            resp = ai_client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-            return resp.text.replace("\n", "<br>")
-        except Exception:
+            prompt = f"종목: {ticker}, 가격: ${price}, 등락율: {change}%, RSI: {rsi}, 공매도 비중: {short_info.get('short_percent_of_float')}%, 선택 전략: {mode}. 퀀트 트레이딩 관점에서 분석 리포트를 4개 핵심 섹션으로 작성해줘."
+            resp = ai_client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return resp.choices[0].message.content.replace("\n", "<br>")
+        except Exception as e:
+            print(f"[AI Error] {e}")
             return "AI 리포트 생성 중 일시적 오류 발생"
     result = await asyncio.to_thread(_ai)
     CACHE["ai_reports"][cache_key] = {"data": result, "ts": time.time()}
     return result
 
 # ---------------------------------------------------------------------------
-# Scan & Payload Endpoints[cite: 2]
+# Scan & Payload Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/api/scan")
-async def run_market_scan(request: Request, mode: str = "12M 엘리트 모멘텀 눌림목"):
+async def run_market_scan(request: Request, mode: str = "중장기 모멘텀 눌림목"):
     if not get_logged_in_user(request): return {"error": "Unauthorized"}
     tickers = get_trading_universe()
     await ensure_stock_data(tickers, "1d")
@@ -353,7 +361,14 @@ async def build_fast_payload(ticker: str, timeframe: str = "1d") -> dict:
             
             for idx, row in df.tail(150).iterrows():
                 time_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]
-                chart.append({"time": time_str, "open": float(row["Open"]), "high": float(row["High"]), "low": float(row["Low"]), "close": float(row["Close"]), "volume": int(row["Volume"])})
+                chart.append({
+                    "time": time_str, 
+                    "open": float(row["Open"]), 
+                    "high": float(row["High"]), 
+                    "low": float(row["Low"]), 
+                    "close": float(row["Close"]), 
+                    "volume": int(row["Volume"])
+                })
             data_ok = True
     except Exception:
         pass
@@ -378,17 +393,17 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
     return {"fast": await build_fast_payload(ticker, timeframe)}
 
 @app.get("/api/terminal-data-ai")
-async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "12M 엘리트 모멘텀 눌림목", timeframe: str = "1d"):
+async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "중장기 모멘텀 눌림목", timeframe: str = "1d"):
     if not get_logged_in_user(request): return {"error": "Unauthorized"}
     fast = await build_fast_payload(ticker, timeframe)
     news_feed, titles = await fetch_stock_news(ticker)
     short_info = await get_short_interest(ticker)
-    ai_rep = await get_gemini_report(ticker, fast["price"], fast["change"], mode, fast["rsi"], fast["macd"], short_info)
+    ai_rep = await get_ai_report(ticker, fast["price"], fast["change"], mode, fast["rsi"], fast["macd"], short_info)
     mkt = await get_market_summary()
     return {"ai": {"ai_report": ai_rep, "news_feed": news_feed, "market_summary": mkt, "short_info": short_info}}
 
 # ---------------------------------------------------------------------------
-# Auth Routes[cite: 2]
+# Auth Routes
 # ---------------------------------------------------------------------------
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(error: Optional[str] = None, msg: Optional[str] = None):
@@ -547,7 +562,7 @@ async def send_code(email: str = Form(...)):
         return RedirectResponse(url="/forgot-password?error=Registered+email+not+found", status_code=303)
     
     code = f"{random.randint(100000, 999999)}"
-    expires = time.time() + 300  # 5분 유효기간
+    expires = time.time() + 300  
     cursor.execute("UPDATE users SET reset_code = ?, reset_expires = ? WHERE email = ?", (code, expires, clean_email))
     conn.commit()
     conn.close()
@@ -630,7 +645,7 @@ async def logout():
     return res
 
 # ---------------------------------------------------------------------------
-# Full Frontend UI Dashboard[cite: 2]
+# Full Frontend UI Dashboard
 # ---------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def elite_terminal(request: Request):
@@ -640,7 +655,7 @@ async def elite_terminal(request: Request):
     <!DOCTYPE html>
     <html lang="ko">
     <head>
-        <meta charset="UTF-8"><title>QUANTIFY. - Quantitative Terminal</title>
+        <meta charset="UTF-8"><title>QUANTIFY. - Quantitative Terminal (Llama)</title>
         <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
         <style>
             * {{ box-sizing: border-box; }}
@@ -669,13 +684,13 @@ async def elite_terminal(request: Request):
     </head>
     <body>
         <header>
-            <h1>QUANTIFY. TERMINAL &bull; <span style="color:#2ecc71;">{user}</span></h1>
+            <h1>QUANTIFY. TERMINAL (LLAMA) &bull; <span style="color:#2ecc71;">{user}</span></h1>
             <div class="controls">
                 <label>퀀트 전략:</label>
                 <select id="modeSelect">
-                    <option value="12M 엘리트 모멘텀 눌림목">12M 엘리트 모멘텀 눌림목</option>
-                    <option value="초고속 델타 돌파">초고속 델타 돌파</option>
-                    <option value="기관 수급 롱숏 바스켓">기관 수급 롱숏 바스켓</option>
+                    <option value="중장기 모멘텀 눌림목">중장기 모멘텀 눌림목</option>
+                    <option value="단기 변동성 돌파">단기 변동성 돌파</option>
+                    <option value="기관 수급 주도주">기관 수급 주도주</option>
                 </select>
                 <button onclick="runScan()">⚡ 스캔 실행</button>
                 <button onclick="location.href='/logout'" style="border-color:#e74c3c; color:#e74c3c;">LOGOUT</button>
@@ -719,9 +734,9 @@ async def elite_terminal(request: Request):
             </div>
 
             <div class="panel">
-                <h3>GEMINI QUANT AI REPORT</h3>
+                <h3>LLAMA QUANT AI REPORT</h3>
                 <div class="scroll-content" id="aiReportBox" style="margin-bottom:8px; border-bottom:1px solid #14221b; padding-bottom:8px;">
-                    종목 선택 시 헤지펀드 분석 리포트가 생성됩니다.
+                    종목 선택 시 Llama 헤지펀드 분석 리포트가 생성됩니다.
                 </div>
                 <h3>REALTIME MACRO & NEWS</h3>
                 <div class="scroll-content" id="newsBox">
@@ -733,7 +748,7 @@ async def elite_terminal(request: Request):
         <script>
             let currentTicker = "AAPL";
             let currentTimeframe = "1d";
-            let chart, candleSeries;
+            let chart, candleSeries, volumeSeries;
             let activePriceLines = [];
 
             function initChart() {{
@@ -747,11 +762,25 @@ async def elite_terminal(request: Request):
                     timeScale: {{ timeVisible: true, borderColor: '#14221b' }},
                     rightPriceScale: {{ borderColor: '#14221b' }}
                 }});
+                
                 candleSeries = chart.addCandlestickSeries({{
                     upColor: '#2ecc71', downColor: '#e74c3c',
                     borderUpColor: '#2ecc71', borderDownColor: '#e74c3c',
                     wickUpColor: '#2ecc71', wickDownColor: '#e74c3c'
                 }});
+
+                volumeSeries = chart.addHistogramSeries({{
+                    priceFormat: {{ type: 'volume' }},
+                    priceScaleId: '',
+                }});
+
+                volumeSeries.priceScale().applyOptions({{
+                    scaleMargins: {{
+                        top: 0.75,
+                        bottom: 0,
+                    }},
+                }});
+
                 window.addEventListener('resize', () => {{
                     chart.resize(container.clientWidth, container.clientHeight);
                 }});
@@ -793,7 +822,26 @@ async def elite_terminal(request: Request):
                     const res = await fetch('/api/terminal-data-fast?ticker=' + currentTicker + '&timeframe=' + currentTimeframe);
                     const data = await res.json();
                     if(data.fast && data.fast.data_ok) {{
-                        candleSeries.setData(data.fast.chart);
+                        const candleData = [];
+                        const volumeData = [];
+                        
+                        data.fast.chart.forEach(item => {{
+                            candleData.push({{
+                                time: item.time,
+                                open: item.open,
+                                high: item.high,
+                                low: item.low,
+                                close: item.close
+                            }});
+                            volumeData.push({{
+                                time: item.time,
+                                value: item.volume,
+                                color: item.close >= item.open ? 'rgba(46, 204, 113, 0.4)' : 'rgba(231, 76, 60, 0.4)'
+                            }});
+                        }});
+
+                        candleSeries.setData(candleData);
+                        volumeSeries.setData(volumeData);
                         chart.timeScale().fitContent();
                         
                         document.getElementById('mRsiMacd').innerText = 'RSI:' + data.fast.rsi + ' / MACD:' + data.fast.macd;
@@ -815,7 +863,7 @@ async def elite_terminal(request: Request):
                     }}
                 }} catch(e) {{}}
 
-                document.getElementById('aiReportBox').innerHTML = '<span class="loader"></span> AI 리포트 분석 중...';
+                document.getElementById('aiReportBox').innerHTML = '<span class="loader"></span> Llama AI 리포트 분석 중...';
                 document.getElementById('newsBox').innerHTML = '<span class="loader"></span> 뉴스 수신 중...';
                 try {{
                     const mode = document.getElementById('modeSelect').value;
