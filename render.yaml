@@ -22,6 +22,8 @@ services:
         sync: false
       - key: SENDGRID_API_KEY
         sync: false
+      - key: BREVO_API_KEY
+        sync: false
       - key: AI_CONCURRENCY
         value: "1"
       - key: QUANT_PASS_THRESHOLD

@@ -42,6 +42,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 
 # Constituent refresh is deliberately infrequent. Market data is fetched in
 # small batches with pauses, not as hundreds of simultaneous requests.
@@ -1224,6 +1225,31 @@ async def startup():
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
 
+def _send_via_brevo(to_email, subject, body, max_retries=3):
+    payload = {
+        "sender": {"email": SENDER_EMAIL},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "textContent": body,
+    }
+    headers = {"api-key": BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json"}
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers, timeout=10)
+            if resp.status_code in (200, 201, 202):
+                return True
+            if resp.status_code in (401, 403):
+                print(f"[Error: BrevoAuthError] Brevo rejected the request ({resp.status_code}): {resp.text[:300]}")
+                return False
+            print(f"[Error: BrevoError] Unexpected response {resp.status_code}: {resp.text[:300]}")
+        except Exception as exc:
+            print(f"[Retry {attempt + 1}/{max_retries}] Brevo send failed ({type(exc).__name__}): {exc}")
+        if attempt < max_retries - 1:
+            time.sleep(2.0 * (attempt + 1))
+    print(f"[Error: BrevoError] Email send error after {max_retries} attempts (to {to_email})")
+    return False
+
+
 def _send_via_sendgrid(to_email, subject, body, max_retries=3):
     payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
@@ -1272,6 +1298,8 @@ def _send_via_smtp(to_email, subject, body, max_retries=3):
 
 
 def send_email_notification(to_email, subject, body, max_retries=3):
+    if BREVO_API_KEY and SENDER_EMAIL:
+        return _send_via_brevo(to_email, subject, body, max_retries)
     if SENDGRID_API_KEY and SENDER_EMAIL:
         return _send_via_sendgrid(to_email, subject, body, max_retries)
     if not SENDER_EMAIL or not SENDER_PASSWORD:
@@ -1281,6 +1309,20 @@ def send_email_notification(to_email, subject, body, max_retries=3):
 
 
 def check_email_config():
+    if BREVO_API_KEY and SENDER_EMAIL:
+        try:
+            resp = requests.get("https://api.brevo.com/v3/senders", headers={"api-key": BREVO_API_KEY, "Accept": "application/json"}, timeout=10)
+            if resp.status_code == 200:
+                senders = [s.get("email") for s in resp.json().get("senders", [])]
+                if SENDER_EMAIL in senders:
+                    print(f"[email] Brevo configured — sending as verified sender {SENDER_EMAIL}.")
+                else:
+                    print(f"[email] Brevo API key is valid but {SENDER_EMAIL} is not a verified sender yet — emails will be rejected until you verify it in Brevo.")
+            else:
+                print(f"[email] Brevo API key check failed ({resp.status_code}): {resp.text[:200]}")
+        except Exception as exc:
+            print(f"[email] Brevo connectivity check failed ({type(exc).__name__}): {exc}")
+        return
     if SENDGRID_API_KEY and SENDER_EMAIL:
         try:
             resp = requests.get("https://api.sendgrid.com/v3/verified_senders", headers={"Authorization": f"Bearer {SENDGRID_API_KEY}"}, timeout=10)
@@ -1296,7 +1338,7 @@ def check_email_config():
             print(f"[email] SendGrid connectivity check failed ({type(exc).__name__}): {exc}")
         return
     if not SENDER_EMAIL or not SENDER_PASSWORD:
-        print("[email] No email backend configured (SENDGRID_API_KEY, or SENDER_EMAIL/SENDER_PASSWORD) — verification, password reset, and alert emails will not be sent.")
+        print("[email] No email backend configured (BREVO_API_KEY, SENDGRID_API_KEY, or SENDER_EMAIL/SENDER_PASSWORD) — verification, password reset, and alert emails will not be sent.")
         return
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
