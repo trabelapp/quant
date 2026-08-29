@@ -2154,7 +2154,7 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 
 <footer>
 QUANTIFY. — informational and educational only, not investment advice.<br>
-<a href="/login">Log in</a> · <a href="/signup">Sign up</a>
+<a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
 </footer>
 </body></html>"""
 
@@ -2231,6 +2231,90 @@ async def landing(request: Request):
     if get_logged_in_user(request):
         return RedirectResponse("/terminal", status_code=303)
     return HTMLResponse(LANDING_HTML)
+
+
+LEGAL_CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#b2b5be;font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:50px 24px 100px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:40px;flex-wrap:wrap;gap:10px}
+.brand{font-weight:700;font-size:17px;color:#d1d4dc;text-decoration:none}
+.brand span{color:#2962ff}
+a.back{color:#2962ff;text-decoration:none;font-size:13px;font-weight:600}
+h1{color:#d1d4dc;font-size:28px;margin-bottom:8px}
+.updated{color:#787b86;font-size:13px;margin-bottom:36px}
+h2{color:#d1d4dc;font-size:17px;margin:32px 0 12px}
+p,li{color:#b2b5be;font-size:14.5px;line-height:1.75;margin-bottom:12px}
+ul{padding-left:20px;margin-bottom:12px}
+a{color:#2962ff}
+"""
+
+
+def render_legal_page(title: str, updated: str, body_html: str) -> HTMLResponse:
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title><style>{LEGAL_CSS}</style></head><body><div class="wrap"><header><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="back" href="/">&larr; Back to home</a></header><h1>{title}</h1><div class="updated">Last updated: {updated}</div>{body_html}</div></body></html>''')
+
+
+@app.get("/terms", response_class=HTMLResponse)
+async def terms_page():
+    body = """
+<p>These Terms of Service ("Terms") govern your access to and use of QUANTIFY (the "Service"). By creating an account or using the Service, you agree to these Terms.</p>
+<h2>1. Description of the Service</h2>
+<p>QUANTIFY is an informational and educational tool that runs a quantitative scan of the S&amp;P 500 and Nasdaq-100 and generates AI-written commentary about detected tickers. The Service is not a licensed investment adviser, broker-dealer, or financial planner.</p>
+<h2>2. Not Investment Advice</h2>
+<p>Nothing on the Service — including quant scores, badges, AI-generated commentary, or any other content — is investment advice, a recommendation, or a solicitation to buy or sell any security. All investment decisions, and all outcomes from those decisions, are solely your own responsibility. Markets involve risk, including the possible loss of your entire investment. Consult a licensed financial professional before making investment decisions.</p>
+<h2>3. Eligibility and Your Account</h2>
+<p>You must be at least 18 years old to use the Service. You are responsible for maintaining the confidentiality of your password and for all activity under your account. Notify us promptly of any unauthorized use.</p>
+<h2>4. Acceptable Use</h2>
+<p>You agree not to: scrape, reverse-engineer, or systematically extract data from the Service; interfere with or overload our infrastructure; resell or redistribute Service content as your own product; or use the Service for any unlawful purpose.</p>
+<h2>5. Third-Party Data</h2>
+<p>Market data, news, and other information displayed on the Service are sourced from third parties and may be delayed, incomplete, or inaccurate. We do not guarantee the accuracy, completeness, or timeliness of any data shown.</p>
+<h2>6. Disclaimers and Limitation of Liability</h2>
+<p>The Service is provided "as is" and "as available," without warranties of any kind, express or implied. To the fullest extent permitted by law, QUANTIFY and its operator will not be liable for any direct, indirect, incidental, or consequential damages arising from your use of, or inability to use, the Service, including any investment losses.</p>
+<h2>7. Termination</h2>
+<p>We may suspend or terminate your account at any time, with or without notice, for conduct that violates these Terms or that we believe is harmful to the Service or other users.</p>
+<h2>8. Changes to These Terms</h2>
+<p>We may update these Terms from time to time. Continued use of the Service after a change constitutes acceptance of the revised Terms. We will update the "Last updated" date above when changes are made.</p>
+<h2>9. Contact</h2>
+<p>Questions about these Terms can be sent to <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</p>
+"""
+    return render_legal_page("Terms of Service", "August 30, 2026", body)
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page():
+    body = """
+<p>This Privacy Policy explains what information QUANTIFY ("we") collects, how we use it, and the choices you have.</p>
+<h2>1. Information We Collect</h2>
+<ul>
+<li><b>Account information:</b> your email address and a securely hashed password (or, if you sign in with Google, your verified Google email address).</li>
+<li><b>Product data you create:</b> saved portfolio tickers, price alerts, and display preferences (theme, language, default strategy).</li>
+<li><b>Basic usage data:</b> IP address and request timestamps, used only for security purposes such as rate-limiting login and signup attempts.</li>
+</ul>
+<h2>2. How We Use Information</h2>
+<p>We use this information to operate your account, send transactional emails (email verification, password reset codes, price alerts), generate the AI commentary you request, and keep the Service secure and reliable.</p>
+<h2>3. Third-Party Services We Use</h2>
+<ul>
+<li><b>Groq</b> — processes ticker/price/technical data to generate AI commentary. We do not send your name, email, or account details to Groq.</li>
+<li><b>Brevo</b> — sends transactional emails (verification, password reset, alerts) on our behalf.</li>
+<li><b>Google Sign-In</b> — if you choose to log in with Google, Google shares your verified email address with us to create your session.</li>
+<li><b>Market and news data providers (e.g. Yahoo Finance, Google News)</b> — we query these for public market data and headlines; no personal data about you is sent to them.</li>
+</ul>
+<h2>4. Cookies</h2>
+<p>We use a single functional session cookie to keep you logged in. We do not use advertising or cross-site tracking cookies.</p>
+<h2>5. Data Retention</h2>
+<p>We retain account and portfolio data for as long as your account is active. Daily market scan history is retained for a limited number of days for product features like score trends.</p>
+<h2>6. Data Security</h2>
+<p>Passwords are hashed with PBKDF2-SHA256 and a unique salt per account — we never store your password in plain text. Traffic to the Service is encrypted in transit.</p>
+<h2>7. Your Rights</h2>
+<p>You can update your preferences and password anytime from Settings. To request deletion of your account and associated data, email us and we will process the request.</p>
+<h2>8. Children's Privacy</h2>
+<p>The Service is not directed at individuals under 18, and we do not knowingly collect information from children.</p>
+<h2>9. Changes to This Policy</h2>
+<p>We may update this Privacy Policy from time to time. We will update the "Last updated" date above when changes are made.</p>
+<h2>10. Contact</h2>
+<p>Questions about this policy can be sent to <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</p>
+"""
+    return render_legal_page("Privacy Policy", "August 30, 2026", body)
 
 
 @app.get("/auth/google/login")
@@ -2410,7 +2494,7 @@ async def login(email: str = Form(...), password: str = Form(...)):
 @app.get("/signup", response_class=HTMLResponse)
 async def signup_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">Free while in early access — no credit card required.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
+    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">Free while in early access — no credit card required.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
     return render_auth_page("QUANTIFY. Sign Up", form)
 
 
