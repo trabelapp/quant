@@ -23,7 +23,7 @@ import uvicorn
 import yfinance as yf
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, Response
 from openai import OpenAI, RateLimitError
 
 load_dotenv()
@@ -1977,6 +1977,10 @@ LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked</title>
 <meta name="description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
+<meta property="og:title" content="QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked">
+<meta property="og:description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
 <style>
 :root{--bg:#050807;--panel:#030504;--panel2:#081310;--border:#14221b;--text:#9ab8af;--head:#dff5ed;--dim:#436659;--dim2:#567d6e;--green:#2ecc71;--red:#e74c3c;--orange:#f39c12;--blue:#3498db;--teal:#22d3c4}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2231,6 +2235,30 @@ async def landing(request: Request):
     if get_logged_in_user(request):
         return RedirectResponse("/terminal", status_code=303)
     return HTMLResponse(LANDING_HTML)
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt(request: Request):
+    base = str(request.base_url).rstrip("/")
+    return (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /terminal\n"
+        "Disallow: /portfolio\n"
+        "Disallow: /settings\n"
+        "Disallow: /accept-disclaimer\n"
+        "Disallow: /api/\n\n"
+        f"Sitemap: {base}/sitemap.xml\n"
+    )
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml(request: Request):
+    base = str(request.base_url).rstrip("/")
+    urls = ["/", "/login", "/signup", "/terms", "/privacy"]
+    items = "".join(f"<url><loc>{base}{u}</loc></url>" for u in urls)
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
+    return Response(content=xml, media_type="application/xml")
 
 
 LEGAL_CSS = """
