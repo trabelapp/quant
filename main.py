@@ -100,6 +100,7 @@ AI_STATUS = {"running": False, "processed": 0, "total": 0, "ready": 0, "started_
 AI_TASK = None
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
+AI_PROMPT_VERSION = 2
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MARKET_SCAN_INTERVAL_SECONDS = 30 * 60
 
@@ -304,6 +305,8 @@ def init_db():
             conn.execute("ALTER TABLE daily_scans ADD COLUMN ai_language TEXT NOT NULL DEFAULT 'en'")
         if "volume_ratio" not in scan_cols:
             conn.execute("ALTER TABLE daily_scans ADD COLUMN volume_ratio REAL")
+        if "ai_prompt_version" not in scan_cols:
+            conn.execute("ALTER TABLE daily_scans ADD COLUMN ai_prompt_version INTEGER")
 
         scan_info = conn.execute("PRAGMA table_info(daily_scans)").fetchall()
         short_col = next((r for r in scan_info if r[1] == "short_percent"), None)
@@ -1403,9 +1406,9 @@ async def run_ai_prefetch(mode="Long-Term Momentum Pullback"):
         SELECT ticker,price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
         FROM daily_scans
         WHERE scan_date=? AND quant_pass=1
-          AND (ai_report IS NULL OR ai_mode<>?)
+          AND (ai_report IS NULL OR ai_mode<>? OR ai_prompt_version IS NULL OR ai_prompt_version<>?)
         ORDER BY alpha_score DESC
-    """,(today_str(),mode)).fetchall()
+    """,(today_str(),mode,AI_PROMPT_VERSION)).fetchall()
     conn.close()
     AI_STATUS["total"]=len(rows)
     if not rows:
@@ -1437,10 +1440,10 @@ async def run_ai_prefetch(mode="Long-Term Momentum Pullback"):
                     conn.execute("""UPDATE daily_scans
                                     SET short_percent=?,ai_report=?,ai_status='READY',
                                         ai_mode=?,ai_updated_at=?,ai_error=NULL,
-                                        timing_score=?,timing_verdict=?
+                                        timing_score=?,timing_verdict=?,ai_prompt_version=?
                                     WHERE scan_date=? AND ticker=?""",
                                  (short_pct,ai_result["report_json"],mode,time.time(),
-                                  ai_result["timing_score"],ai_result["timing_verdict"],
+                                  ai_result["timing_score"],ai_result["timing_verdict"],AI_PROMPT_VERSION,
                                   today_str(),ticker))
                     AI_STATUS["ready"]+=1
                 else:
@@ -1741,7 +1744,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
 
     conn=db()
     row=conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
-                                price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
+                                price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version
                         FROM daily_scans WHERE scan_date=? AND ticker=?
                         ORDER BY id DESC LIMIT 1""",(today_str(),ticker)).fetchone()
 
@@ -1771,15 +1774,17 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
             ))
             conn.commit()
             row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
-                                          price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
+                                          price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version
                                   FROM daily_scans WHERE scan_date=? AND ticker=?""", (today_str(), ticker)).fetchone()
 
     # A cached report only satisfies this request if it matches both the selected
-    # strategy mode AND language. On a mismatch, generate a fresh one on demand
-    # (this is a shared cache slot, so the next viewer with different mode/language
-    # will likewise regenerate it — acceptable for this scale, not per-user cached).
+    # strategy mode AND language, and was generated under the current prompt schema.
+    # On a mismatch, generate a fresh one on demand (this is a shared cache slot, so
+    # the next viewer with different mode/language will likewise regenerate it —
+    # acceptable for this scale, not per-user cached).
     needs_regen = row is not None and row["price"] is not None and (
         row["ai_report"] is None or row["ai_mode"] != mode or (row["ai_language"] or "en") != language
+        or row["ai_prompt_version"] != AI_PROMPT_VERSION
     )
     news=await fetch_stock_news(ticker)
     if needs_regen:
@@ -1793,10 +1798,10 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
         if ai_result:
             conn.execute("""UPDATE daily_scans
                             SET short_percent=?,ai_report=?,ai_status='READY',ai_mode=?,ai_language=?,
-                                ai_updated_at=?,ai_error=NULL,timing_score=?,timing_verdict=?
+                                ai_updated_at=?,ai_error=NULL,timing_score=?,timing_verdict=?,ai_prompt_version=?
                             WHERE scan_date=? AND ticker=?""",
                          (short_pct, ai_result["report_json"], mode, language, time.time(),
-                          ai_result["timing_score"], ai_result["timing_verdict"], today_str(), ticker))
+                          ai_result["timing_score"], ai_result["timing_verdict"], AI_PROMPT_VERSION, today_str(), ticker))
             conn.commit()
             row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
                                           price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
