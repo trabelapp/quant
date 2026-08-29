@@ -10,3 +10,4 @@ universe_cache.json
 users.db.bak_*
 venv/
 .claude/
+users.json
