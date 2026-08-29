@@ -109,6 +109,9 @@ RESET_MAX_ATTEMPTS = 5
 SEND_CODE_ATTEMPTS = {}
 SEND_CODE_MAX_ATTEMPTS = 3
 
+SIGNUP_ATTEMPTS = {}
+SIGNUP_MAX_ATTEMPTS = 5
+
 
 def _register_failed_attempt(store: dict, key: str) -> int:
     now = time.time()
@@ -2124,7 +2127,7 @@ async def login(email: str = Form(...), password: str = Form(...)):
         "session_user",
         token,
         httponly=True,
-        secure=False,
+        secure=bool(os.getenv("RENDER")),
         samesite="lax",
         max_age=SESSION_TTL,
     )
@@ -2152,6 +2155,10 @@ def send_verification_email(request: Request, email: str, token: str) -> bool:
 
 @app.post("/api/auth/signup")
 async def signup(request: Request, email: str = Form(...), password: str = Form(...)):
+    client_ip = request.client.host if request.client else "unknown"
+    if _is_locked_out(SIGNUP_ATTEMPTS, client_ip, SIGNUP_MAX_ATTEMPTS):
+        return RedirectResponse("/signup?error=Too+many+signups+from+this+network.+Try+again+later.",status_code=303)
+    _register_failed_attempt(SIGNUP_ATTEMPTS, client_ip)
     email=email.strip().lower()
     if not validate_email(email): return RedirectResponse("/signup?error=Invalid+email",status_code=303)
     ok,error=validate_password_policy(password)
