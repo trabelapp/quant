@@ -26,6 +26,10 @@ services:
         sync: false
       - key: BREVO_API_KEY
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
       - key: AI_CONCURRENCY
         value: "1"
       - key: QUANT_PASS_THRESHOLD

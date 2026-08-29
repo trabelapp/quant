@@ -43,6 +43,8 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
 # Constituent refresh is deliberately infrequent. Market data is fetched in
 # small batches with pauses, not as hundreds of simultaneous requests.
@@ -2058,9 +2060,17 @@ QUANTIFY. — informational and educational only, not investment advice.<br>
 # -----------------------------------------------------------------------------
 BASE_CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:radial-gradient(ellipse 800px 500px at 50% -10%,rgba(46,204,113,.10),transparent 60%) #060a08;color:#c3d6cf;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:80px 24px 24px}
-.brand{position:fixed;top:28px;left:50%;transform:translateX(-50%);font-weight:700;font-size:17px;letter-spacing:.2px;color:#eef7f3;text-decoration:none}
+body{background:#060a08;color:#c3d6cf;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.authwrap{display:flex;min-height:100vh}
+.authbrand{flex:1;background:radial-gradient(ellipse 900px 600px at 30% 20%,rgba(46,204,113,.14),transparent 60%) #050807;padding:60px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid #14221b}
+.brand{font-weight:700;font-size:19px;letter-spacing:.2px;color:#eef7f3;text-decoration:none;display:inline-block;margin-bottom:44px}
 .brand span{color:#2ecc71}
+.authbrand h1{font-size:36px;line-height:1.25;color:#eef7f3;max-width:440px;margin-bottom:16px}
+.authbrand>p{color:#7c9c90;font-size:15px;max-width:400px;line-height:1.65}
+.points{margin-top:38px;display:flex;flex-direction:column;gap:14px}
+.point{color:#9ab8af;font-size:13.5px}
+.point b{color:#2ecc71}
+.authform{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 24px}
 .card{width:100%;max-width:400px;background:#0b100e;border:1px solid #1c2b24;padding:36px 32px;border-radius:16px;box-shadow:0 30px 60px -30px rgba(0,0,0,.6)}
 h2{color:#eef7f3;text-align:center;font-size:21px;font-weight:700;margin-bottom:6px}
 .subtitle{text-align:center;color:#7c9c90;font-size:13.5px;margin-bottom:24px;line-height:1.5}
@@ -2070,6 +2080,10 @@ input:focus{outline:none;border-color:#2ecc71}
 button{width:100%;margin-top:20px;background:linear-gradient(135deg,#2ecc71,#22c58f);color:#04150c;border:none;padding:13px;font-size:14.5px;font-weight:700;border-radius:9px;cursor:pointer;transition:opacity .15s,transform .1s;font-family:inherit}
 button:hover{opacity:.9}
 button:active{transform:scale(.98)}
+.google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;background:#fff;color:#1f1f1f;border:1px solid #dcdcdc;padding:12px;border-radius:9px;font-size:14.5px;font-weight:600;text-decoration:none;transition:background .15s}
+.google-btn:hover{background:#f2f2f2}
+.divider{display:flex;align-items:center;gap:12px;margin:22px 0;color:#5c7a6e;font-size:12.5px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:#1c2b24}
 .links{display:flex;justify-content:space-between;margin-top:22px;font-size:13.5px}
 .links a{color:#4db8ff;text-decoration:none}
 .links a:hover{text-decoration:underline}
@@ -2081,7 +2095,31 @@ details summary{cursor:pointer;color:#4db8ff}
 details form{margin-top:12px;text-align:left}
 details input{margin-bottom:10px}
 details button{margin-top:6px;padding:11px}
+@media(max-width:860px){
+  .authwrap{flex-direction:column}
+  .authbrand{border-right:none;border-bottom:1px solid #14221b;padding:36px 24px;flex:none}
+  .authbrand h1{font-size:26px}
+  .points{display:none}
+  .authform{flex:none;padding:36px 24px}
+}
 """
+
+AUTH_BRAND_HTML = """<div class="authbrand">
+<a class="brand" href="/">QUANTIFY<span>.</span></a>
+<h1>Quant-detected stocks,<br>AI risk-checked.</h1>
+<p>A daily scan of the S&amp;P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk before it ever reaches your screen.</p>
+<div class="points">
+<div class="point"><b>&#9670;</b> Live market data, never simulated</div>
+<div class="point"><b>&#9670;</b> Plain-language AI risk review on every pick</div>
+<div class="point"><b>&#9670;</b> Free during early access, no credit card</div>
+</div>
+</div>"""
+
+GOOGLE_ICON_SVG = '<svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 009 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 013.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 000 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 00.96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>'
+
+
+def render_auth_page(title: str, form_html: str) -> HTMLResponse:
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><style>{BASE_CSS}</style></head><body><div class="authwrap">{AUTH_BRAND_HTML}<div class="authform">{form_html}</div></div></body></html>''')
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2091,11 +2129,78 @@ async def landing(request: Request):
     return HTMLResponse(LANDING_HTML)
 
 
+@app.get("/auth/google/login")
+async def google_login(request: Request):
+    if not GOOGLE_CLIENT_ID:
+        return RedirectResponse("/login?error=Google+sign-in+is+not+configured+yet.", status_code=303)
+    state = secrets.token_urlsafe(24)
+    redirect_uri = f"{str(request.base_url).rstrip('/')}/auth/google/callback"
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email",
+        "state": state,
+        "prompt": "select_account",
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+    res = RedirectResponse(url, status_code=303)
+    res.set_cookie("google_oauth_state", state, httponly=True, secure=bool(os.getenv("RENDER")), samesite="lax", max_age=600)
+    return res
+
+
+@app.get("/auth/google/callback")
+async def google_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    cookie_state = request.cookies.get("google_oauth_state")
+    if error or not code or not state or not cookie_state or state != cookie_state:
+        return RedirectResponse("/login?error=Google+sign-in+failed.+Please+try+again.", status_code=303)
+    redirect_uri = f"{str(request.base_url).rstrip('/')}/auth/google/callback"
+    try:
+        token_resp = requests.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }, timeout=10)
+        token_resp.raise_for_status()
+        access_token = token_resp.json()["access_token"]
+        info_resp = requests.get("https://www.googleapis.com/oauth2/v3/userinfo",
+                                  headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        info_resp.raise_for_status()
+        info = info_resp.json()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Google OAuth exchange failed: {exc}")
+        return RedirectResponse("/login?error=Google+sign-in+failed.+Please+try+again.", status_code=303)
+
+    email = (info.get("email") or "").strip().lower()
+    if not email or not info.get("email_verified"):
+        return RedirectResponse("/login?error=Could+not+verify+your+Google+email.", status_code=303)
+
+    conn = db()
+    row = conn.execute("SELECT email FROM users WHERE email=?", (email,)).fetchone()
+    if not row:
+        password_hash, salt = make_password_hash(secrets.token_urlsafe(32))
+        conn.execute(
+            "INSERT INTO users(email,password_hash,salt,is_active) VALUES(?,?,?,1)",
+            (email, password_hash, salt),
+        )
+        conn.commit()
+    conn.close()
+
+    token = create_session(email)
+    res = RedirectResponse("/terminal", status_code=303)
+    res.set_cookie("session_user", token, httponly=True, secure=bool(os.getenv("RENDER")), samesite="lax", max_age=SESSION_TTL)
+    res.delete_cookie("google_oauth_state")
+    return res
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(error: Optional[str] = None, msg: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     msg = html_lib.escape(msg) if msg else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Login</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Welcome back</h2><div class="subtitle">Log in to see today's detected tickers.</div><div class="error">{error}</div><div class="ok">{msg}</div><form action="/api/auth/login" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><button>Log in</button></form><div class="links"><a href="/signup">Create an account</a><a href="/forgot-password">Forgot password?</a></div><details><summary>Didn't get a verification email?</summary><form action="/api/auth/resend-verification" method="post"><label>Email</label><input type="email" name="email" required><button>Resend verification email</button></form></details></div></body></html>''')
+    form = f'''<div class="card"><h2>Welcome back</h2><div class="subtitle">Log in to see today's detected tickers.</div><div class="error">{error}</div><div class="ok">{msg}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/login" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><button>Log in</button></form><div class="links"><a href="/signup">Create an account</a><a href="/forgot-password">Forgot password?</a></div><details><summary>Didn't get a verification email?</summary><form action="/api/auth/resend-verification" method="post"><label>Email</label><input type="email" name="email" required><button>Resend verification email</button></form></details></div>'''
+    return render_auth_page("QUANTIFY. Login", form)
 
 
 @app.post("/api/auth/login")
@@ -2160,7 +2265,8 @@ async def login(email: str = Form(...), password: str = Form(...)):
 @app.get("/signup", response_class=HTMLResponse)
 async def signup_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Sign Up</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Create your account</h2><div class="subtitle">Free while in early access — no credit card required.</div><div class="error">{error}</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><div class="links"><a href="/login">Already have an account? Log in</a></div></div></body></html>''')
+    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">Free while in early access — no credit card required.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
+    return render_auth_page("QUANTIFY. Sign Up", form)
 
 
 VERIFY_TOKEN_TTL = 24 * 3600
@@ -2206,7 +2312,24 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
 
     if not send_verification_email(request, email, token):
         return RedirectResponse("/login?msg=Account+created.+Verification+email+could+not+be+sent+-+contact+support.",status_code=303)
-    return RedirectResponse("/login?msg=Account+created.+Check+your+email+to+verify+before+logging+in.",status_code=303)
+    return RedirectResponse("/check-email?email="+urllib.parse.quote(email),status_code=303)
+
+
+@app.get("/check-email", response_class=HTMLResponse)
+async def check_email_page(email: str = ""):
+    email_esc = html_lib.escape(email)
+    form = f'''<div class="card" style="text-align:center">
+<div style="font-size:38px;margin-bottom:14px">&#9993;&#65039;</div>
+<h2>Check your email</h2>
+<div class="subtitle">We sent a verification link to<br><b style="color:#eef7f3">{email_esc}</b></div>
+<p style="color:#7c9c90;font-size:13px;margin:18px 0 22px">Click the link in that email to activate your account, then come back and log in.</p>
+<form action="/api/auth/resend-verification" method="post">
+<input type="hidden" name="email" value="{email_esc}">
+<button>Resend verification email</button>
+</form>
+<div class="links" style="justify-content:center;margin-top:18px"><a href="/login">Back to log in</a></div>
+</div>'''
+    return render_auth_page("Check your email", form)
 
 
 @app.get("/verify-email", response_class=HTMLResponse)
@@ -2265,7 +2388,8 @@ async def logout(request: Request):
 @app.get("/forgot-password", response_class=HTMLResponse)
 async def forgot_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Password Recovery</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Reset your password</h2><div class="subtitle">Enter your email and we'll send you a 6-digit code.</div><div class="error">{error}</div><form action="/api/auth/send-code" method="post"><label>Email</label><input type="email" name="email" required><button>Send code</button></form><div class="links"><a href="/login">Back to log in</a></div></div></body></html>''')
+    form = f'''<div class="card"><h2>Reset your password</h2><div class="subtitle">Enter your email and we'll send you a 6-digit code.</div><div class="error">{error}</div><form action="/api/auth/send-code" method="post"><label>Email</label><input type="email" name="email" required><button>Send code</button></form><div class="links"><a href="/login">Back to log in</a></div></div>'''
+    return render_auth_page("Password Recovery", form)
 
 
 @app.post("/api/auth/send-code")
@@ -2296,7 +2420,8 @@ async def send_code(email: str = Form(...)):
 async def reset_page(email: str, error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     email = html_lib.escape(email)
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Reset Password</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Choose a new password</h2><div class="subtitle">Enter the code we emailed you, plus a new password.</div><div class="error">{error}</div><form action="/api/auth/verify-and-reset" method="post"><input type="hidden" name="email" value="{email}"><label>6-digit code</label><input name="code" required maxlength="6"><label>New password</label><input type="password" name="new_password" required><button>Reset password</button></form></div></body></html>''')
+    form = f'''<div class="card"><h2>Choose a new password</h2><div class="subtitle">Enter the code we emailed you, plus a new password.</div><div class="error">{error}</div><form action="/api/auth/verify-and-reset" method="post"><input type="hidden" name="email" value="{email}"><label>6-digit code</label><input name="code" required maxlength="6"><label>New password</label><input type="password" name="new_password" required><button>Reset password</button></form></div>'''
+    return render_auth_page("Reset Password", form)
 
 
 @app.post("/api/auth/verify-and-reset")
