@@ -272,6 +272,8 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN verify_token_hash TEXT")
         if "verify_expires" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN verify_expires REAL")
+        if "disclaimer_accepted_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN disclaimer_accepted_at REAL")
 
         scan_info = conn.execute("PRAGMA table_info(daily_scans)").fetchall()
         scan_cols = {r[1] for r in scan_info}
@@ -435,6 +437,13 @@ def get_logged_in_user(request: Request) -> Optional[str]:
     except Exception as e:
         print(f"[Error: {type(e).__name__}] Logged-in user check error: {e}")
     return None
+
+
+def disclaimer_accepted(email: str) -> bool:
+    conn = db()
+    row = conn.execute("SELECT disclaimer_accepted_at FROM users WHERE email=?", (email,)).fetchone()
+    conn.close()
+    return bool(row and row["disclaimer_accepted_at"])
 
 # -----------------------------------------------------------------------------
 # Universe loading
@@ -2290,6 +2299,47 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
     return res
 
 
+@app.get("/accept-disclaimer", response_class=HTMLResponse)
+async def accept_disclaimer_page(request: Request, error: Optional[str] = None):
+    user = get_logged_in_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if disclaimer_accepted(user):
+        return RedirectResponse("/terminal", status_code=303)
+    error = html_lib.escape(error) if error else ''
+    form = f'''<div class="card">
+<h2>Before you continue</h2>
+<div class="subtitle">Please read and accept this to activate your account.</div>
+<div class="error">{error}</div>
+<p style="color:#9ab8af;font-size:13px;line-height:1.7;background:#0f1613;border:1px solid #223229;border-radius:9px;padding:16px;margin-bottom:18px">
+QUANTIFY is an informational and educational tool. It is not a registered investment adviser, broker-dealer, or financial planner, and nothing on this site — including quant scores, badges, or AI-generated commentary — is investment advice, a recommendation, or a solicitation to buy or sell any security.
+<br><br>
+All investment decisions, and all outcomes from those decisions, are solely your own responsibility. Markets involve risk, including the possible loss of your entire investment. Consult a licensed financial professional before making investment decisions.
+</p>
+<form action="/api/accept-disclaimer" method="post">
+<label style="display:flex;align-items:flex-start;gap:10px;font-weight:normal;cursor:pointer">
+<input type="checkbox" name="agree" required style="width:auto;margin-top:3px">
+<span>I have read and understand this. QUANTIFY does not provide investment advice, and I am solely responsible for my own investment decisions.</span>
+</label>
+<button>I Agree &amp; Continue</button>
+</form>
+</div>'''
+    return render_auth_page("Before You Continue", form)
+
+
+@app.post("/api/accept-disclaimer")
+async def accept_disclaimer(request: Request, agree: Optional[str] = Form(None)):
+    user = get_logged_in_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if agree != "on":
+        return RedirectResponse("/accept-disclaimer?error=You+must+check+the+box+to+continue.", status_code=303)
+    conn = db()
+    conn.execute("UPDATE users SET disclaimer_accepted_at=? WHERE email=?", (time.time(), user))
+    conn.commit(); conn.close()
+    return RedirectResponse("/terminal", status_code=303)
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(error: Optional[str] = None, msg: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
@@ -2551,6 +2601,7 @@ async def verify_reset(email: str = Form(...), code: str = Form(...), new_passwo
 async def dashboard(request: Request):
     user=get_logged_in_user(request)
     if not user: return RedirectResponse("/login",status_code=303)
+    if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer",status_code=303)
     conn=db(); prefs=conn.execute("SELECT pref_theme,pref_language,pref_default_mode FROM users WHERE email=?",(user,)).fetchone(); conn.close()
     theme = prefs["pref_theme"] if prefs and prefs["pref_theme"] in ("dark","light") else "dark"
     pref_language = prefs["pref_language"] if prefs and prefs["pref_language"] in LANGUAGE_NAMES else "en"
@@ -2646,6 +2697,7 @@ window.onload=()=>{{init();autoScanOnOpen();loadIndices();setInterval(pollForUpd
 async def portfolio_page(request: Request):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
+    if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     user = html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Portfolio</title><style>
 *{{box-sizing:border-box}}body{{background:#050807;color:#9ab8af;font:11px 'Courier New',monospace;margin:0;padding:8px}}header{{background:#030504;border:1px solid #14221b;padding:8px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}h1{{font-size:13px;color:#dff5ed;margin:0}}a.back{{color:#3498db;text-decoration:none}}button{{background:#0e241b;border:1px solid #2ecc71;color:#2ecc71;padding:5px 10px;font:11px 'Courier New',monospace;cursor:pointer}}.wrap{{max-width:900px;margin:0 auto}}.item{{background:#030504;border:1px solid #14221b;padding:14px;margin-bottom:10px}}.item-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}.item-head b{{color:#dff5ed;font-size:14px}}.meta{{color:#436659;font-size:10px;margin-bottom:8px}}.badge{{padding:2px 7px;border-radius:2px;font-weight:bold;font-size:10px}}.badge-ok{{background:#0e241b;color:#2ecc71;border:1px solid #2ecc71}}.badge-warn{{background:#2a2008;color:#f39c12;border:1px solid #f39c12}}.badge-danger{{background:#2a0e0e;color:#e74c3c;border:1px solid #e74c3c}}.note{{color:#9ab8af;font-size:11px;line-height:1.6}}.remove{{background:transparent;border:1px solid #2a0e0e;color:#e74c3c}}.empty{{color:#436659;padding:40px;text-align:center}}
@@ -2663,6 +2715,7 @@ load();
 async def settings_page(request: Request):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
+    if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     user = html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Settings</title><style>
 *{{box-sizing:border-box}}body{{background:#050807;color:#9ab8af;font:11px 'Courier New',monospace;margin:0;padding:8px}}header{{background:#030504;border:1px solid #14221b;padding:8px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}h1{{font-size:13px;color:#dff5ed;margin:0}}a.back{{color:#3498db;text-decoration:none}}.wrap{{max-width:520px;margin:0 auto}}.card{{background:#030504;border:1px solid #14221b;padding:20px;margin-bottom:16px}}.card h2{{color:#dff5ed;font-size:12px;margin:0 0 14px;border-bottom:1px solid #14221b;padding-bottom:8px}}label{{display:block;font-size:10px;color:#436659;margin:10px 0 4px}}select,input{{width:100%;background:#060908;border:1px solid #1a2e25;color:#9ab8af;padding:8px;font:11px 'Courier New',monospace}}button{{margin-top:14px;background:#0e241b;border:1px solid #2ecc71;color:#2ecc71;padding:8px 14px;font:11px 'Courier New',monospace;font-weight:bold;cursor:pointer;width:100%}}.msg{{font-size:11px;min-height:14px;margin-top:8px}}.ok{{color:#2ecc71}}.err{{color:#e74c3c}}
