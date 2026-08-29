@@ -2427,11 +2427,13 @@ async def accept_disclaimer_page(request: Request, error: Optional[str] = None):
 QUANTIFY is an informational and educational tool. It is not a registered investment adviser, broker-dealer, or financial planner, and nothing on this site — including quant scores, badges, or AI-generated commentary — is investment advice, a recommendation, or a solicitation to buy or sell any security.
 <br><br>
 All investment decisions, and all outcomes from those decisions, are solely your own responsibility. Markets involve risk, including the possible loss of your entire investment. Consult a licensed financial professional before making investment decisions.
+<br><br>
+To the fullest extent permitted by law, QUANTIFY and its operator assume no legal liability for any losses, damages, or outcomes arising from your use of the Service or your investment decisions.
 </p>
 <form action="/api/accept-disclaimer" method="post">
 <label style="display:flex;align-items:flex-start;gap:10px;font-weight:normal;cursor:pointer">
 <input type="checkbox" name="agree" required style="width:auto;margin-top:3px">
-<span>I have read and understand this. QUANTIFY does not provide investment advice, and I am solely responsible for my own investment decisions.</span>
+<span>I have carefully read the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> in full, and I acknowledge that QUANTIFY assumes no legal liability and that all investment decisions are solely my own responsibility.</span>
 </label>
 <button>I Agree &amp; Continue</button>
 </form>
