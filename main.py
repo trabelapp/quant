@@ -690,15 +690,39 @@ def calculate_alpha_score(close, rsi, macd_hist):
         return None
 
 
-def _download_group(tickers, period="2y", interval="1d"):
+def _is_rate_limit_error(exc) -> bool:
+    msg = str(exc).lower()
+    return "rate limit" in msg or "too many requests" in msg
+
+
+def _download_group(tickers, period="2y", interval="1d", raise_on_rate_limit=False):
     try:
         return yf.download(
             tickers=tickers, period=period, interval=interval,
             auto_adjust=True, progress=False, threads=True, group_by="column"
         )
     except Exception as exc:
+        if raise_on_rate_limit and _is_rate_limit_error(exc):
+            raise
         print(f"[Error: {type(exc).__name__}] yfinance batch download error: {exc}")
         return None
+
+
+RATE_LIMIT_BACKOFF_SECONDS = 10.0
+
+
+async def _download_single_with_backoff(ticker, period, interval):
+    for attempt in range(2):
+        try:
+            return await asyncio.to_thread(_download_group, [ticker], period, interval, True)
+        except Exception as exc:
+            if attempt == 0 and _is_rate_limit_error(exc):
+                print(f"[RateLimit] yfinance rate limit hit on {ticker} — backing off {RATE_LIMIT_BACKOFF_SECONDS:.0f}s")
+                await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
+                continue
+            print(f"[Error: {type(exc).__name__}] Single download failed ({ticker}): {exc}")
+            return None
+    return None
 
 
 INTERVAL_PERIODS = {"1h": "730d", "1d": "2y", "1wk": "5y", "1mo": "max"}
@@ -710,7 +734,7 @@ async def download_stock(ticker: str, interval="1d"):
     if cached and time.time() - cached["ts"] < HISTORICAL_TTL:
         return cached["data"]
     period = INTERVAL_PERIODS.get(interval, "2y")
-    data = await asyncio.to_thread(_download_group, [ticker], period, interval)
+    data = await _download_single_with_backoff(ticker, period, interval)
     if data is None or data.empty:
         return None
     if isinstance(data.columns, pd.MultiIndex):
@@ -770,7 +794,7 @@ async def batch_download_stocks(tickers):
         print(f"[Retry] Retrying {len(missing)} tickers missing from batch download individually: {missing}")
         for ticker in missing:
             try:
-                data = await asyncio.to_thread(_download_group, [ticker], "2y", "1d")
+                data = await _download_single_with_backoff(ticker, "2y", "1d")
                 if data is None or data.empty:
                     continue
                 if isinstance(data.columns, pd.MultiIndex):
