@@ -284,6 +284,8 @@ def init_db():
             conn.execute("ALTER TABLE daily_scans ADD COLUMN timing_verdict TEXT")
         if "ai_language" not in scan_cols:
             conn.execute("ALTER TABLE daily_scans ADD COLUMN ai_language TEXT NOT NULL DEFAULT 'en'")
+        if "volume_ratio" not in scan_cols:
+            conn.execute("ALTER TABLE daily_scans ADD COLUMN volume_ratio REAL")
 
         scan_info = conn.execute("PRAGMA table_info(daily_scans)").fetchall()
         short_col = next((r for r in scan_info if r[1] == "short_percent"), None)
@@ -843,8 +845,30 @@ async def get_short_interest(ticker):
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean"}
 
 
+MODE_CRITERIA = {
+    "Long-Term Momentum Pullback": (
+        "This mode looks for stocks in a confirmed long-term uptrend (price above its 200-day moving average) "
+        "that have pulled back somewhat from recent highs — a potential entry within an established trend, not a "
+        "reversal bet. Weight the 200-day trend and the pullback-from-high distance heavily; a stock far below its "
+        "200-day MA does not fit this mode even if other numbers look attractive."
+    ),
+    "Short-Term Volatility Breakout": (
+        "This mode looks for a sharp short-term price move accompanied by a genuine volume surge — momentum "
+        "continuation over the next few days. Weight recent price change and volume-vs-average heavily; a big price "
+        "move on below-average volume is a weak, less credible breakout for this mode."
+    ),
+    "Institutional Flow Leaders": (
+        "This mode looks for signs of sustained, steady buying pressure (low short interest, MACD confirming an "
+        "uptrend, volume near or above its average without an extreme single-day spike) consistent with gradual "
+        "accumulation rather than a retail-driven pop. Weight short interest and MACD confirmation heavily; a huge "
+        "one-day volume spike is more consistent with retail hype than institutional accumulation for this mode."
+    ),
+}
+
+
 def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
-                    pct_from_high=None, pct_from_low=None, above_trend=None, language="en"):
+                    pct_from_high=None, pct_from_low=None, above_trend=None, language="en",
+                    volume_ratio=None, news=None):
     if not ai_client:
         return None
     language_name = LANGUAGE_NAMES.get(language, "English")
@@ -854,27 +878,40 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
     low_text = f"{pct_from_low:+.1f}% vs 52-week low" if pct_from_low is not None else "52-week low data unavailable"
     trend_text = ("Above the 200-day moving average" if above_trend is True else
                   "Below the 200-day moving average" if above_trend is False else "200-day moving average data unavailable")
+    volume_text = (f"Volume is {volume_ratio:.2f}x its 20-day average" if volume_ratio is not None
+                   else "Volume data unavailable")
+    mode_criteria = MODE_CRITERIA.get(mode, "")
+    news_items = (news or [])[:5]
+    if news_items:
+        news_text = "Recent headlines:\n" + "\n".join(f"- {n.get('title','')}" for n in news_items if n.get("title"))
+    else:
+        news_text = "No recent news headlines were available."
     prompt = (
         f"Date: {display_date()}\nTicker: {ticker}\nPrice: ${price:.2f}\n"
         f"Change: {change:.2f}%\nRSI: {rsi:.2f}\nMACD histogram: {macd:.4f}\n"
-        f"{high_text}\n{low_text}\n{trend_text}\n{short_text}\nStrategy mode: {mode}\n\n"
+        f"{high_text}\n{low_text}\n{trend_text}\n{volume_text}\n{short_text}\n"
+        f"Strategy mode: {mode}\n{mode_criteria}\n\n{news_text}\n\n"
         "This ticker was flagged automatically by a quant algorithm based purely on numeric thresholds, not "
         "hand-picked by a person. You must check for these two failure modes: "
         "(1) Has it already spiked short-term, sitting near its 52-week high with RSI in overbought territory, "
         "risking a blow-off top if someone chases it now? "
         "(2) Is this a bounce inside a long-term downtrend (below the 200-day MA) or near its 52-week low, "
         "risking a dead-cat bounce in a financially weak stock?\n"
-        "Base your analysis only on the numbers actually provided. Do not estimate or invent missing data. "
-        "This is informational analysis, not investment advice. Do not state a specific buy price, price target, "
-        "or stop-loss price in any form.\n\n"
-        f"The values of quant_review, supply_demand, risk_review, and timing_reason must be written in {language_name} only. "
-        "The timing_verdict value itself must still be exactly one of the three English words below, never translated.\n"
+        "Base your analysis only on the numbers and headlines actually provided. Do not estimate or invent missing "
+        "data, and do not assume a headline's content beyond its title. This is informational analysis, not "
+        "investment advice. Do not state a specific buy price, price target, or stop-loss price in any form. Be "
+        "direct and specific rather than hedging every sentence — state what the numbers show and commit to a view.\n\n"
+        f"The values of quant_review, supply_demand, risk_review, news_analysis, and timing_reason must be written "
+        f"in {language_name} only. The timing_verdict value itself must still be exactly one of the three English "
+        "words below, never translated.\n"
         "Respond with ONLY the JSON object below, no other text:\n"
-        '{"quant_review":"2-3 sentence assessment of the quant indicators","supply_demand":"2-3 sentence assessment of supply/demand and short interest",'
-        '"risk_review":"2-3 sentence assessment of the two failure modes above",'
+        '{"quant_review":"2-3 sentences on RSI/MACD/trend, and whether the setup actually fits the stated strategy mode\'s criteria",'
+        '"supply_demand":"2-3 sentences on volume-vs-average and short interest together — do they agree or conflict?",'
+        '"risk_review":"2-3 sentences on the two failure modes above",'
+        '"news_analysis":"2-3 sentences on what the headlines suggest, and whether they support or contradict the technical setup — or state plainly that no useful headlines were available",'
         '"timing_verdict":"one of: Favorable, Caution, or Risk",'
         '"timing_score":an integer from 0 to 100,'
-        '"timing_reason":"2-3 sentence explanation for the score"}'
+        '"timing_reason":"2-3 sentence explanation for the score that references at least one specific number given above"}'
     )
     max_retries = 5
     extra_args = {"reasoning_effort": "low"} if "gpt-oss" in AI_MODEL else {}
@@ -944,11 +981,21 @@ def analyze_dataframe(ticker, df):
             if pd.notna(sma200):
                 above_trend = bool(price > float(sma200))
 
+        volume_ratio = None
+        try:
+            volume = normalize_series(df, "Volume").dropna()
+            if len(volume) >= 20:
+                avg_volume_20d = float(volume.tail(20).mean())
+                if avg_volume_20d > 0:
+                    volume_ratio = round(float(volume.iloc[-1]) / avg_volume_20d, 2)
+        except Exception:
+            volume_ratio = None
+
         return {"ticker": ticker, "price": round(price, 2), "change": round(change, 2),
                 "alpha_score": score, "rsi": round(float(rsi_series.iloc[-1]), 2),
                 "macd": round(float(macd_hist.iloc[-1]), 4),
                 "pct_from_52w_high": pct_from_high, "pct_from_52w_low": pct_from_low,
-                "above_200d_sma": above_trend}
+                "above_200d_sma": above_trend, "volume_ratio": volume_ratio}
     except Exception as e:
         print(f"[Error: {type(e).__name__}] Dataframe analysis error ({ticker}): {e}")
         return None
@@ -1012,14 +1059,14 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                     conn.execute("""
                         INSERT INTO daily_scans
                         (scan_date,ticker,universe,price,change_pct,alpha_score,rsi,macd,
-                         pct_from_52w_high,pct_from_52w_low,above_200d_sma,
+                         pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,
                          ai_report,short_percent,ai_status,ai_mode,ai_updated_at,ai_error,quant_pass,created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(scan_date,ticker) DO UPDATE SET
                             universe=excluded.universe, price=excluded.price, change_pct=excluded.change_pct,
                             alpha_score=excluded.alpha_score, rsi=excluded.rsi, macd=excluded.macd,
                             pct_from_52w_high=excluded.pct_from_52w_high, pct_from_52w_low=excluded.pct_from_52w_low,
-                            above_200d_sma=excluded.above_200d_sma,
+                            above_200d_sma=excluded.above_200d_sma, volume_ratio=excluded.volume_ratio,
                             ai_report=COALESCE(excluded.ai_report,daily_scans.ai_report),
                             short_percent=excluded.short_percent,
                             ai_status=CASE WHEN daily_scans.ai_report IS NOT NULL THEN daily_scans.ai_status ELSE 'PENDING' END,
@@ -1033,6 +1080,7 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                         r["rsi"], r["macd"],
                         r.get("pct_from_52w_high"), r.get("pct_from_52w_low"),
                         (1 if r.get("above_200d_sma") else (0 if r.get("above_200d_sma") is False else None)),
+                        r.get("volume_ratio"),
                         r.get("ai_report"),
                         r.get("short_percent"), "PENDING", mode, None, None, r.get("quant_pass", 0), now
                     ))
@@ -1203,7 +1251,7 @@ async def run_ai_prefetch(mode="Long-Term Momentum Pullback"):
                       "started_at": time.time(), "finished_at": None, "error": None})
     conn=db()
     rows=conn.execute("""
-        SELECT ticker,price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma
+        SELECT ticker,price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
         FROM daily_scans
         WHERE scan_date=? AND quant_pass=1
           AND (ai_report IS NULL OR ai_mode<>?)
@@ -1228,9 +1276,11 @@ async def run_ai_prefetch(mode="Long-Term Momentum Pullback"):
 
                 short_pct=await get_short_interest(ticker)
                 above_trend = bool(row["above_200d_sma"]) if row["above_200d_sma"] is not None else None
+                news = await fetch_stock_news(ticker)
                 ai_result=await generate_ai_report(
                     ticker,row["price"],row["change_pct"],mode,row["rsi"],row["macd"],short_pct,
-                    row["pct_from_52w_high"],row["pct_from_52w_low"],above_trend,
+                    row["pct_from_52w_high"],row["pct_from_52w_low"],above_trend,"en",
+                    row["volume_ratio"],news,
                 )
 
                 conn=db()
@@ -1491,9 +1541,38 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
 
     conn=db()
     row=conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
-                                price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma
+                                price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
                         FROM daily_scans WHERE scan_date=? AND ticker=?
                         ORDER BY id DESC LIMIT 1""",(today_str(),ticker)).fetchone()
+
+    if row is None:
+        # Ticker outside today's S&P 500 / Nasdaq-100 scan (e.g. manually searched) has no
+        # daily_scans row at all, so there is nothing to hang an AI report on — it would
+        # otherwise sit on "Preparing AI analysis cache..." forever. Compute it live, the
+        # same way the batch scanner does, so the AI path works for any valid ticker.
+        df = await download_stock(ticker, "1d")
+        analysis = analyze_dataframe(ticker, df)
+        if analysis:
+            universe = "S&P 500" if ticker in UNIVERSE_META["sp500"] else ("Nasdaq-100" if ticker in UNIVERSE_META["nasdaq100"] else "Other")
+            quant_pass = 1 if float(analysis.get("alpha_score") or 0) >= QUANT_PASS_THRESHOLD else 0
+            conn.execute("""
+                INSERT INTO daily_scans
+                (scan_date,ticker,universe,price,change_pct,alpha_score,rsi,macd,
+                 pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,
+                 ai_status,ai_mode,quant_pass,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(scan_date,ticker) DO NOTHING
+            """, (
+                today_str(), ticker, universe, analysis["price"], analysis["change"], analysis["alpha_score"],
+                analysis["rsi"], analysis["macd"], analysis.get("pct_from_52w_high"), analysis.get("pct_from_52w_low"),
+                (1 if analysis.get("above_200d_sma") else (0 if analysis.get("above_200d_sma") is False else None)),
+                analysis.get("volume_ratio"),
+                "PENDING", mode, quant_pass, time.time(),
+            ))
+            conn.commit()
+            row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
+                                          price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
+                                  FROM daily_scans WHERE scan_date=? AND ticker=?""", (today_str(), ticker)).fetchone()
 
     # A cached report only satisfies this request if it matches both the selected
     # strategy mode AND language. On a mismatch, generate a fresh one on demand
@@ -1502,12 +1581,14 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     needs_regen = row is not None and row["price"] is not None and (
         row["ai_report"] is None or row["ai_mode"] != mode or (row["ai_language"] or "en") != language
     )
+    news=await fetch_stock_news(ticker)
     if needs_regen:
         short_pct = await get_short_interest(ticker)
         above_trend = bool(row["above_200d_sma"]) if row["above_200d_sma"] is not None else None
         ai_result = await generate_ai_report(
             ticker, row["price"], row["change_pct"], mode, row["rsi"], row["macd"], short_pct,
             row["pct_from_52w_high"], row["pct_from_52w_low"], above_trend, language,
+            row["volume_ratio"], news,
         )
         if ai_result:
             conn.execute("""UPDATE daily_scans
@@ -1518,10 +1599,9 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
                           ai_result["timing_score"], ai_result["timing_verdict"], today_str(), ticker))
             conn.commit()
             row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
-                                          price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma
+                                          price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio
                                   FROM daily_scans WHERE scan_date=? AND ticker=?""", (today_str(), ticker)).fetchone()
     conn.close()
-    news=await fetch_stock_news(ticker)
 
     report_sections = None
     if row and row["ai_report"]:
@@ -2146,7 +2226,7 @@ function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge
 async function autoScanOnOpen(){{try{{await fetch('/api/auto-scan',{{method:'POST'}});}}catch(e){{console.warn('auto-scan trigger failed',e)}};scan()}}
 async function scan(){{const r=await fetch('/api/scan');const d=await r.json();document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:'';if(!d.signals?.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today.':(ready?'No scan data saved for today. Run RESCAN.':(err?'Could not prepare constituent data. Try RESCAN again.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';return}}document.getElementById('list').innerHTML=d.signals.map(s=>`<div class="item" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span>${{s.price}} · ${{s.change_pct}}%<br><small>${{s.universe||''}} · Alpha ${{s.alpha_score}}${{s.timing_verdict?' · <span class="badge '+verdictClass(s.timing_verdict)+'">'+s.timing_verdict+'</span>':''}}</small></span></div>`).join('');loadTicker(d.signals[0].ticker)}}
 async function runBatch(){{document.getElementById('list').innerHTML='Checking constituents and preparing real market data...';const r=await fetch('/api/admin/run-batch');const d=await r.json();if(!r.ok){{document.getElementById('list').innerHTML='<div class="notice">'+(d.message||'Could not start the batch.')+'</div>';return}}pollBatch()}} async function pollBatch(){{const r=await fetch('/api/admin/batch-status');const d=await r.json();const a=await fetch('/api/admin/ai-status').then(x=>x.json());document.getElementById('list').innerHTML=`<div class="notice">MARKET: ${{d.processed||0}} / ${{d.total||0}}<br>Saved: ${{d.saved||0}}<br>AI CACHE(QUANT PASS): ${{a.processed||0}} / ${{a.total||0}} · READY ${{a.ready||0}}<br>${{d.running?'Collecting market data...':(a.running&&a.total>0?'Generating AI cache for quant-passing tickers...':'Cache ready')}}</div>`;if(d.running||(a.running&&a.total>0))setTimeout(pollBatch,1500);else if(d.error){{return}}else scan()}}
-async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker+' · TECHNICAL CHART';const r=await fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const d=await r.json();if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('short').innerText=d.fast.short_percent==null?'No data':d.fast.short_percent+'%';document.getElementById('longbar').style.width=(d.fast.long_ratio??0)+'%';document.getElementById('shortbar').style.width=(d.fast.short_ratio??0)+'%';const a=await fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(document.getElementById('mode').value)}}&language=${{USER_LANGUAGE}}`);const x=await a.json();const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Timing score ${{x.ai.timing_score??'-'}} / 100`}}else{{vEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',timing_reason:'Timing Rationale'}};aiEl.innerHTML=Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=x.ai?.ai_report||(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':'AI analysis is unavailable.')}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}
+async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker+' · TECHNICAL CHART';const r=await fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const d=await r.json();if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('short').innerText=d.fast.short_percent==null?'No data':d.fast.short_percent+'%';document.getElementById('longbar').style.width=(d.fast.long_ratio??0)+'%';document.getElementById('shortbar').style.width=(d.fast.short_ratio??0)+'%';const a=await fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(document.getElementById('mode').value)}}&language=${{USER_LANGUAGE}}`);const x=await a.json();const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Timing score ${{x.ai.timing_score??'-'}} / 100`}}else{{vEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=x.ai?.ai_report||(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':'AI analysis is unavailable.')}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}
 async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return alert('Enter a target price.');const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();alert(d.message||d.error)}}async function savePortfolio(){{const f=new FormData();f.append('ticker',ticker);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();alert(d.message||d.error)}}function changeTF(x){{tf=x;loadTicker(ticker)}}window.onload=()=>{{init();autoScanOnOpen();loadIndices()}};
 </script></body></html>''')
 
