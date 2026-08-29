@@ -249,6 +249,10 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN pref_language TEXT NOT NULL DEFAULT 'en'")
         if "pref_default_mode" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN pref_default_mode TEXT NOT NULL DEFAULT 'Long-Term Momentum Pullback'")
+        if "verify_token_hash" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN verify_token_hash TEXT")
+        if "verify_expires" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN verify_expires REAL")
 
         scan_info = conn.execute("PRAGMA table_info(daily_scans)").fetchall()
         scan_cols = {r[1] for r in scan_info}
@@ -1147,21 +1151,48 @@ async def startup():
     load_universe_cache()
     asyncio.create_task(refresh_universe())
     asyncio.create_task(scheduler())
+    asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
 
-def send_email_notification(to_email, subject, body):
+def send_email_notification(to_email, subject, body, max_retries=3):
     if not SENDER_EMAIL or not SENDER_PASSWORD:
+        print(f"[Error: EmailNotConfigured] SENDER_EMAIL/SENDER_PASSWORD not set — could not send '{subject}' to {to_email}")
         return False
+    msg = MIMEMultipart(); msg["From"] = SENDER_EMAIL; msg["To"] = to_email; msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    for attempt in range(max_retries):
+        try:
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+                server.starttls(); server.login(SENDER_EMAIL, SENDER_PASSWORD); server.sendmail(SENDER_EMAIL, to_email, msg.as_string())
+            return True
+        except smtplib.SMTPAuthenticationError as exc:
+            print(f"[Error: SMTPAuthenticationError] SMTP login rejected — check SENDER_EMAIL/SENDER_PASSWORD (Gmail needs an App Password): {exc}")
+            return False
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                wait = 2.0 * (attempt + 1)
+                print(f"[Retry {attempt + 1}/{max_retries}] Email send failed ({type(exc).__name__}): {exc} — retrying in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+            print(f"[Error: {type(exc).__name__}] Email send error after {max_retries} attempts (to {to_email}): {exc}")
+            return False
+    return False
+
+
+def check_email_config():
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        print("[email] SENDER_EMAIL/SENDER_PASSWORD not set — verification, password reset, and alert emails will not be sent.")
+        return
     try:
-        msg = MIMEMultipart(); msg["From"] = SENDER_EMAIL; msg["To"] = to_email; msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain", "utf-8"))
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
-            server.starttls(); server.login(SENDER_EMAIL, SENDER_PASSWORD); server.sendmail(SENDER_EMAIL, to_email, msg.as_string())
-        return True
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        print(f"[email] SMTP login OK for {SENDER_EMAIL} — outgoing email is configured correctly.")
+    except smtplib.SMTPAuthenticationError as exc:
+        print(f"[email] SMTP login FAILED for {SENDER_EMAIL} — emails will not send. Check SENDER_PASSWORD (Gmail requires an App Password, not your normal password): {exc}")
     except Exception as exc:
-        print(f"[Error: {type(exc).__name__}] Email send error: {exc}")
-        return False
+        print(f"[email] SMTP connectivity check failed ({type(exc).__name__}): {exc}")
 
 # -----------------------------------------------------------------------------
 # Server-side AI prefetch/cache
@@ -1863,7 +1894,7 @@ async def landing(request: Request):
 async def login_page(error: Optional[str] = None, msg: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     msg = html_lib.escape(msg) if msg else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Login</title><style>{BASE_CSS}</style></head><body><div class="card"><h2>QUANTIFY. ACCESS</h2><div class="error">{error}</div><div class="ok">{msg}</div><form action="/api/auth/login" method="post"><label>EMAIL</label><input type="email" name="email" required><label>PASSWORD</label><input type="password" name="password" required><button>LOGIN TO TERMINAL</button></form><div class="links"><a href="/signup">Sign up</a><a href="/forgot-password">Forgot password</a></div></div></body></html>''')
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Login</title><style>{BASE_CSS}details{{margin-top:14px;font-size:10px;color:#567d6e}}details summary{{cursor:pointer;color:#3498db}}details form{{margin-top:8px}}details input{{margin-bottom:6px}}details button{{margin-top:4px;padding:6px}}</style></head><body><div class="card"><h2>QUANTIFY. ACCESS</h2><div class="error">{error}</div><div class="ok">{msg}</div><form action="/api/auth/login" method="post"><label>EMAIL</label><input type="email" name="email" required><label>PASSWORD</label><input type="password" name="password" required><button>LOGIN TO TERMINAL</button></form><div class="links"><a href="/signup">Sign up</a><a href="/forgot-password">Forgot password</a></div><details><summary>Didn't get a verification email?</summary><form action="/api/auth/resend-verification" method="post"><label>EMAIL</label><input type="email" name="email" required><button>RESEND VERIFICATION EMAIL</button></form></details></div></body></html>''')
 
 
 @app.post("/api/auth/login")
@@ -1890,15 +1921,6 @@ async def login(email: str = Form(...), password: str = Form(...)):
         _register_failed_attempt(LOGIN_ATTEMPTS, email)
         return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
 
-    is_active = row["is_active"]
-    if is_active is None:
-        is_active = 1
-
-    if not is_active:
-        conn.close()
-        _register_failed_attempt(LOGIN_ATTEMPTS, email)
-        return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
-
     valid = False
     if row["password_hash"] and row["salt"]:
         try:
@@ -1911,6 +1933,10 @@ async def login(email: str = Form(...), password: str = Form(...)):
             valid = False
 
     conn.close()
+
+    if valid and not row["is_active"]:
+        _register_failed_attempt(LOGIN_ATTEMPTS, email)
+        return RedirectResponse("/login?error=Please+verify+your+email+first.+Check+your+inbox+or+resend+below.", status_code=303)
 
     if not valid:
         _register_failed_attempt(LOGIN_ATTEMPTS, email)
@@ -1936,16 +1962,34 @@ async def signup_page(error: Optional[str] = None):
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Sign Up</title><style>{BASE_CSS}</style></head><body><div class="card"><h2>SECURE REGISTER</h2><div class="error">{error}</div><p class="hint">16+ characters · upper/lowercase · special character · 4+ digits</p><form action="/api/auth/signup" method="post"><label>EMAIL</label><input type="email" name="email" required><label>PASSWORD</label><input type="password" name="password" required><button>CREATE ACCOUNT</button></form><div class="links"><a href="/login">Log in</a></div></div></body></html>''')
 
 
+VERIFY_TOKEN_TTL = 24 * 3600
+
+
+def send_verification_email(request: Request, email: str, token: str) -> bool:
+    link = f"{str(request.base_url).rstrip('/')}/verify-email?email={urllib.parse.quote(email)}&token={token}"
+    body = (
+        f"Welcome to QUANTIFY.\n\n"
+        f"Click the link below to verify your email and activate your account:\n{link}\n\n"
+        f"This link expires in 24 hours. If you didn't sign up, you can ignore this email."
+    )
+    return send_email_notification(email, "[QUANTIFY.] Verify your email", body)
+
+
 @app.post("/api/auth/signup")
-async def signup(email: str = Form(...), password: str = Form(...)):
+async def signup(request: Request, email: str = Form(...), password: str = Form(...)):
     email=email.strip().lower()
     if not validate_email(email): return RedirectResponse("/signup?error=Invalid+email",status_code=303)
     ok,error=validate_password_policy(password)
     if not ok: return RedirectResponse("/signup?error="+urllib.parse.quote(error),status_code=303)
     password_hash,salt=make_password_hash(password)
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
     try:
         conn=db()
-        conn.execute("INSERT INTO users(email,password_hash,salt) VALUES(?,?,?)",(email,password_hash,salt))
+        conn.execute(
+            "INSERT INTO users(email,password_hash,salt,is_active,verify_token_hash,verify_expires) VALUES(?,?,?,0,?,?)",
+            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL),
+        )
         conn.commit()
         conn.close()
     except sqlite3.IntegrityError:
@@ -1954,7 +1998,49 @@ async def signup(email: str = Form(...), password: str = Form(...)):
     except Exception as e:
         print(f"[Error: {type(e).__name__}] Signup error: {e}")
         return RedirectResponse("/signup?error=Database+error",status_code=303)
-    return RedirectResponse("/login?msg=Account+created",status_code=303)
+
+    if not send_verification_email(request, email, token):
+        return RedirectResponse("/login?msg=Account+created.+Verification+email+could+not+be+sent+-+contact+support.",status_code=303)
+    return RedirectResponse("/login?msg=Account+created.+Check+your+email+to+verify+before+logging+in.",status_code=303)
+
+
+@app.get("/verify-email", response_class=HTMLResponse)
+async def verify_email(email: str, token: str):
+    email = email.strip().lower()
+    conn = db()
+    row = conn.execute("SELECT verify_token_hash,verify_expires,is_active FROM users WHERE email=?", (email,)).fetchone()
+    valid = (row and row["verify_token_hash"] and row["verify_expires"] and row["verify_expires"] > time.time()
+             and hmac.compare_digest(row["verify_token_hash"], hashlib.sha256(token.encode()).hexdigest()))
+    if not valid:
+        conn.close()
+        already = bool(row and row["is_active"])
+        if already:
+            return RedirectResponse("/login?msg=Email+already+verified.+You+can+log+in.", status_code=303)
+        return RedirectResponse("/login?error=Invalid+or+expired+verification+link", status_code=303)
+    conn.execute("UPDATE users SET is_active=1,verify_token_hash=NULL,verify_expires=NULL WHERE email=?", (email,))
+    conn.commit(); conn.close()
+    return RedirectResponse("/login?msg=Email+verified.+You+can+now+log+in.", status_code=303)
+
+
+@app.post("/api/auth/resend-verification")
+async def resend_verification(request: Request, email: str = Form(...)):
+    email = email.strip().lower()
+    if _is_locked_out(SEND_CODE_ATTEMPTS, "verify:"+email, SEND_CODE_MAX_ATTEMPTS):
+        return RedirectResponse("/login?msg=If+that+account+needs+verification,+a+new+email+was+sent.", status_code=303)
+    _register_failed_attempt(SEND_CODE_ATTEMPTS, "verify:"+email)
+    conn = db()
+    row = conn.execute("SELECT is_active FROM users WHERE email=?", (email,)).fetchone()
+    if row and not row["is_active"]:
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        conn.execute("UPDATE users SET verify_token_hash=?,verify_expires=? WHERE email=?",
+                     (token_hash, time.time()+VERIFY_TOKEN_TTL, email))
+        conn.commit()
+        conn.close()
+        send_verification_email(request, email, token)
+    else:
+        conn.close()
+    return RedirectResponse("/login?msg=If+that+account+needs+verification,+a+new+email+was+sent.", status_code=303)
 
 
 @app.get("/logout")
