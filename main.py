@@ -2057,7 +2057,30 @@ QUANTIFY. — informational and educational only, not investment advice.<br>
 # Auth pages/endpoints
 # -----------------------------------------------------------------------------
 BASE_CSS = """
-*{box-sizing:border-box}body{margin:0;background:#050807;color:#9ab8af;font:11px 'Courier New',monospace;display:flex;align-items:center;justify-content:center;height:100vh}.card{width:380px;background:#030504;border:1px solid #14221b;padding:24px;border-radius:4px}h2{color:#dff5ed;text-align:center;font-size:16px;letter-spacing:1px}label{display:block;font-size:10px;color:#436659;margin:8px 0 4px}input,button{width:100%;background:#060908;border:1px solid #1a2e25;color:#9ab8af;padding:9px;font:11px 'Courier New',monospace}button{margin-top:12px;background:#0e241b;color:#2ecc71;border-color:#2ecc71;font-weight:bold;cursor:pointer}.links{display:flex;justify-content:space-between;margin-top:14px}.links a{color:#3498db}.error{color:#e74c3c;min-height:14px}.ok{color:#2ecc71}.hint{font-size:9px;color:#567d6e}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(ellipse 800px 500px at 50% -10%,rgba(46,204,113,.10),transparent 60%) #060a08;color:#c3d6cf;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:80px 24px 24px}
+.brand{position:fixed;top:28px;left:50%;transform:translateX(-50%);font-weight:700;font-size:17px;letter-spacing:.2px;color:#eef7f3;text-decoration:none}
+.brand span{color:#2ecc71}
+.card{width:100%;max-width:400px;background:#0b100e;border:1px solid #1c2b24;padding:36px 32px;border-radius:16px;box-shadow:0 30px 60px -30px rgba(0,0,0,.6)}
+h2{color:#eef7f3;text-align:center;font-size:21px;font-weight:700;margin-bottom:6px}
+.subtitle{text-align:center;color:#7c9c90;font-size:13.5px;margin-bottom:24px;line-height:1.5}
+label{display:block;font-size:12.5px;font-weight:600;color:#9ab8af;margin:14px 0 6px}
+input{width:100%;background:#0f1613;border:1.5px solid #223229;color:#eef7f3;padding:12px 14px;font-size:14.5px;border-radius:9px;transition:border-color .15s;font-family:inherit}
+input:focus{outline:none;border-color:#2ecc71}
+button{width:100%;margin-top:20px;background:linear-gradient(135deg,#2ecc71,#22c58f);color:#04150c;border:none;padding:13px;font-size:14.5px;font-weight:700;border-radius:9px;cursor:pointer;transition:opacity .15s,transform .1s;font-family:inherit}
+button:hover{opacity:.9}
+button:active{transform:scale(.98)}
+.links{display:flex;justify-content:space-between;margin-top:22px;font-size:13.5px}
+.links a{color:#4db8ff;text-decoration:none}
+.links a:hover{text-decoration:underline}
+.error{color:#ff6b6b;font-size:13px;min-height:0;margin-bottom:6px}
+.ok{color:#2ecc71;font-size:13px;margin-bottom:6px}
+.hint{font-size:12.5px;color:#6b8a7e;margin-top:-8px;margin-bottom:16px}
+details{margin-top:20px;font-size:13px;color:#7c9c90;text-align:center}
+details summary{cursor:pointer;color:#4db8ff}
+details form{margin-top:12px;text-align:left}
+details input{margin-bottom:10px}
+details button{margin-top:6px;padding:11px}
 """
 
 
@@ -2072,7 +2095,7 @@ async def landing(request: Request):
 async def login_page(error: Optional[str] = None, msg: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     msg = html_lib.escape(msg) if msg else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Login</title><style>{BASE_CSS}details{{margin-top:14px;font-size:10px;color:#567d6e}}details summary{{cursor:pointer;color:#3498db}}details form{{margin-top:8px}}details input{{margin-bottom:6px}}details button{{margin-top:4px;padding:6px}}</style></head><body><div class="card"><h2>QUANTIFY. ACCESS</h2><div class="error">{error}</div><div class="ok">{msg}</div><form action="/api/auth/login" method="post"><label>EMAIL</label><input type="email" name="email" required><label>PASSWORD</label><input type="password" name="password" required><button>LOGIN TO TERMINAL</button></form><div class="links"><a href="/signup">Sign up</a><a href="/forgot-password">Forgot password</a></div><details><summary>Didn't get a verification email?</summary><form action="/api/auth/resend-verification" method="post"><label>EMAIL</label><input type="email" name="email" required><button>RESEND VERIFICATION EMAIL</button></form></details></div></body></html>''')
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Login</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Welcome back</h2><div class="subtitle">Log in to see today's detected tickers.</div><div class="error">{error}</div><div class="ok">{msg}</div><form action="/api/auth/login" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><button>Log in</button></form><div class="links"><a href="/signup">Create an account</a><a href="/forgot-password">Forgot password?</a></div><details><summary>Didn't get a verification email?</summary><form action="/api/auth/resend-verification" method="post"><label>Email</label><input type="email" name="email" required><button>Resend verification email</button></form></details></div></body></html>''')
 
 
 @app.post("/api/auth/login")
@@ -2137,7 +2160,7 @@ async def login(email: str = Form(...), password: str = Form(...)):
 @app.get("/signup", response_class=HTMLResponse)
 async def signup_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Sign Up</title><style>{BASE_CSS}</style></head><body><div class="card"><h2>SECURE REGISTER</h2><div class="error">{error}</div><p class="hint">10+ characters · at least 1 letter and 1 number</p><form action="/api/auth/signup" method="post"><label>EMAIL</label><input type="email" name="email" required><label>PASSWORD</label><input type="password" name="password" required><button>CREATE ACCOUNT</button></form><div class="links"><a href="/login">Log in</a></div></div></body></html>''')
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Sign Up</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Create your account</h2><div class="subtitle">Free while in early access — no credit card required.</div><div class="error">{error}</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><div class="links"><a href="/login">Already have an account? Log in</a></div></div></body></html>''')
 
 
 VERIFY_TOKEN_TTL = 24 * 3600
@@ -2242,7 +2265,7 @@ async def logout(request: Request):
 @app.get("/forgot-password", response_class=HTMLResponse)
 async def forgot_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Password Recovery</title><style>{BASE_CSS}</style></head><body><div class="card"><h2>PASSWORD RECOVERY</h2><div class="error">{error}</div><form action="/api/auth/send-code" method="post"><label>EMAIL</label><input type="email" name="email" required><button>SEND CODE</button></form><div class="links"><a href="/login">Log in</a></div></div></body></html>''')
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Password Recovery</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Reset your password</h2><div class="subtitle">Enter your email and we'll send you a 6-digit code.</div><div class="error">{error}</div><form action="/api/auth/send-code" method="post"><label>Email</label><input type="email" name="email" required><button>Send code</button></form><div class="links"><a href="/login">Back to log in</a></div></div></body></html>''')
 
 
 @app.post("/api/auth/send-code")
@@ -2273,7 +2296,7 @@ async def send_code(email: str = Form(...)):
 async def reset_page(email: str, error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     email = html_lib.escape(email)
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Reset Password</title><style>{BASE_CSS}</style></head><body><div class="card"><h2>RESET CREDENTIALS</h2><div class="error">{error}</div><form action="/api/auth/verify-and-reset" method="post"><input type="hidden" name="email" value="{email}"><label>6-DIGIT CODE</label><input name="code" required maxlength="6"><label>NEW PASSWORD</label><input type="password" name="new_password" required><button>RESET PASSWORD</button></form></div></body></html>''')
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Reset Password</title><style>{BASE_CSS}</style></head><body><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="card"><h2>Choose a new password</h2><div class="subtitle">Enter the code we emailed you, plus a new password.</div><div class="error">{error}</div><form action="/api/auth/verify-and-reset" method="post"><input type="hidden" name="email" value="{email}"><label>6-digit code</label><input name="code" required maxlength="6"><label>New password</label><input type="password" name="new_password" required><button>Reset password</button></form></div></body></html>''')
 
 
 @app.post("/api/auth/verify-and-reset")
