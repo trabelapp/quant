@@ -8,6 +8,8 @@ services:
     envVars:
       - key: HOST
         value: 0.0.0.0
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: AI_BASE_URL
         sync: false
       - key: AI_MODEL
