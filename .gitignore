@@ -11,3 +11,5 @@ users.db.bak_*
 venv/
 .claude/
 users.json
+.DS_Store
+.streamlit/
