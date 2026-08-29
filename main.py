@@ -1482,10 +1482,23 @@ async def api_scan(request: Request):
         WHERE scan_date=? AND quant_pass=1 ORDER BY alpha_score DESC
     """, (today_str(),)).fetchall()
     conn.close()
+    signals = []
+    for r in rows:
+        d = dict(r) | {"status": "ACTIVE DATA"}
+        cached = CACHE["historical"].get(f"single:{d['ticker']}:1d")
+        sparkline = []
+        if cached is not None:
+            try:
+                closes = normalize_series(cached["data"], "Close").dropna().tail(15)
+                sparkline = [round(float(v), 2) for v in closes]
+            except Exception:
+                sparkline = []
+        d["sparkline"] = sparkline
+        signals.append(d)
     return {"scanned_count": scanned_count, "universe_count": len(UNIVERSE),
             "quant_pass_count": len(rows),
             "universe_status": UNIVERSE_STATUS, "cache": dict(CACHE_STATUS),
-            "signals": [dict(r) | {"status": "ACTIVE DATA"} for r in rows]}
+            "signals": signals}
 
 
 @app.get("/api/heatmap")
@@ -2509,7 +2522,8 @@ let ticker='AAPL',tf='1d',chart,candle,volume,smaLines={{}},idxCharts={{}},bbLin
 function showView(v){{currentView=v;document.getElementById('tabList').classList.toggle('active',v==='list');document.getElementById('tabHeatmap').classList.toggle('active',v==='heatmap');document.getElementById('sortbar').style.display=v==='list'?'flex':'none';document.getElementById('list').style.display=v==='list'?'block':'none';document.getElementById('heatmap').style.display=v==='heatmap'?'grid':'none';if(v==='heatmap')loadHeatmap()}}
 function heatColor(chg){{if(chg==null)return '#333';const c=Math.max(-5,Math.min(5,chg));const t=(c+5)/10;const r=Math.round(231+(46-231)*t),g=Math.round(76+(204-76)*t),b=Math.round(60+(113-60)*t);return `rgb(${{r}},${{g}},${{b}})`}}
 async function loadHeatmap(){{const el=document.getElementById('heatmap');const r=await fetch('/api/heatmap');const d=await r.json();if(!d.tiles?.length){{el.innerHTML='<div class="notice">No scan data yet.</div>';return}}el.innerHTML=d.tiles.map(t=>`<div class="heat-tile" style="background:${{heatColor(t.change_pct)}}" title="${{t.ticker}} · ${{t.change_pct??'-'}}% · Alpha ${{t.alpha_score??'-'}}" onclick="showView('list');loadTicker('${{t.ticker}}')">${{t.ticker}}</div>`).join('')}}
-function renderList(){{if(!lastSignals.length)return;const key=document.getElementById('sortKey').value;const sorted=[...lastSignals].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));document.getElementById('list').innerHTML=sorted.map(s=>`<div class="item" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span>${{s.price}} · ${{s.change_pct}}%<br><small>${{s.universe||''}} · Alpha ${{s.alpha_score}}${{s.timing_verdict?' · <span class="badge '+verdictClass(s.timing_verdict)+'">'+s.timing_verdict+'</span>':''}}</small></span></div>`).join('')}}
+function sparklineSVG(arr){{if(!arr||arr.length<2)return '';const w=48,h=18;const min=Math.min(...arr),max=Math.max(...arr),range=(max-min)||1;const pts=arr.map((v,i)=>`${{(i/(arr.length-1)*w).toFixed(1)}},${{(h-((v-min)/range*h)).toFixed(1)}}`).join(' ');const color=arr[arr.length-1]>=arr[0]?'#2ecc71':'#e74c3c';return `<svg width="${{w}}" height="${{h}}" style="vertical-align:middle;flex-shrink:0"><polyline points="${{pts}}" fill="none" stroke="${{color}}" stroke-width="1.5"/></svg>`}}
+function renderList(){{if(!lastSignals.length)return;const key=document.getElementById('sortKey').value;const sorted=[...lastSignals].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));document.getElementById('list').innerHTML=sorted.map(s=>`<div class="item" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span style="display:flex;align-items:center;gap:6px">${{sparklineSVG(s.sparkline)}}<span>${{s.price}} · ${{s.change_pct}}%<br><small>${{s.universe||''}} · Alpha ${{s.alpha_score}}${{s.timing_verdict?' · <span class="badge '+verdictClass(s.timing_verdict)+'">'+s.timing_verdict+'</span>':''}}</small></span></span></div>`).join('')}}
 function init(){{const c=document.getElementById('chart');chart=LightweightCharts.createChart(c,{{width:c.clientWidth,height:c.clientHeight,layout:{{background:{{type:'solid',color:'#030504'}},textColor:'#9ab8af'}},grid:{{vertLines:{{color:'#0c1712'}},horzLines:{{color:'#0c1712'}}}},timeScale:{{timeVisible:true}}}});candle=chart.addCandlestickSeries({{upColor:'#2ecc71',downColor:'#e74c3c',borderUpColor:'#2ecc71',borderDownColor:'#e74c3c',wickUpColor:'#2ecc71',wickDownColor:'#e74c3c'}});volume=chart.addHistogramSeries({{priceFormat:{{type:'volume'}},priceScaleId:''}});volume.priceScale().applyOptions({{scaleMargins:{{top:.8,bottom:0}}}});smaLines.sma20=chart.addLineSeries({{color:'#3498db',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma50=chart.addLineSeries({{color:'#f39c12',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma200=chart.addLineSeries({{color:'#e74c3c',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});window.onresize=()=>{{chart.resize(c.clientWidth,c.clientHeight);Object.entries(idxCharts).forEach(([k,ic])=>{{const el=document.getElementById('idx-'+k);if(el)ic.resize(el.clientWidth,el.clientHeight)}})}};['sp500','ndx'].forEach(k=>{{const el=document.getElementById('idx-'+k);const ic=LightweightCharts.createChart(el,{{width:el.clientWidth,height:el.clientHeight,layout:{{background:{{type:'solid',color:'#030504'}},textColor:'#9ab8af',fontSize:9}},grid:{{vertLines:{{visible:false}},horzLines:{{visible:false}}}},rightPriceScale:{{visible:false}},timeScale:{{visible:false}},handleScroll:false,handleScale:false}});idxCharts[k]=ic;idxCharts[k+'_line']=ic.addLineSeries({{color:'#2ecc71',lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}})}})}}
 async function loadIndices(){{try{{const r=await fetch('/api/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);const el=document.getElementById('idx-'+k+'-val');if(el)el.innerHTML=`${{last}} <span style="color:${{chg>=0?'#2ecc71':'#e74c3c'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
 function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':''}}
