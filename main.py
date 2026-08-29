@@ -100,6 +100,8 @@ AI_STATUS = {"running": False, "processed": 0, "total": 0, "ready": 0, "started_
 AI_TASK = None
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+MARKET_SCAN_INTERVAL_SECONDS = 30 * 60
 
 LOGIN_ATTEMPTS = {}
 LOGIN_MAX_ATTEMPTS = 5
@@ -1220,12 +1222,26 @@ async def scheduler():
         await asyncio.sleep(3600)
 
 
+async def market_scan_scheduler():
+    while True:
+        await asyncio.sleep(MARKET_SCAN_INTERVAL_SECONDS)
+        if BATCH_LOCK.locked():
+            print("[scheduler] Skipping scheduled market scan — a scan is already running.", flush=True)
+            continue
+        try:
+            print("[scheduler] Starting scheduled 30-minute market scan.", flush=True)
+            await run_eod_batch_process()
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Scheduled market scan failed: {exc}", flush=True)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
     load_universe_cache()
     asyncio.create_task(refresh_universe())
     asyncio.create_task(scheduler())
+    asyncio.create_task(market_scan_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
@@ -1498,9 +1514,13 @@ async def api_market_indices(request: Request):
     return {"sp500": sp500, "nasdaq100": nasdaq100}
 
 
+def _require_admin_token(token: Optional[str]):
+    return bool(ADMIN_TOKEN) and bool(token) and hmac.compare_digest(token, ADMIN_TOKEN)
+
+
 @app.get("/api/admin/run-batch")
-async def api_run_batch(request: Request):
-    if not get_logged_in_user(request):
+async def api_run_batch(request: Request, token: Optional[str] = None):
+    if not _require_admin_token(token):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     if not UNIVERSE:
         ready = await refresh_universe()
@@ -1516,8 +1536,8 @@ async def api_run_batch(request: Request):
 
 
 @app.get("/api/admin/ai-status")
-async def api_ai_status(request: Request):
-    if not get_logged_in_user(request):
+async def api_ai_status(request: Request, token: Optional[str] = None):
+    if not _require_admin_token(token):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return dict(AI_STATUS)
 
@@ -1576,8 +1596,8 @@ async def api_cache_status(request: Request):
 
 
 @app.get("/api/admin/batch-status")
-async def api_batch_status(request: Request):
-    if not get_logged_in_user(request):
+async def api_batch_status(request: Request, token: Optional[str] = None):
+    if not _require_admin_token(token):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return dict(BATCH_STATUS)
 
@@ -2466,7 +2486,7 @@ async def dashboard(request: Request):
 html[data-theme="light"]{{--bg:#f4f7f5;--panel:#ffffff;--panel2:#eef2ef;--border:#d7e0da;--border2:#e2e8e4;--text:#2c3e37;--head:#0d2318;--dim:#5c7266;--green:#1e8449;--red:#c0392b;--orange:#b9770e;--blue:#2471a3;--grid-line:#e2e8e4}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:11px 'Courier New',monospace;margin:0;padding:8px}}header,.panel{{background:var(--panel);border:1px solid var(--border)}}header{{padding:8px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}h1{{font-size:13px;color:var(--head);margin:0}}button,input,select{{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:5px 8px;font:11px 'Courier New',monospace}}button{{color:var(--green);border-color:var(--green);background:var(--panel2);cursor:pointer}}.grid{{display:grid;grid-template-columns:310px 1fr 340px;gap:8px;height:calc(100vh - 60px)}}.panel{{padding:10px;overflow:hidden;display:flex;flex-direction:column}}h3{{font-size:11px;color:var(--dim);border-bottom:1px solid var(--border);padding-bottom:5px;margin:0 0 8px}}.list,.scroll{{overflow:auto;flex:1}}.item{{padding:7px;border-bottom:1px solid var(--border2);cursor:pointer;display:flex;justify-content:space-between}}.item:hover{{background:var(--panel2)}}.chart{{flex:1;min-height:220px}}.idx-row{{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}}.idx-box{{background:var(--panel2);border:1px solid var(--border);padding:6px}}.idx-label{{font-size:9px;color:var(--dim);margin-bottom:3px;display:flex;justify-content:space-between}}.idx-chart{{height:60px}}.metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}}.metric{{background:var(--panel2);border:1px solid var(--border);padding:7px;text-align:center}}.val{{color:var(--green);font-weight:bold;margin-top:3px}}.ratio{{height:6px;background:var(--border);margin-top:6px;display:flex}}.notice{{padding:8px;background:var(--panel2);border:1px solid var(--border);margin-bottom:8px;line-height:1.5}}a{{color:var(--blue)}}
 .badge{{padding:2px 6px;border-radius:2px;font-weight:bold;display:inline-block}}.badge-ok{{background:var(--panel2);color:var(--green);border:1px solid var(--green)}}.badge-warn{{background:var(--panel2);color:var(--orange);border:1px solid var(--orange)}}.badge-danger{{background:var(--panel2);color:var(--red);border:1px solid var(--red)}}.section{{margin-bottom:10px}}.section b{{color:var(--head);display:block;margin-bottom:2px}}
-</style></head><body><header><h1>QUANTIFY. TERMINAL · <span style="color:#2ecc71">{user}</span></h1><div><select id="mode"><option>Long-Term Momentum Pullback</option><option>Short-Term Volatility Breakout</option><option>Institutional Flow Leaders</option></select><button onclick="runBatch()">⚡ RESCAN</button><button onclick="location='/portfolio'">PORTFOLIO</button><button onclick="location='/settings'">SETTINGS</button><button onclick="location='/logout'" style="color:#e74c3c;border-color:#e74c3c">LOGOUT</button></div></header><div class="grid"><section class="panel"><h3>MARKET UNIVERSE SCANNER <span id="ucount"></span></h3><input id="tickerInput" placeholder="Ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="list" id="list">Preparing constituent list...</div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center"><h3 id="title" style="border:0">AAPL · TECHNICAL CHART</h3><div><input id="target" type="number" placeholder="Target $" style="width:90px"><button onclick="setAlert()">🔔</button><button onclick="savePortfolio()">💾 SAVE</button><button onclick="changeTF('1h')">1H</button><button onclick="changeTF('1d')">1D</button><button onclick="changeTF('1wk')">1W</button><button onclick="changeTF('1mo')">1M</button></div></div><div id="chart" class="chart"></div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric">RSI / MACD<div id="rsi" class="val">-</div></div><div class="metric">52W HIGH<div id="high52" class="val">-</div></div><div class="metric">52W LOW<div id="low52" class="val">-</div></div><div class="metric">TREND<div id="trend" class="val">-</div></div></div><div class="notice">Short interest: <b id="short">No data</b><div class="ratio"><div id="longbar" style="background:#2ecc71"></div><div id="shortbar" style="background:#e74c3c"></div></div></div></section><section class="panel"><h3>AI QUANT REPORT <small style="color:#436659">(for informational purposes only, not investment advice)</small></h3><div id="verdict" style="display:none;margin-bottom:8px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><h3 style="margin-top:10px">NEWS</h3><div id="news" class="scroll">Waiting for news...</div></section></div><script>
+</style></head><body><header><h1>QUANTIFY. TERMINAL · <span style="color:#2ecc71">{user}</span></h1><div><select id="mode"><option>Long-Term Momentum Pullback</option><option>Short-Term Volatility Breakout</option><option>Institutional Flow Leaders</option></select><button onclick="location='/portfolio'">PORTFOLIO</button><button onclick="location='/settings'">SETTINGS</button><button onclick="location='/logout'" style="color:#e74c3c;border-color:#e74c3c">LOGOUT</button></div></header><div class="grid"><section class="panel"><h3>MARKET UNIVERSE SCANNER <span id="ucount"></span> <small style="color:#436659;font-weight:normal">(auto-updates every 30 min)</small></h3><input id="tickerInput" placeholder="Ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="list" id="list">Preparing constituent list...</div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center"><h3 id="title" style="border:0">AAPL · TECHNICAL CHART</h3><div><input id="target" type="number" placeholder="Target $" style="width:90px"><button onclick="setAlert()">🔔</button><button onclick="savePortfolio()">💾 SAVE</button><button onclick="changeTF('1h')">1H</button><button onclick="changeTF('1d')">1D</button><button onclick="changeTF('1wk')">1W</button><button onclick="changeTF('1mo')">1M</button></div></div><div id="chart" class="chart"></div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric">RSI / MACD<div id="rsi" class="val">-</div></div><div class="metric">52W HIGH<div id="high52" class="val">-</div></div><div class="metric">52W LOW<div id="low52" class="val">-</div></div><div class="metric">TREND<div id="trend" class="val">-</div></div></div><div class="notice">Short interest: <b id="short">No data</b><div class="ratio"><div id="longbar" style="background:#2ecc71"></div><div id="shortbar" style="background:#e74c3c"></div></div></div></section><section class="panel"><h3>AI QUANT REPORT <small style="color:#436659">(for informational purposes only, not investment advice)</small></h3><div id="verdict" style="display:none;margin-bottom:8px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><h3 style="margin-top:10px">NEWS</h3><div id="news" class="scroll">Waiting for news...</div></section></div><script>
 const USER_LANGUAGE='{pref_language}';
 document.getElementById('mode').value='{pref_default_mode}';
 let ticker='AAPL',tf='1d',chart,candle,volume,smaLines={{}},idxCharts={{}};
@@ -2474,8 +2494,7 @@ function init(){{const c=document.getElementById('chart');chart=LightweightChart
 async function loadIndices(){{try{{const r=await fetch('/api/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);const el=document.getElementById('idx-'+k+'-val');if(el)el.innerHTML=`${{last}} <span style="color:${{chg>=0?'#2ecc71':'#e74c3c'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
 function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':''}}
 async function autoScanOnOpen(){{try{{await fetch('/api/auto-scan',{{method:'POST'}});}}catch(e){{console.warn('auto-scan trigger failed',e)}};scan()}}
-async function scan(){{const r=await fetch('/api/scan');const d=await r.json();document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:'';if(!d.signals?.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today.':(ready?'No scan data saved for today. Run RESCAN.':(err?'Could not prepare constituent data. Try RESCAN again.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';return}}document.getElementById('list').innerHTML=d.signals.map(s=>`<div class="item" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span>${{s.price}} · ${{s.change_pct}}%<br><small>${{s.universe||''}} · Alpha ${{s.alpha_score}}${{s.timing_verdict?' · <span class="badge '+verdictClass(s.timing_verdict)+'">'+s.timing_verdict+'</span>':''}}</small></span></div>`).join('');loadTicker(d.signals[0].ticker)}}
-async function runBatch(){{document.getElementById('list').innerHTML='Checking constituents and preparing real market data...';const r=await fetch('/api/admin/run-batch');const d=await r.json();if(!r.ok){{document.getElementById('list').innerHTML='<div class="notice">'+(d.message||'Could not start the batch.')+'</div>';return}}pollBatch()}} async function pollBatch(){{const r=await fetch('/api/admin/batch-status');const d=await r.json();const a=await fetch('/api/admin/ai-status').then(x=>x.json());document.getElementById('list').innerHTML=`<div class="notice">MARKET: ${{d.processed||0}} / ${{d.total||0}}<br>Saved: ${{d.saved||0}}<br>AI CACHE(QUANT PASS): ${{a.processed||0}} / ${{a.total||0}} · READY ${{a.ready||0}}<br>${{d.running?'Collecting market data...':(a.running&&a.total>0?'Generating AI cache for quant-passing tickers...':'Cache ready')}}</div>`;if(d.running||(a.running&&a.total>0))setTimeout(pollBatch,1500);else if(d.error){{return}}else scan()}}
+async function scan(){{const r=await fetch('/api/scan');const d=await r.json();document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:'';if(!d.signals?.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';return}}document.getElementById('list').innerHTML=d.signals.map(s=>`<div class="item" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span>${{s.price}} · ${{s.change_pct}}%<br><small>${{s.universe||''}} · Alpha ${{s.alpha_score}}${{s.timing_verdict?' · <span class="badge '+verdictClass(s.timing_verdict)+'">'+s.timing_verdict+'</span>':''}}</small></span></div>`).join('');loadTicker(d.signals[0].ticker)}}
 async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker+' · TECHNICAL CHART';const r=await fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const d=await r.json();if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('short').innerText=d.fast.short_percent==null?'No data':d.fast.short_percent+'%';document.getElementById('longbar').style.width=(d.fast.long_ratio??0)+'%';document.getElementById('shortbar').style.width=(d.fast.short_ratio??0)+'%';const a=await fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(document.getElementById('mode').value)}}&language=${{USER_LANGUAGE}}`);const x=await a.json();const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Timing score ${{x.ai.timing_score??'-'}} / 100`}}else{{vEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=x.ai?.ai_report||(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':'AI analysis is unavailable.')}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}
 async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return alert('Enter a target price.');const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();alert(d.message||d.error)}}async function savePortfolio(){{const f=new FormData();f.append('ticker',ticker);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();alert(d.message||d.error)}}function changeTF(x){{tf=x;loadTicker(ticker)}}window.onload=()=>{{init();autoScanOnOpen();loadIndices()}};
 </script></body></html>''')
