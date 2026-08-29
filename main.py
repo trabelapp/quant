@@ -41,6 +41,7 @@ SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 
 # Constituent refresh is deliberately infrequent. Market data is fetched in
 # small batches with pauses, not as hundreds of simultaneous requests.
@@ -364,16 +365,12 @@ def verify_password(password: str, stored_hash: str, salt_hex: str) -> bool:
 
 
 def validate_password_policy(password: str):
-    if len(password) < 16:
-        return False, "Password must be at least 16 characters long."
-    if not re.search(r"[A-Z]", password):
-        return False, "Password must include at least 1 uppercase letter."
-    if not re.search(r"[a-z]", password):
-        return False, "Password must include at least 1 lowercase letter."
-    if len(re.findall(r"[0-9]", password)) < 4:
-        return False, "Password must include at least 4 digits."
-    if not re.search(r"[^A-Za-z0-9]", password):
-        return False, "Password must include at least 1 special character."
+    if len(password) < 10:
+        return False, "Password must be at least 10 characters long."
+    if not re.search(r"[A-Za-z]", password):
+        return False, "Password must include at least 1 letter."
+    if not re.search(r"[0-9]", password):
+        return False, "Password must include at least 1 number."
     return True, ""
 
 
@@ -1227,10 +1224,32 @@ async def startup():
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
 
-def send_email_notification(to_email, subject, body, max_retries=3):
-    if not SENDER_EMAIL or not SENDER_PASSWORD:
-        print(f"[Error: EmailNotConfigured] SENDER_EMAIL/SENDER_PASSWORD not set — could not send '{subject}' to {to_email}")
-        return False
+def _send_via_sendgrid(to_email, subject, body, max_retries=3):
+    payload = {
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": SENDER_EMAIL},
+        "subject": subject,
+        "content": [{"type": "text/plain", "value": body}],
+    }
+    headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post("https://api.sendgrid.com/v3/mail/send", json=payload, headers=headers, timeout=10)
+            if resp.status_code in (200, 201, 202):
+                return True
+            if resp.status_code in (401, 403):
+                print(f"[Error: SendGridAuthError] SendGrid rejected the request ({resp.status_code}): {resp.text[:300]}")
+                return False
+            print(f"[Error: SendGridError] Unexpected response {resp.status_code}: {resp.text[:300]}")
+        except Exception as exc:
+            print(f"[Retry {attempt + 1}/{max_retries}] SendGrid send failed ({type(exc).__name__}): {exc}")
+        if attempt < max_retries - 1:
+            time.sleep(2.0 * (attempt + 1))
+    print(f"[Error: SendGridError] Email send error after {max_retries} attempts (to {to_email})")
+    return False
+
+
+def _send_via_smtp(to_email, subject, body, max_retries=3):
     msg = MIMEMultipart(); msg["From"] = SENDER_EMAIL; msg["To"] = to_email; msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain", "utf-8"))
     for attempt in range(max_retries):
@@ -1252,9 +1271,32 @@ def send_email_notification(to_email, subject, body, max_retries=3):
     return False
 
 
-def check_email_config():
+def send_email_notification(to_email, subject, body, max_retries=3):
+    if SENDGRID_API_KEY and SENDER_EMAIL:
+        return _send_via_sendgrid(to_email, subject, body, max_retries)
     if not SENDER_EMAIL or not SENDER_PASSWORD:
-        print("[email] SENDER_EMAIL/SENDER_PASSWORD not set — verification, password reset, and alert emails will not be sent.")
+        print(f"[Error: EmailNotConfigured] No email backend configured — could not send '{subject}' to {to_email}")
+        return False
+    return _send_via_smtp(to_email, subject, body, max_retries)
+
+
+def check_email_config():
+    if SENDGRID_API_KEY and SENDER_EMAIL:
+        try:
+            resp = requests.get("https://api.sendgrid.com/v3/verified_senders", headers={"Authorization": f"Bearer {SENDGRID_API_KEY}"}, timeout=10)
+            if resp.status_code == 200:
+                senders = [s.get("from_email") for s in resp.json().get("results", [])]
+                if SENDER_EMAIL in senders:
+                    print(f"[email] SendGrid configured — sending as verified sender {SENDER_EMAIL}.")
+                else:
+                    print(f"[email] SendGrid API key is valid but {SENDER_EMAIL} is not a verified sender yet — emails will be rejected until you verify it in SendGrid.")
+            else:
+                print(f"[email] SendGrid API key check failed ({resp.status_code}): {resp.text[:200]}")
+        except Exception as exc:
+            print(f"[email] SendGrid connectivity check failed ({type(exc).__name__}): {exc}")
+        return
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        print("[email] No email backend configured (SENDGRID_API_KEY, or SENDER_EMAIL/SENDER_PASSWORD) — verification, password reset, and alert emails will not be sent.")
         return
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
@@ -1785,7 +1827,7 @@ LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked</title>
 <meta name="description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
 <style>
-:root{--bg:#050807;--panel:#030504;--panel2:#060908;--border:#14221b;--text:#9ab8af;--head:#dff5ed;--dim:#436659;--dim2:#567d6e;--green:#2ecc71;--red:#e74c3c;--orange:#f39c12;--blue:#3498db}
+:root{--bg:#050807;--panel:#030504;--panel2:#081310;--border:#14221b;--text:#9ab8af;--head:#dff5ed;--dim:#436659;--dim2:#567d6e;--green:#2ecc71;--red:#e74c3c;--orange:#f39c12;--blue:#3498db;--teal:#22d3c4}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font:15px/1.6 'Courier New',monospace;-webkit-font-smoothing:antialiased}
 a{color:var(--blue);text-decoration:none}
@@ -1800,7 +1842,8 @@ header{border-bottom:1px solid var(--border);position:sticky;top:0;background:#0
 .btn:hover{background:#123326}
 .btn-ghost{border-color:var(--border);color:var(--text);background:transparent}
 .btn-ghost:hover{border-color:var(--dim2)}
-.hero{padding:90px 24px 70px;text-align:center}
+.hero{padding:90px 24px 70px;text-align:center;background:radial-gradient(ellipse 900px 500px at 50% -10%,rgba(46,204,113,.10),transparent 65%)}
+section:nth-of-type(even){background:var(--panel2)}
 .eyebrow{display:inline-block;font-size:12px;color:var(--orange);border:1px solid #3a2a08;background:#14100a;padding:5px 12px;letter-spacing:.5px;margin-bottom:22px}
 h1{color:var(--head);font-size:42px;line-height:1.25;letter-spacing:-.5px;max-width:820px;margin:0 auto 20px}
 h1 .hl{color:var(--green)}
@@ -1828,27 +1871,28 @@ section{padding:70px 24px;border-top:1px solid var(--border)}
 .section-head h2{color:var(--head);font-size:28px;margin-bottom:12px}
 .section-head p{color:var(--dim2);font-size:15px}
 .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:1000px;margin:0 auto}
-.step{background:var(--panel);border:1px solid var(--border);padding:26px}
+.step{background:var(--panel);border:1px solid var(--border);border-left:2px solid var(--green);padding:26px}
+.step:nth-child(2){border-left-color:var(--blue)}
+.step:nth-child(3){border-left-color:var(--teal)}
 .step .num{color:var(--green);font-size:12px;font-weight:bold;letter-spacing:1px;margin-bottom:14px}
+.step:nth-child(2) .num{color:var(--blue)}
+.step:nth-child(3) .num{color:var(--teal)}
 .step h3{color:var(--head);font-size:16px;margin-bottom:10px}
 .step p{color:var(--dim2);font-size:13.5px;line-height:1.7}
-.features{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);max-width:1000px;margin:0 auto;border:1px solid var(--border)}
+.features{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--border);max-width:760px;margin:0 auto;border:1px solid var(--border)}
 .feature{background:var(--panel);padding:26px}
 .feature .icon{color:var(--green);font-size:20px;margin-bottom:12px}
+.feature:nth-child(4n+2) .icon{color:var(--blue)}
+.feature:nth-child(4n+3) .icon{color:var(--teal)}
+.feature:nth-child(4n+4) .icon{color:var(--orange)}
 .feature h4{color:var(--head);font-size:14.5px;margin-bottom:8px}
 .feature p{color:var(--dim2);font-size:13px;line-height:1.65}
-.trust{max-width:820px;margin:0 auto;background:var(--panel);border:1px solid var(--border);padding:36px}
-.trust h3{color:var(--head);font-size:16px;margin-bottom:14px}
-.trust ul{list-style:none}
-.trust li{color:var(--text);font-size:13.5px;padding:9px 0 9px 22px;position:relative;border-bottom:1px solid #0c1712}
-.trust li:last-child{border-bottom:none}
-.trust li:before{content:"—";position:absolute;left:0;color:var(--green)}
+.final-wrap{text-align:center;max-width:820px;margin:0 auto 40px}
+.final-wrap h2{color:var(--head);font-size:30px;margin-bottom:14px}
+.final-wrap p{color:var(--dim2);margin-bottom:30px}
 .disclaimer{max-width:820px;margin:0 auto;background:#0a0705;border:1px solid #2a2008;padding:22px 26px}
 .disclaimer .kicker{color:var(--orange);font-size:11px;letter-spacing:1px;margin-bottom:10px;font-weight:bold}
 .disclaimer p{color:var(--dim2);font-size:12.5px;line-height:1.7}
-.final{text-align:center;padding:90px 24px}
-.final h2{color:var(--head);font-size:30px;margin-bottom:14px}
-.final p{color:var(--dim2);margin-bottom:30px}
 footer{border-top:1px solid var(--border);padding:34px 24px;text-align:center;color:var(--dim);font-size:12px}
 footer a{color:var(--dim2)}
 .btn{white-space:nowrap}
@@ -1883,12 +1927,12 @@ footer a{color:var(--dim2)}
 <section class="hero" style="border-top:none">
 <div class="eyebrow">EARLY ACCESS · FREE WHILE IN BETA</div>
 <h1>Stop scanning <span class="hl">518</span> stocks by hand.<br>See the ones that actually <span class="hl">cleared the bar</span>.</h1>
-<p class="sub">QUANTIFY runs a quantitative scan across the S&amp;P 500 and Nasdaq-100 every day, then makes an AI double-check every hit for blow-off-top and dead-cat-bounce risk — before it ever reaches your screen.</p>
+<p class="sub">A daily quant scan of the S&amp;P 500 and Nasdaq-100, double-checked by AI for blow-off-top and dead-cat-bounce risk before it reaches your screen.</p>
 <div class="cta-row">
 <a class="btn" href="/signup">Get Started Free</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
 </div>
-<div class="cta-note">No credit card. Real market data from day one.</div>
+<div class="cta-note">No credit card. Same data for every subscriber — never personalized picks.</div>
 
 <div class="mock">
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
@@ -1938,39 +1982,24 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <h2>Built on real data, not vibes</h2>
 </div>
 <div class="features">
-<div class="feature"><div class="icon">◆</div><h4>Live market data</h4><p>Real prices and volume from the actual market — no simulated or backfilled data, ever.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>Daily automated scan</h4><p>The full S&amp;P 500 + Nasdaq-100 universe is rescanned automatically, so you're not the one doing the legwork.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>Plain-language AI review</h4><p>Every detected ticker gets a written quant review, supply/demand read, and explicit risk check — in plain English.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>52-week &amp; trend context</h4><p>Distance from the 52-week high/low and 200-day trend, so you can see where a stock actually sits.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>Price alerts</h4><p>Set a target price on any ticker and get notified by email when it's reached.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>Live news feed</h4><p>Recent headlines pulled per ticker, right next to the chart — no extra tab-switching.</p></div>
+<div class="feature"><div class="icon">◆</div><h4>Live market data</h4><p>Real prices and volume from the actual market — no simulated or backfilled data.</p></div>
+<div class="feature"><div class="icon">◆</div><h4>Plain-language AI review</h4><p>Every detected ticker gets a written quant review and explicit risk check, in plain English.</p></div>
+<div class="feature"><div class="icon">◆</div><h4>52-week &amp; trend context</h4><p>Distance from the 52-week high/low and 200-day trend, so you see where a stock actually sits.</p></div>
+<div class="feature"><div class="icon">◆</div><h4>Price alerts &amp; news</h4><p>Set a target price and get emailed when it's hit, with live headlines next to the chart.</p></div>
 </div>
 </section>
 
 <section>
-<div class="trust">
-<h3>Why this looks different from most stock-tip sites</h3>
-<ul>
-<li>The scan is math-first: a ticker is flagged by its score, not by a person's opinion.</li>
-<li>Every flagged ticker is specifically screened for blow-off-top and dead-cat-bounce risk before you ever see it.</li>
-<li>Every subscriber sees the same data for the same ticker on the same day — nothing here is personalized trading advice.</li>
-<li>We show you the reasoning, not just a verdict — every score comes with a written explanation.</li>
-</ul>
+<div class="final-wrap">
+<h2>See today's detected tickers.</h2>
+<p>Free during early access. Takes under a minute to sign up.</p>
+<a class="btn" href="/signup">Get Started Free</a>
 </div>
-</section>
-
-<section>
 <div class="disclaimer">
 <div class="kicker">IMPORTANT</div>
 <p>QUANTIFY is an informational and educational tool. Nothing on this site is investment advice, a recommendation, or a solicitation to buy or sell any security. Scores, badges, and AI commentary reflect a mathematical model's output on the data available at the time and can be wrong. Markets involve risk, including loss of principal. Do your own research and consult a licensed financial advisor before making investment decisions.</p>
 </div>
 </section>
-
-<div class="final">
-<h2>See today's detected tickers.</h2>
-<p>Free during early access. Takes under a minute to sign up.</p>
-<a class="btn" href="/signup">Get Started Free</a>
-</div>
 
 <footer>
 QUANTIFY. — informational and educational only, not investment advice.<br>
@@ -2063,7 +2092,7 @@ async def login(email: str = Form(...), password: str = Form(...)):
 @app.get("/signup", response_class=HTMLResponse)
 async def signup_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Sign Up</title><style>{BASE_CSS}</style></head><body><div class="card"><h2>SECURE REGISTER</h2><div class="error">{error}</div><p class="hint">16+ characters · upper/lowercase · special character · 4+ digits</p><form action="/api/auth/signup" method="post"><label>EMAIL</label><input type="email" name="email" required><label>PASSWORD</label><input type="password" name="password" required><button>CREATE ACCOUNT</button></form><div class="links"><a href="/login">Log in</a></div></div></body></html>''')
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Sign Up</title><style>{BASE_CSS}</style></head><body><div class="card"><h2>SECURE REGISTER</h2><div class="error">{error}</div><p class="hint">10+ characters · at least 1 letter and 1 number</p><form action="/api/auth/signup" method="post"><label>EMAIL</label><input type="email" name="email" required><label>PASSWORD</label><input type="password" name="password" required><button>CREATE ACCOUNT</button></form><div class="links"><a href="/login">Log in</a></div></div></body></html>''')
 
 
 VERIFY_TOKEN_TTL = 24 * 3600
