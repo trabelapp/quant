@@ -2711,14 +2711,33 @@ async def portfolio_page(request: Request):
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     user = html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Portfolio</title><style>
-*{{box-sizing:border-box}}body{{background:#050807;color:#9ab8af;font:11px 'Courier New',monospace;margin:0;padding:8px}}header{{background:#030504;border:1px solid #14221b;padding:8px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}h1{{font-size:13px;color:#dff5ed;margin:0}}a.back{{color:#3498db;text-decoration:none}}button{{background:#0e241b;border:1px solid #2ecc71;color:#2ecc71;padding:5px 10px;font:11px 'Courier New',monospace;cursor:pointer}}.wrap{{max-width:900px;margin:0 auto}}.item{{background:#030504;border:1px solid #14221b;padding:14px;margin-bottom:10px}}.item-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}.item-head b{{color:#dff5ed;font-size:14px}}.meta{{color:#436659;font-size:10px;margin-bottom:8px}}.badge{{padding:2px 7px;border-radius:2px;font-weight:bold;font-size:10px}}.badge-ok{{background:#0e241b;color:#2ecc71;border:1px solid #2ecc71}}.badge-warn{{background:#2a2008;color:#f39c12;border:1px solid #f39c12}}.badge-danger{{background:#2a0e0e;color:#e74c3c;border:1px solid #e74c3c}}.note{{color:#9ab8af;font-size:11px;line-height:1.6}}.remove{{background:transparent;border:1px solid #2a0e0e;color:#e74c3c}}.empty{{color:#436659;padding:40px;text-align:center}}
-.disclaimer-footer{{max-width:900px;margin:20px auto 0;color:#436659;font-size:10px;line-height:1.6;text-align:center;padding:12px;border-top:1px solid #14221b}}
-</style></head><body><header><h1>QUANTIFY. PORTFOLIO · <span style="color:#2ecc71">{user}</span></h1><a class="back" href="/terminal">&larr; Back to Terminal</a></header>
+:root{{--bg:#0d1117;--panel:#131722;--panel2:#1c2128;--border:#2a2e39;--text:#b2b5be;--head:#d1d4dc;--dim:#787b86;--green:#26a69a;--red:#ef5350;--orange:#ff9800;--blue:#2962ff}}
+*{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:8px}}
+header{{background:var(--panel);border:1px solid var(--border);padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-radius:6px;flex-wrap:wrap;gap:10px}}
+.brand{{font-weight:700;font-size:16px;color:var(--head);text-decoration:none}}.brand span{{color:var(--blue)}}
+.headerRight{{display:flex;align-items:center;gap:14px}}
+a.back{{color:var(--blue);text-decoration:none;font-size:13px;font-weight:600}}
+button{{background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:7px 12px;font:12px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;cursor:pointer;border-radius:4px;font-weight:600}}
+button:hover{{background:var(--border)}}
+.wrap{{max-width:900px;margin:0 auto}}
+.item{{background:var(--panel);border:1px solid var(--border);padding:16px;margin-bottom:10px;border-radius:6px}}
+.item-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px}}
+.item-head b{{color:var(--head);font-size:16px}}
+.meta{{color:var(--dim);font-size:11px;margin-bottom:10px}}
+.badge{{padding:3px 9px;border-radius:12px;font-weight:700;font-size:11px}}
+.badge-ok{{background:rgba(38,166,154,.15);color:var(--green)}}
+.badge-warn{{background:rgba(255,152,0,.15);color:var(--orange)}}
+.badge-danger{{background:rgba(239,83,80,.15);color:var(--red)}}
+.note{{color:var(--text);font-size:12.5px;line-height:1.6}}
+.remove{{background:transparent;border:1px solid var(--red);color:var(--red)}}
+.empty{{color:var(--dim);padding:60px 20px;text-align:center}}
+.disclaimer-footer{{max-width:900px;margin:20px auto 0;color:var(--dim);font-size:10.5px;line-height:1.6;text-align:center;padding:12px;border-top:1px solid var(--border)}}
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Portfolio · {user}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap" id="list">Loading...</div>
 <div class="disclaimer-footer">QUANTIFY is informational and educational only, not investment advice. Nothing here is a recommendation to buy or sell any security. All investment decisions are solely your own responsibility.</div>
 <script>
 function badgeClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':''}}
-async function load(){{const r=await fetch('/api/portfolio');const d=await r.json();const el=document.getElementById('list');if(!d.items?.length){{el.innerHTML='<div class="empty">Nothing saved yet. Open a ticker in the Terminal and click 💾 SAVE.</div>';return}}el.innerHTML=d.items.map(it=>{{const sec=it.ai_report&&typeof it.ai_report==='object'?it.ai_report:null;const summary=sec?.quant_review||(typeof it.ai_report==='string'?it.ai_report:'');const date=new Date(it.saved_at*1000).toLocaleString();return `<div class="item"><div class="item-head"><b>${{it.ticker}}</b><div>${{it.timing_verdict?`<span class="badge ${{badgeClass(it.timing_verdict)}}">${{it.timing_verdict}}</span> `:''}}<button class="remove" onclick="remove(${{it.id}})">Remove</button></div></div><div class="meta">Saved ${{date}} · Scan date ${{it.scan_date}} · Price $${{it.price}} (${{it.change_pct}}%) · Alpha ${{it.alpha_score}} · RSI ${{it.rsi}}${{it.timing_score!=null?' · Timing score '+it.timing_score+'/100':''}}</div>${{summary?`<div class="note">${{summary}}</div>`:''}}</div>`}}).join('')}}
+async function load(){{const r=await fetch('/api/portfolio');const d=await r.json();const el=document.getElementById('list');if(!d.items?.length){{el.innerHTML='<div class="empty">Nothing saved yet. Open a ticker in the terminal and click ☆ Save to Portfolio.</div>';return}}el.innerHTML=d.items.map(it=>{{const sec=it.ai_report&&typeof it.ai_report==='object'?it.ai_report:null;const summary=sec?.quant_review||(typeof it.ai_report==='string'?it.ai_report:'');const date=new Date(it.saved_at*1000).toLocaleString();return `<div class="item"><div class="item-head"><b>${{it.ticker}}</b><div>${{it.timing_verdict?`<span class="badge ${{badgeClass(it.timing_verdict)}}">${{it.timing_verdict}}</span> `:''}}<button class="remove" onclick="remove(${{it.id}})">Remove</button></div></div><div class="meta">Saved ${{date}} · Scan date ${{it.scan_date}} · Price $${{it.price}} (${{it.change_pct}}%) · Alpha ${{it.alpha_score}} · RSI ${{it.rsi}}${{it.timing_score!=null?' · Timing score '+it.timing_score+'/100':''}}</div>${{summary?`<div class="note">${{summary}}</div>`:''}}</div>`}}).join('')}}
 async function remove(id){{const f=new FormData();f.append('id',id);await fetch('/api/portfolio/remove',{{method:'POST',body:f}});load()}}
 load();
 </script></body></html>''')
@@ -2731,20 +2750,33 @@ async def settings_page(request: Request):
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     user = html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Settings</title><style>
-*{{box-sizing:border-box}}body{{background:#050807;color:#9ab8af;font:11px 'Courier New',monospace;margin:0;padding:8px}}header{{background:#030504;border:1px solid #14221b;padding:8px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}h1{{font-size:13px;color:#dff5ed;margin:0}}a.back{{color:#3498db;text-decoration:none}}.wrap{{max-width:520px;margin:0 auto}}.card{{background:#030504;border:1px solid #14221b;padding:20px;margin-bottom:16px}}.card h2{{color:#dff5ed;font-size:12px;margin:0 0 14px;border-bottom:1px solid #14221b;padding-bottom:8px}}label{{display:block;font-size:10px;color:#436659;margin:10px 0 4px}}select,input{{width:100%;background:#060908;border:1px solid #1a2e25;color:#9ab8af;padding:8px;font:11px 'Courier New',monospace}}button{{margin-top:14px;background:#0e241b;border:1px solid #2ecc71;color:#2ecc71;padding:8px 14px;font:11px 'Courier New',monospace;font-weight:bold;cursor:pointer;width:100%}}.msg{{font-size:11px;min-height:14px;margin-top:8px}}.ok{{color:#2ecc71}}.err{{color:#e74c3c}}
-</style></head><body><header><h1>QUANTIFY. SETTINGS · <span style="color:#2ecc71">{user}</span></h1><a class="back" href="/terminal">&larr; Back to Terminal</a></header>
+:root{{--bg:#0d1117;--panel:#131722;--panel2:#1c2128;--border:#2a2e39;--text:#b2b5be;--head:#d1d4dc;--dim:#787b86;--green:#26a69a;--red:#ef5350;--blue:#2962ff}}
+*{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:8px}}
+header{{background:var(--panel);border:1px solid var(--border);padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-radius:6px;flex-wrap:wrap;gap:10px}}
+.brand{{font-weight:700;font-size:16px;color:var(--head);text-decoration:none}}.brand span{{color:var(--blue)}}
+.headerRight{{display:flex;align-items:center;gap:14px}}
+a.back{{color:var(--blue);text-decoration:none;font-size:13px;font-weight:600}}
+.wrap{{max-width:520px;margin:0 auto}}
+.card{{background:var(--panel);border:1px solid var(--border);padding:22px;margin-bottom:16px;border-radius:8px}}
+.card h2{{color:var(--head);font-size:13px;margin:0 0 16px;border-bottom:1px solid var(--border);padding-bottom:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}}
+label{{display:block;font-size:11.5px;font-weight:600;color:var(--dim);margin:14px 0 6px}}
+select,input{{width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:9px 10px;font:12.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;border-radius:4px}}
+button{{margin-top:16px;background:var(--blue);border:1px solid var(--blue);color:#fff;padding:10px 14px;font:12.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-weight:700;cursor:pointer;width:100%;border-radius:4px}}
+button:hover{{opacity:.9}}
+.msg{{font-size:12px;min-height:16px;margin-top:8px}}.ok{{color:var(--green)}}.err{{color:var(--red)}}
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Settings · {user}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap">
-<div class="card"><h2>DISPLAY</h2>
-<label>THEME</label><select id="theme"><option value="dark">Dark</option><option value="light">Light</option></select>
-<label>AI REPORT LANGUAGE</label><select id="language"><option value="en">English</option><option value="ko">Korean (한국어)</option></select>
-<label>DEFAULT STRATEGY MODE</label><select id="default_mode"><option>Long-Term Momentum Pullback</option><option>Short-Term Volatility Breakout</option><option>Institutional Flow Leaders</option></select>
-<button onclick="saveSettings()">SAVE SETTINGS</button><div class="msg" id="settings-msg"></div>
+<div class="card"><h2>Display</h2>
+<label>Theme</label><select id="theme"><option value="dark">Dark</option><option value="light">Light</option></select>
+<label>AI report language</label><select id="language"><option value="en">English</option><option value="ko">Korean (한국어)</option></select>
+<label>Default strategy mode</label><select id="default_mode"><option>Long-Term Momentum Pullback</option><option>Short-Term Volatility Breakout</option><option>Institutional Flow Leaders</option></select>
+<button onclick="saveSettings()">Save Settings</button><div class="msg" id="settings-msg"></div>
 </div>
-<div class="card"><h2>CHANGE PASSWORD</h2>
-<label>CURRENT PASSWORD</label><input type="password" id="current_password">
-<label>NEW PASSWORD</label><input type="password" id="new_password">
-<p style="font-size:9px;color:#567d6e;margin-top:6px">16+ characters · upper/lowercase · special character · 4+ digits</p>
-<button onclick="changePassword()">CHANGE PASSWORD</button><div class="msg" id="password-msg"></div>
+<div class="card"><h2>Change Password</h2>
+<label>Current password</label><input type="password" id="current_password">
+<label>New password</label><input type="password" id="new_password">
+<p style="font-size:11px;color:var(--dim);margin-top:6px">10+ characters, with at least 1 letter and 1 number</p>
+<button onclick="changePassword()">Change Password</button><div class="msg" id="password-msg"></div>
 </div>
 </div>
 <script>
