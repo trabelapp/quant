@@ -6,3 +6,7 @@ mini_cache/
 build/
 dist/
 *.csv
+universe_cache.json
+users.db.bak_*
+venv/
+.claude/
