@@ -7,6 +7,7 @@ build/
 dist/
 *.csv
 universe_cache.json
+backtest_cache.json
 users.db.bak_*
 venv/
 .claude/

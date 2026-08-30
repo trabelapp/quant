@@ -97,7 +97,6 @@ except Exception as e:
 CACHE = {
     "historical": {},
     "news": {},
-    "short_interest": {},
     "earnings": {},
 }
 UNIVERSE = []
@@ -110,8 +109,8 @@ AI_STATUS = {"running": False, "processed": 0, "total": 0, "ready": 0, "started_
 AI_TASK = None
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
-OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "60"))
-AI_PROMPT_VERSION = 3
+OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "50"))
+AI_PROMPT_VERSION = 4
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MARKET_SCAN_INTERVAL_SECONDS = 30 * 60
 
@@ -941,29 +940,6 @@ async def fetch_stock_news(ticker):
     return data
 
 
-def fetch_short_interest_sync(ticker, attempt: int = 0):
-    try:
-        pct = yf.Ticker(ticker).info.get("shortPercentOfFloat")
-        if pct is None:
-            return None
-        pct = float(pct) * 100
-        return round(pct, 2) if 0 <= pct <= 100 else None
-    except Exception as exc:
-        if attempt == 0:
-            time.sleep(1.5)
-            return fetch_short_interest_sync(ticker, attempt=1)
-        print(f"[Error: {type(exc).__name__}] Short interest fetch error ({ticker}): {exc}")
-        return None
-
-
-async def get_short_interest(ticker):
-    cached = CACHE["short_interest"].get(ticker)
-    if cached and time.time() - cached["ts"] < SHORT_INTEREST_TTL:
-        return cached["data"]
-    data = await asyncio.to_thread(fetch_short_interest_sync, ticker)
-    if data is not None:
-        CACHE["short_interest"][ticker] = {"data": data, "ts": time.time()}
-    return data
 
 
 def fetch_earnings_sync(ticker, attempt: int = 0):
@@ -1024,14 +1000,12 @@ MODE_CRITERIA = {
 }
 
 
-def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
+def ai_report_sync(ticker, price, change, mode, rsi, macd,
                     pct_from_high=None, pct_from_low=None, above_trend=None, language="en",
                     volume_ratio=None, news=None):
     if not ai_client:
         return None
     language_name = LANGUAGE_NAMES.get(language, "English")
-    short_text = (f"Short interest: {short_pct:.2f}%" if short_pct is not None
-                  else "Short interest data unavailable")
     near_high = pct_from_high is not None and pct_from_high >= -5
     near_low = pct_from_low is not None and pct_from_low <= 5
     overbought = rsi >= 70
@@ -1054,7 +1028,7 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
     prompt = (
         f"Date: {display_date()}\nTicker: {ticker}\nPrice: ${price:.2f}\n"
         f"Change: {change:.2f}%\nMACD histogram: {macd:.4f}\n"
-        f"{rsi_text}\n{high_text}\n{low_text}\n{trend_text}\n{volume_text}\n{short_text}\n"
+        f"{rsi_text}\n{high_text}\n{low_text}\n{trend_text}\n{volume_text}\n"
         f"Strategy mode: {mode}\n{mode_criteria}\n\n{news_text}\n\n"
         "This ticker was flagged automatically by a quant algorithm based purely on numeric thresholds, not "
         "hand-picked by a person. You must check for these two failure modes: "
@@ -1077,7 +1051,7 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
         "words below, never translated.\n"
         "Respond with ONLY the JSON object below, no other text:\n"
         '{"quant_review":"2-3 sentences on RSI/MACD/trend, and whether the setup actually fits the stated strategy mode\'s criteria",'
-        '"supply_demand":"2-3 sentences on volume-vs-average and short interest together — do they agree or conflict?",'
+        '"supply_demand":"2-3 sentences on what volume-vs-average implies about buying or selling pressure",'
         '"risk_review":"2-3 sentences on the two failure modes above",'
         '"news_analysis":"2-3 sentences on what the headlines suggest, and whether they support or contradict the technical setup — or state plainly that no useful headlines were available",'
         '"timing_verdict":"one of: Favorable, Caution, or Risk",'
@@ -1179,10 +1153,8 @@ async def build_scan_row(ticker: str, mode: str, df=None, make_ai=False):
     if row is None:
         return None
     if make_ai:
-        short_pct = await get_short_interest(ticker)
-        row["short_percent"] = short_pct
         ai_result = await generate_ai_report(
-            ticker, row["price"], row["change"], mode, row["rsi"], row["macd"], short_pct,
+            ticker, row["price"], row["change"], mode, row["rsi"], row["macd"],
             row.get("pct_from_52w_high"), row.get("pct_from_52w_low"), row.get("above_200d_sma"),
         )
         row["ai_report"] = ai_result["report_json"] if ai_result else None
@@ -1524,15 +1496,14 @@ async def cache_prune_scheduler():
         try:
             removed_hist = _prune_timed_cache(CACHE["historical"], HISTORICAL_TTL * 1.5)
             removed_news = _prune_timed_cache(CACHE["news"], NEWS_TTL * 3)
-            removed_short = _prune_timed_cache(CACHE["short_interest"], SHORT_INTEREST_TTL * 2)
             removed_earnings = _prune_timed_cache(CACHE["earnings"], SHORT_INTEREST_TTL * 2)
             removed_attempts = sum(
                 _prune_attempt_dict(d, LOGIN_LOCKOUT_SECONDS)
                 for d in (LOGIN_ATTEMPTS, RESET_ATTEMPTS, SEND_CODE_ATTEMPTS, SIGNUP_ATTEMPTS, CONTACT_ATTEMPTS)
             )
-            if removed_hist or removed_news or removed_short or removed_earnings or removed_attempts:
+            if removed_hist or removed_news or removed_earnings or removed_attempts:
                 print(f"[cache] Pruned stale entries — historical:{removed_hist} news:{removed_news} "
-                      f"short_interest:{removed_short} earnings:{removed_earnings} rate_limit_keys:{removed_attempts}", flush=True)
+                      f"earnings:{removed_earnings} rate_limit_keys:{removed_attempts}", flush=True)
             if removed_hist:
                 gc.collect()
         except Exception as exc:
@@ -1548,6 +1519,7 @@ async def startup():
     asyncio.create_task(market_scan_scheduler())
     asyncio.create_task(index_warm_scheduler())
     asyncio.create_task(cache_prune_scheduler())
+    asyncio.create_task(backtest_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
@@ -1709,11 +1681,10 @@ async def run_ai_prefetch(mode="Long-Term Momentum Pullback"):
                              (mode,today_str(),ticker))
                 conn.commit(); conn.close()
 
-                short_pct=await get_short_interest(ticker)
                 above_trend = bool(row["above_200d_sma"]) if row["above_200d_sma"] is not None else None
                 news = await fetch_stock_news(ticker)
                 ai_result=await generate_ai_report(
-                    ticker,row["price"],row["change_pct"],mode,row["rsi"],row["macd"],short_pct,
+                    ticker,row["price"],row["change_pct"],mode,row["rsi"],row["macd"],
                     row["pct_from_52w_high"],row["pct_from_52w_low"],above_trend,"en",
                     row["volume_ratio"],news,
                 )
@@ -1721,20 +1692,20 @@ async def run_ai_prefetch(mode="Long-Term Momentum Pullback"):
                 conn=db()
                 if ai_result:
                     conn.execute("""UPDATE daily_scans
-                                    SET short_percent=?,ai_report=?,ai_status='READY',
+                                    SET ai_report=?,ai_status='READY',
                                         ai_mode=?,ai_updated_at=?,ai_error=NULL,
                                         timing_score=?,timing_verdict=?,ai_prompt_version=?
                                     WHERE scan_date=? AND ticker=?""",
-                                 (short_pct,ai_result["report_json"],mode,time.time(),
+                                 (ai_result["report_json"],mode,time.time(),
                                   ai_result["timing_score"],ai_result["timing_verdict"],AI_PROMPT_VERSION,
                                   today_str(),ticker))
                     AI_STATUS["ready"]+=1
                 else:
                     conn.execute("""UPDATE daily_scans
-                                    SET short_percent=?,ai_status='ERROR',ai_mode=?,
+                                    SET ai_status='ERROR',ai_mode=?,
                                         ai_updated_at=?,ai_error=?
                                     WHERE scan_date=? AND ticker=?""",
-                                 (short_pct,mode,time.time(),"AI returned no report",today_str(),ticker))
+                                 (mode,time.time(),"AI returned no report",today_str(),ticker))
                 conn.commit(); conn.close()
             except Exception as exc:
                 msg=f"{type(exc).__name__}: {exc}"
@@ -1870,6 +1841,49 @@ async def api_market_indices(request: Request):
     return {"sp500": sp500, "nasdaq100": nasdaq100}
 
 
+@app.get("/api/market-summary")
+async def market_summary(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
+    conn = db()
+    rows = conn.execute("SELECT change_pct,timing_verdict,quant_pass FROM daily_scans WHERE scan_date=?", (today_str(),)).fetchall()
+    conn.close()
+    total = len(rows)
+    advancers = sum(1 for r in rows if (r["change_pct"] or 0) > 0)
+    decliners = sum(1 for r in rows if (r["change_pct"] or 0) < 0)
+    avg_change = round(sum(r["change_pct"] or 0 for r in rows) / total, 2) if total else None
+    detected = sum(1 for r in rows if r["quant_pass"])
+    verdict_counts = {"Favorable": 0, "Caution": 0, "Risk": 0}
+    for r in rows:
+        if r["timing_verdict"] in verdict_counts:
+            verdict_counts[r["timing_verdict"]] += 1
+
+    def day_change(df):
+        try:
+            close = normalize_series(df, "Close").dropna()
+            return round((float(close.iloc[-1]) / float(close.iloc[-2]) - 1) * 100, 2)
+        except Exception:
+            return None
+
+    sp500_df, ndx_df = await asyncio.gather(download_stock("^GSPC", "1d"), download_stock("^NDX", "1d"))
+    return {"universe_count": total, "advancers": advancers, "decliners": decliners,
+            "avg_change_pct": avg_change, "detected_count": detected, "verdict_breakdown": verdict_counts,
+            "sp500_change_pct": day_change(sp500_df) if sp500_df is not None else None,
+            "nasdaq_change_pct": day_change(ndx_df) if ndx_df is not None else None}
+
+
+@app.get("/api/backtest-summary")
+async def backtest_summary(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
+    return {"computed_at": BACKTEST_CACHE.get("computed_at"), "results": BACKTEST_CACHE.get("results"),
+            "error": BACKTEST_CACHE.get("error")}
+
+
 def _require_admin_token(token: Optional[str]):
     return bool(ADMIN_TOKEN) and bool(token) and hmac.compare_digest(token, ADMIN_TOKEN)
 
@@ -1896,6 +1910,16 @@ async def api_ai_status(request: Request, token: Optional[str] = None):
     if not _require_admin_token(token):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return dict(AI_STATUS)
+
+
+@app.get("/api/admin/run-backtest")
+async def api_run_backtest(request: Request, token: Optional[str] = None):
+    if not _require_admin_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not UNIVERSE:
+        return JSONResponse({"error": "Universe not ready yet."}, status_code=503)
+    asyncio.create_task(run_backtest())
+    return {"message": "Backtest started."}
 
 
 @app.post("/api/auto-scan")
@@ -1994,7 +2018,6 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         bb_std = close.rolling(20).std()
         bb_upper = sma20 + 2 * bb_std
         bb_lower = sma20 - 2 * bb_std
-        short_pct = await get_short_interest(ticker)
         earnings = await get_earnings(ticker)
         chart = []
         for idx, row in df.tail(500).iterrows():
@@ -2021,8 +2044,7 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         return {"fast": {"ticker": ticker, "data_ok": True, "price": round(price, 2), "change": round(change, 2),
             "pct_from_52w_high": pct_from_high, "pct_from_52w_low": pct_from_low, "above_200d_sma": above_trend,
             "rsi": round(float(rsi.iloc[-1]), 2), "macd": round(float(macd_hist.iloc[-1]), 4),
-            "long_ratio": round(100 - short_pct, 1) if short_pct is not None else None,
-            "short_ratio": short_pct, "short_percent": short_pct, "earnings": earnings, "chart": chart}}
+            "earnings": earnings, "chart": chart}}
     except Exception as e:
         print(f"[Error: {type(e).__name__}] terminal_data_fast processing error ({ticker}): {e}")
         return {"fast": {"ticker": ticker, "data_ok": False, "error": f"Data processing error: {type(e).__name__}"}}
@@ -2087,19 +2109,18 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     )
     news=await fetch_stock_news(ticker)
     if needs_regen:
-        short_pct = await get_short_interest(ticker)
         above_trend = bool(row["above_200d_sma"]) if row["above_200d_sma"] is not None else None
         ai_result = await generate_ai_report(
-            ticker, row["price"], row["change_pct"], mode, row["rsi"], row["macd"], short_pct,
+            ticker, row["price"], row["change_pct"], mode, row["rsi"], row["macd"],
             row["pct_from_52w_high"], row["pct_from_52w_low"], above_trend, language,
             row["volume_ratio"], news,
         )
         if ai_result:
             conn.execute("""UPDATE daily_scans
-                            SET short_percent=?,ai_report=?,ai_status='READY',ai_mode=?,ai_language=?,
+                            SET ai_report=?,ai_status='READY',ai_mode=?,ai_language=?,
                                 ai_updated_at=?,ai_error=NULL,timing_score=?,timing_verdict=?,ai_prompt_version=?
                             WHERE scan_date=? AND ticker=?""",
-                         (short_pct, ai_result["report_json"], mode, language, time.time(),
+                         (ai_result["report_json"], mode, language, time.time(),
                           ai_result["timing_score"], ai_result["timing_verdict"], AI_PROMPT_VERSION, today_str(), ticker))
             conn.commit()
             row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
@@ -2130,11 +2151,6 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
         "mode": row["ai_mode"] if row else mode,
         "updated_at": row["ai_updated_at"] if row else None,
         "error": row["ai_error"] if row else None,
-        "short_info":{
-            "short_percent_of_float": row["short_percent"] if row else None,
-            "long_ratio": round(100-row["short_percent"],1) if row and row["short_percent"] is not None else None,
-            "short_ratio": row["short_percent"] if row else None
-        }
     }}
 
 
@@ -2320,11 +2336,32 @@ async def get_settings(request: Request):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
-    row = conn.execute("SELECT email,pref_theme,pref_language FROM users WHERE email=?", (user,)).fetchone()
+    row = conn.execute(
+        "SELECT email,pref_theme,pref_language,created_at,trial_ends_at,subscription_status FROM users WHERE email=?",
+        (user,)
+    ).fetchone()
     conn.close()
     if not row:
         return JSONResponse({"error": "User not found"}, status_code=404)
     return dict(row)
+
+
+@app.post("/api/account/delete")
+async def delete_account(request: Request, password: str = Form(...)):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    conn = db()
+    row = conn.execute("SELECT password_hash,salt FROM users WHERE email=?", (user,)).fetchone()
+    if not row or not row["password_hash"] or not verify_password(password, row["password_hash"], row["salt"]):
+        conn.close()
+        return JSONResponse({"error": "Incorrect password."}, status_code=400)
+    for table in ("sessions", "portfolio_items", "watchlist_items", "user_alerts"):
+        conn.execute(f"DELETE FROM {table} WHERE email=?", (user,))
+    conn.execute("DELETE FROM users WHERE email=?", (user,))
+    conn.commit(); conn.close()
+    response = JSONResponse({"message": "Account deleted."})
+    response.delete_cookie("session_user")
+    return response
 
 
 @app.post("/api/settings")
@@ -3145,7 +3182,6 @@ h3{{font-size:11px;color:var(--dim);border-bottom:1px solid var(--border);paddin
 .metric{{background:var(--panel2);border:1px solid var(--border);padding:8px;text-align:center;border-radius:4px}}
 .metric>div:first-child{{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px}}
 .val{{color:var(--head);font-weight:700;margin-top:4px;font-size:13px}}
-.ratio{{height:6px;background:var(--border);margin-top:6px;display:flex;border-radius:3px;overflow:hidden}}
 .notice{{padding:10px;background:var(--panel2);border:1px solid var(--border);margin-bottom:8px;line-height:1.5;border-radius:4px}}
 a{{color:var(--head);text-decoration:underline}}
 .badge{{padding:3px 9px;border-radius:12px;font-weight:700;display:inline-block;font-size:11px}}
@@ -3181,6 +3217,29 @@ a{{color:var(--head);text-decoration:underline}}
 .avatar-menu a:hover{{background:var(--border)}}
 .avatar-menu a.danger-text{{color:var(--red)}}
 .avatar-menu .email-row{{padding:11px 14px;color:var(--dim);font-size:11px;border-bottom:1px solid var(--border);word-break:break-all}}
+.below-grid{{display:flex;flex-direction:column;gap:8px;margin-top:8px;max-width:1400px}}
+.panel.wide{{overflow:visible}}
+.empty-hint{{color:var(--dim);font-size:12px;padding:8px 0}}
+.summary-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}}
+.summary-tile{{background:var(--panel2);border:1px solid var(--border);padding:10px;border-radius:4px;text-align:center}}
+.summary-tile .label{{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px}}
+.summary-tile .value{{color:var(--head);font-weight:700;font-size:16px;margin-top:4px}}
+.summary-tile .value.gain{{color:var(--green)}}
+.summary-tile .value.loss{{color:var(--red)}}
+.watch-add-row{{display:flex;gap:6px;margin-bottom:10px}}
+.watch-add-row input{{flex:1}}
+.watch-row{{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border2);font-size:12.5px}}
+.watch-row:last-child{{border-bottom:none}}
+.watch-row b{{cursor:pointer}}
+.watch-row b:hover{{text-decoration:underline}}
+.remove-btn{{background:transparent;border:1px solid var(--red);color:var(--red);padding:4px 10px;font-size:11px;font-weight:600}}
+.backtest-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}}
+.backtest-card{{background:var(--panel2);border:1px solid var(--border);padding:12px;border-radius:4px}}
+.backtest-card h4{{margin:0 0 10px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px}}
+.backtest-row{{display:flex;justify-content:space-between;padding:4px 0;font-size:12.5px}}
+.backtest-row b.gain{{color:var(--green)}}
+.backtest-row b.loss{{color:var(--red)}}
+.backtest-meta{{font-size:11px;color:var(--dim);margin-top:10px}}
 @media(max-width:900px){{
   body{{padding:6px;height:auto;overflow-y:auto}}
   .grid{{grid-template-columns:1fr;height:auto}}
@@ -3192,7 +3251,13 @@ a{{color:var(--head);text-decoration:underline}}
   header{{padding:10px}}
   .headerRight select{{flex:1;min-width:140px}}
 }}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><button onclick="location='/portfolio'">Portfolio</button><button onclick="location='/settings'">Settings</button><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input id="target" type="number" placeholder="Target price $" style="width:110px" title="Get an email when the price reaches this value"><button onclick="setAlert()" title="Email me when the price hits my target">&#128276; Set Alert</button><button onclick="savePortfolio()" title="Add this ticker to My Portfolio">&#9734; Save to Portfolio</button><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:#e8e8e8"></i>SMA 20</span><span><i style="background:#ff9800"></i>SMA 50</span><span><i style="background:#ef5350"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:#26a69a"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD</div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High</div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low</div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend</div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)</div><div id="scoretrend" class="val">-</div></div></div><div class="notice">Short interest: <b id="short">No data</b><div class="ratio"><div id="longbar" style="background:#26a69a"></div><div id="shortbar" style="background:#ef5350"></div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div><div class="toast" id="toast"></div><script>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><button onclick="document.getElementById('marketSummarySection').scrollIntoView({{behavior:'smooth'}})">Market Summary</button><button onclick="document.getElementById('watchlistSection').scrollIntoView({{behavior:'smooth'}})">Watchlist</button><button onclick="document.getElementById('backtestSection').scrollIntoView({{behavior:'smooth'}})">Backtest</button><button onclick="location='/portfolio'">Portfolio</button><button onclick="location='/settings'">Settings</button><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input id="target" type="number" placeholder="Target price $" style="width:110px" title="Get an email when the price reaches this value"><button onclick="setAlert()" title="Email me when the price hits my target">&#128276; Set Alert</button><button onclick="savePortfolio()" title="Add this ticker to My Portfolio">&#9734; Save to Portfolio</button><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:#e8e8e8"></i>SMA 20</span><span><i style="background:#ff9800"></i>SMA 50</span><span><i style="background:#ef5350"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:#26a69a"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD</div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High</div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low</div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend</div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)</div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
+<div class="below-grid">
+<section class="panel wide" id="marketSummarySection"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel wide" id="watchlistSection"><h3>Watchlist</h3><div class="watch-add-row"><input id="watchInput" placeholder="Add ticker (e.g. NVDA)" onkeydown="if(event.key==='Enter')addWatch()"><button onclick="addWatch()">Add</button></div><div id="watchlistBody"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel wide" id="backtestSection"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
+</div>
+<div class="toast" id="toast"></div><script>
 const USER_LANGUAGE='{pref_language}';
 const STRATEGY_MODE='Long-Term Momentum Pullback';
 let ticker='AAPL',tf='1d',chart,candle,volume,smaLines={{}},idxCharts={{}},bbLines={{}},currentView='list',lastSignals=[],lastUpdated=null;
@@ -3207,7 +3272,7 @@ function sparklineSVG(arr){{if(!arr||arr.length<2)return '';const w=48,h=18;cons
 function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':'badge-pending'}}
 function renderEarnings(e){{const el=document.getElementById('earningsInfo');if(!e||(!e.last&&!e.next)){{el.innerText='Earnings: no data available';return}}const parts=[];if(e.last){{const beat=e.last.beat;const cls=beat===true?'beat':beat===false?'miss':'';const label=beat===true?'Beat':beat===false?'Miss':'Met';const surprise=e.last.surprise_pct!=null?` (${{label}} ${{e.last.surprise_pct>0?'+':''}}${{e.last.surprise_pct}}%)`:'';parts.push(`Last earnings <b>${{e.last.date}}</b>: EPS $${{e.last.eps_actual}} vs $${{e.last.eps_estimate??'-'}} est.<span class="${{cls}}">${{surprise}}</span>`)}}if(e.next){{parts.push(`Next earnings: <b>${{e.next.date}}</b>`)}}el.innerHTML=parts.join(' &middot; ')}}
 function itemSigClass(v){{return v==='Favorable'?'sig-favorable':v==='Caution'?'sig-caution':v==='Risk'?'sig-risk':''}}
-function renderList(){{if(!lastSignals.length)return;const key=document.getElementById('sortKey').value;const sorted=[...lastSignals].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));const groups=groupByUniverse(sorted);document.getElementById('list').innerHTML=Object.entries(groups).map(([g,items])=>`<div class="group-header">${{g}} (${{items.length}})</div>`+items.map(s=>`<div class="item ${{itemSigClass(s.timing_verdict)}}" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span style="display:flex;align-items:center;gap:6px">${{sparklineSVG(s.sparkline)}}<span style="text-align:right">${{s.price}} · ${{s.change_pct}}%<br><small>Score ${{s.overall_score}} · <span class="badge ${{verdictClass(s.timing_verdict)}}">${{s.timing_verdict||'Analyzing'}}</span></small></span></span></div>`).join('')).join('')}}
+function renderList(){{if(!lastSignals.length)return;const key=document.getElementById('sortKey').value;const sorted=[...lastSignals].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));document.getElementById('list').innerHTML=sorted.map(s=>`<div class="item ${{itemSigClass(s.timing_verdict)}}" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span style="display:flex;align-items:center;gap:6px">${{sparklineSVG(s.sparkline)}}<span style="text-align:right">${{s.price}} · ${{s.change_pct}}%<br><small>Score ${{s.overall_score}} · <span class="badge ${{verdictClass(s.timing_verdict)}}">${{s.timing_verdict||'Analyzing'}}</span></small></span></span></div>`).join('')}}
 function init(){{const c=document.getElementById('chart');chart=LightweightCharts.createChart(c,{{width:c.clientWidth,height:c.clientHeight,layout:{{background:{{type:'solid',color:'#000000'}},textColor:'#a8a8a8'}},grid:{{vertLines:{{color:'#161616'}},horzLines:{{color:'#161616'}}}},timeScale:{{timeVisible:true}}}});candle=chart.addCandlestickSeries({{upColor:'#26a69a',downColor:'#ef5350',borderUpColor:'#26a69a',borderDownColor:'#ef5350',wickUpColor:'#26a69a',wickDownColor:'#ef5350'}});volume=chart.addHistogramSeries({{color:'rgba(38,166,154,.5)',priceFormat:{{type:'volume'}},priceScaleId:''}});volume.priceScale().applyOptions({{scaleMargins:{{top:.8,bottom:0}}}});smaLines.sma20=chart.addLineSeries({{color:'#e8e8e8',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma50=chart.addLineSeries({{color:'#ff9800',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma200=chart.addLineSeries({{color:'#ef5350',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});bbLines.upper=chart.addLineSeries({{color:'#9b6bff',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});bbLines.lower=chart.addLineSeries({{color:'#9b6bff',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});window.onresize=()=>{{chart.resize(c.clientWidth,c.clientHeight);Object.entries(idxCharts).forEach(([k,ic])=>{{const el=document.getElementById('idx-'+k);if(el)ic.resize(el.clientWidth,el.clientHeight)}})}};['sp500','ndx'].forEach(k=>{{const el=document.getElementById('idx-'+k);const ic=LightweightCharts.createChart(el,{{width:el.clientWidth,height:el.clientHeight,layout:{{background:{{type:'solid',color:'#000000'}},textColor:'#a8a8a8',fontSize:9}},grid:{{vertLines:{{visible:false}},horzLines:{{visible:false}}}},rightPriceScale:{{visible:false}},timeScale:{{visible:false}},handleScroll:false,handleScale:false}});idxCharts[k]=ic;idxCharts[k+'_line']=ic.addLineSeries({{color:'#e8e8e8',lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}})}})}}
 async function loadIndices(){{try{{const r=await fetch('/api/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;const boxEl=document.getElementById('idx-'+k);if(boxEl&&boxEl.clientWidth&&boxEl.clientHeight)idxCharts[k].resize(boxEl.clientWidth,boxEl.clientHeight);idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);idxCharts[k+'_line'].applyOptions({{color:chg>=0?'#26a69a':'#ef5350'}});const valEl=document.getElementById('idx-'+k+'-val');if(valEl)valEl.innerHTML=`${{last}} <span style="color:${{chg>=0?'#26a69a':'#ef5350'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
 async function loadScoreHistory(t){{const el=document.getElementById('scoretrend');try{{const r=await fetch(`/api/score-history?ticker=${{encodeURIComponent(t)}}`);const d=await r.json();const scores=(d.points||[]).map(p=>p.alpha_score).filter(v=>v!=null);if(scores.length<2){{el.innerHTML=scores.length?scores[scores.length-1].toFixed(1):'-';return}}el.innerHTML=sparklineSVG(scores)+' '+scores[scores.length-1].toFixed(1)}}catch(e){{el.innerText='-'}}}}
@@ -3215,11 +3280,28 @@ async function autoScanOnOpen(){{try{{await fetch('/api/auto-scan',{{method:'POS
 function updateUcount(d){{document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:''}}
 async function scan(){{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
 async function pollForUpdates(){{try{{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
-async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';const fastPromise=fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');renderEarnings(d.fast.earnings);loadScoreHistory(ticker);document.getElementById('short').innerText=d.fast.short_percent==null?'No data':d.fast.short_percent+'%';document.getElementById('longbar').style.width=(d.fast.long_ratio??0)+'%';document.getElementById('shortbar').style.width=(d.fast.short_ratio??0)+'%';try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100`}}else{{vEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=x.ai?.ai_report||(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':'AI analysis is unavailable.')}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
+async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';const fastPromise=fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100`}}else{{vEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=x.ai?.ai_report||(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':'AI analysis is unavailable.')}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
 async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 async function savePortfolio(){{const input=prompt('How many shares? (optional — leave blank to just track the ticker)');if(input===null)return;let shares='';if(input.trim()!==''){{const n=parseFloat(input);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 function changeTF(x){{tf=x;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tf===x));loadTicker(ticker)}}
-window.onload=()=>{{init();autoScanOnOpen();loadIndices();setInterval(pollForUpdates,20000)}};
+async function loadMarketSummary(){{try{{const r=await fetch('/api/market-summary');if(r.status===402)return;const d=await r.json();const el=document.getElementById('marketSummaryBody');const chg=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');el.innerHTML=`
+<div class="summary-tile"><div class="label">S&amp;P 500</div><div class="value ${{cls(d.sp500_change_pct)}}">${{chg(d.sp500_change_pct)}}</div></div>
+<div class="summary-tile"><div class="label">Nasdaq-100</div><div class="value ${{cls(d.nasdaq_change_pct)}}">${{chg(d.nasdaq_change_pct)}}</div></div>
+<div class="summary-tile"><div class="label">Advancers</div><div class="value gain">${{d.advancers??'-'}}</div></div>
+<div class="summary-tile"><div class="label">Decliners</div><div class="value loss">${{d.decliners??'-'}}</div></div>
+<div class="summary-tile"><div class="label">Avg Change</div><div class="value ${{cls(d.avg_change_pct)}}">${{chg(d.avg_change_pct)}}</div></div>
+<div class="summary-tile"><div class="label">Cleared Quant Bar</div><div class="value">${{d.detected_count??'-'}} / ${{d.universe_count??'-'}}</div></div>
+<div class="summary-tile"><div class="label">Favorable</div><div class="value gain">${{d.verdict_breakdown?.Favorable??0}}</div></div>
+<div class="summary-tile"><div class="label">Caution / Risk</div><div class="value loss">${{(d.verdict_breakdown?.Caution??0)+(d.verdict_breakdown?.Risk??0)}}</div></div>`}}catch(e){{console.error('Market summary load failed',e)}}}}
+async function addWatch(){{const t=document.getElementById('watchInput').value.trim();if(!t)return;const f=new FormData();f.append('ticker',t);const r=await fetch('/api/watchlist/add',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok);if(r.ok){{document.getElementById('watchInput').value='';loadWatchlist()}}}}
+async function removeWatch(id){{const f=new FormData();f.append('id',id);await fetch('/api/watchlist/remove',{{method:'POST',body:f}});loadWatchlist()}}
+async function loadWatchlist(){{try{{const r=await fetch('/api/watchlist');if(r.status===402)return;const d=await r.json();const el=document.getElementById('watchlistBody');if(!d.items?.length){{el.innerHTML='<div class="empty-hint">Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.</div>';return}}el.innerHTML=d.items.map(it=>`<div class="watch-row"><b onclick="loadTicker('${{it.ticker}}');document.querySelector('.grid').scrollIntoView({{behavior:'smooth'}})">${{it.ticker}}</b><span>${{it.price!=null?'$'+it.price:'-'}}</span><button class="remove-btn" onclick="removeWatch(${{it.id}})">Remove</button></div>`).join('')}}catch(e){{console.error('Watchlist load failed',e)}}}}
+async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary');if(r.status===402)return;const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){{el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${{h}}-Day Forward Return</h4>
+<div class="backtest-row"><span>Strategy avg</span><b class="${{cls(v.strategy?.avg_return_pct)}}">${{fmtPct(v.strategy?.avg_return_pct)}}</b></div>
+<div class="backtest-row"><span>Strategy win rate</span><b>${{v.strategy?.win_rate_pct??'-'}}%</b></div>
+<div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
+</div>`).join('');el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Based on ${{res.signal_count}} historical signals across ${{res.tickers_sampled}} sampled tickers over the trailing 2 years. Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
+window.onload=()=>{{init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
 
@@ -3466,12 +3548,29 @@ select,input{{width:100%;background:var(--panel2);border:1px solid var(--border)
 button{{margin-top:16px;background:var(--head);border:1px solid var(--head);color:var(--bg);padding:10px 14px;font:12.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-weight:700;cursor:pointer;width:100%;border-radius:4px}}
 button:hover{{opacity:.9}}
 .msg{{font-size:12px;min-height:16px;margin-top:8px}}.ok{{color:var(--green)}}.err{{color:var(--red)}}
+.info-row{{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px}}
+.info-row:last-child{{border-bottom:none}}
+.info-row b{{color:var(--head)}}
+.alert-row{{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px}}
+.alert-row:last-child{{border-bottom:none}}
+.remove-btn{{background:transparent;border:1px solid var(--red);color:var(--red);width:auto;padding:4px 10px;margin:0;font-size:11px;font-weight:600}}
+.empty-hint{{color:var(--dim);font-size:12px;padding:8px 0}}
+.card.danger{{border-color:var(--red)}}
+.card.danger h2{{color:var(--red)}}
+button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(--red)}}
 </style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Settings · {user}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap">
+<div class="card"><h2>Account</h2>
+<div id="account-info"><div class="empty-hint">Loading...</div></div>
+<a href="/subscription" style="display:block;text-align:center;margin-top:14px;color:var(--head);text-decoration:underline;font-size:12.5px;font-weight:600">Manage Subscription &rarr;</a>
+</div>
 <div class="card"><h2>Display</h2>
 <label>Theme</label><select id="theme"><option value="dark">Dark</option><option value="light">Light</option></select>
 <label>AI report language</label><select id="language"><option value="en">English</option><option value="ko">Korean (한국어)</option></select>
 <button onclick="saveSettings()">Save Settings</button><div class="msg" id="settings-msg"></div>
+</div>
+<div class="card"><h2>Price Alerts</h2>
+<div id="alerts-list"><div class="empty-hint">Loading...</div></div>
 </div>
 <div class="card"><h2>Change Password</h2>
 <label>Current password</label><input type="password" id="current_password">
@@ -3479,12 +3578,23 @@ button:hover{{opacity:.9}}
 <p style="font-size:11px;color:var(--dim);margin-top:6px">10+ characters, with at least 1 letter and 1 number</p>
 <button onclick="changePassword()">Change Password</button><div class="msg" id="password-msg"></div>
 </div>
+<div class="card danger"><h2>Danger Zone</h2>
+<p style="font-size:12px;color:var(--text);margin:0 0 10px">Permanently delete your account and all associated data (portfolio, watchlist, alerts). This cannot be undone.</p>
+<label>Confirm password</label><input type="password" id="delete_password">
+<button class="danger-btn" onclick="deleteAccount()">Delete My Account</button><div class="msg" id="delete-msg"></div>
+</div>
 </div>
 <script>
-async function loadSettings(){{const r=await fetch('/api/settings');const d=await r.json();if(d.pref_theme)document.getElementById('theme').value=d.pref_theme;if(d.pref_language)document.getElementById('language').value=d.pref_language}}
+function fmtDate(ts){{return ts?new Date(ts*1000).toLocaleDateString():'-'}}
+async function loadSettings(){{const r=await fetch('/api/settings');const d=await r.json();if(d.pref_theme)document.getElementById('theme').value=d.pref_theme;if(d.pref_language)document.getElementById('language').value=d.pref_language;
+const statusLabel={{active:'Active Subscription',trial:'Free Trial',expired:'Trial Ended',cancelled:'Cancelled',paused:'Paused'}}[d.subscription_status]||d.subscription_status;
+document.getElementById('account-info').innerHTML=`<div class="info-row"><span>Email</span><b>${{d.email||'-'}}</b></div><div class="info-row"><span>Member since</span><b>${{fmtDate(d.created_at)}}</b></div><div class="info-row"><span>Plan status</span><b>${{statusLabel||'-'}}</b></div>`}}
 async function saveSettings(){{const f=new FormData();f.append('theme',document.getElementById('theme').value);f.append('language',document.getElementById('language').value);const r=await fetch('/api/settings',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('settings-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error}}
 async function changePassword(){{const f=new FormData();f.append('current_password',document.getElementById('current_password').value);f.append('new_password',document.getElementById('new_password').value);const r=await fetch('/api/settings/password',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('password-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error;if(r.ok){{document.getElementById('current_password').value='';document.getElementById('new_password').value=''}}}}
-loadSettings();
+async function loadAlerts(){{const r=await fetch('/api/alerts/list');const d=await r.json();const el=document.getElementById('alerts-list');if(!d.alerts?.length){{el.innerHTML='<div class="empty-hint">No alerts set. Open a ticker in the terminal and click Set Alert.</div>';return}}el.innerHTML=d.alerts.map(a=>`<div class="alert-row"><span>${{a.ticker}} @ $${{a.target_price}}${{a.is_sent?' <span style="color:var(--dim)">(sent)</span>':''}}</span><button class="remove-btn" onclick="removeAlert(${{a.id}})">Remove</button></div>`).join('')}}
+async function removeAlert(id){{const f=new FormData();f.append('id',id);await fetch('/api/alerts/remove',{{method:'POST',body:f}});loadAlerts()}}
+async function deleteAccount(){{const pw=document.getElementById('delete_password').value;if(!pw)return;if(!confirm('Are you sure? This permanently deletes your account and cannot be undone.'))return;const f=new FormData();f.append('password',pw);const r=await fetch('/api/account/delete',{{method:'POST',body:f}});const d=await r.json();if(r.ok){{location.href='/'}}else{{const el=document.getElementById('delete-msg');el.className='msg err';el.innerText=d.error}}}}
+loadSettings();loadAlerts();
 </script></body></html>''')
 
 
