@@ -107,7 +107,7 @@ AI_TASK = None
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
 OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "60"))
-AI_PROMPT_VERSION = 2
+AI_PROMPT_VERSION = 3
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MARKET_SCAN_INTERVAL_SECONDS = 30 * 60
 
@@ -1003,8 +1003,15 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
     language_name = LANGUAGE_NAMES.get(language, "English")
     short_text = (f"Short interest: {short_pct:.2f}%" if short_pct is not None
                   else "Short interest data unavailable")
-    high_text = f"{pct_from_high:+.1f}% vs 52-week high" if pct_from_high is not None else "52-week high data unavailable"
-    low_text = f"{pct_from_low:+.1f}% vs 52-week low" if pct_from_low is not None else "52-week low data unavailable"
+    near_high = pct_from_high is not None and pct_from_high >= -5
+    near_low = pct_from_low is not None and pct_from_low <= 5
+    overbought = rsi >= 70
+    oversold = rsi <= 30
+    high_text = (f"{pct_from_high:+.1f}% vs 52-week high — this counts as {'NEAR' if near_high else 'NOT near'} the high"
+                 if pct_from_high is not None else "52-week high data unavailable")
+    low_text = (f"{pct_from_low:+.1f}% vs 52-week low — this counts as {'NEAR' if near_low else 'NOT near'} the low"
+                if pct_from_low is not None else "52-week low data unavailable")
+    rsi_text = f"RSI {rsi:.2f} — this counts as {'OVERBOUGHT' if overbought else 'OVERSOLD' if oversold else 'neutral'}"
     trend_text = ("Above the 200-day moving average" if above_trend is True else
                   "Below the 200-day moving average" if above_trend is False else "200-day moving average data unavailable")
     volume_text = (f"Volume is {volume_ratio:.2f}x its 20-day average" if volume_ratio is not None
@@ -1017,8 +1024,8 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
         news_text = "No recent news headlines were available."
     prompt = (
         f"Date: {display_date()}\nTicker: {ticker}\nPrice: ${price:.2f}\n"
-        f"Change: {change:.2f}%\nRSI: {rsi:.2f}\nMACD histogram: {macd:.4f}\n"
-        f"{high_text}\n{low_text}\n{trend_text}\n{volume_text}\n{short_text}\n"
+        f"Change: {change:.2f}%\nMACD histogram: {macd:.4f}\n"
+        f"{rsi_text}\n{high_text}\n{low_text}\n{trend_text}\n{volume_text}\n{short_text}\n"
         f"Strategy mode: {mode}\n{mode_criteria}\n\n{news_text}\n\n"
         "This ticker was flagged automatically by a quant algorithm based purely on numeric thresholds, not "
         "hand-picked by a person. You must check for these two failure modes: "
@@ -1026,10 +1033,16 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd, short_pct,
         "risking a blow-off top if someone chases it now? "
         "(2) Is this a bounce inside a long-term downtrend (below the 200-day MA) or near its 52-week low, "
         "risking a dead-cat bounce in a financially weak stock?\n"
+        "The NEAR/NOT near and OVERBOUGHT/OVERSOLD/neutral labels above are the authoritative classification — "
+        "every section you write must agree with them exactly. Do not independently judge from the raw percentage "
+        "or RSI number whether it counts as 'near' or 'overbought'; use the label given. If you write a specific "
+        "distance (e.g. '0.7% below the high'), the label next to it must match your own wording — check this "
+        "before answering.\n"
         "Base your analysis only on the numbers and headlines actually provided. Do not estimate or invent missing "
         "data, and do not assume a headline's content beyond its title. This is informational analysis, not "
-        "investment advice. Do not state a specific buy price, price target, or stop-loss price in any form. Be "
-        "direct and specific rather than hedging every sentence — state what the numbers show and commit to a view.\n\n"
+        "investment advice. Do not state a specific buy price, price target, or stop-loss price in any form. Do not "
+        "just restate the numbers back — say what they mean for someone deciding whether to act now, later, or not "
+        "at all, and commit to that view instead of hedging every sentence.\n\n"
         f"The values of quant_review, supply_demand, risk_review, news_analysis, and timing_reason must be written "
         f"in {language_name} only. The timing_verdict value itself must still be exactly one of the three English "
         "words below, never translated.\n"
@@ -1854,7 +1867,7 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         short_pct = await get_short_interest(ticker)
         earnings = await get_earnings(ticker)
         chart = []
-        for idx, row in df.tail(150).iterrows():
+        for idx, row in df.tail(500).iterrows():
             try:
                 vals = [float(row[k]) for k in ("Open", "High", "Low", "Close")]
                 volume_value = int(row["Volume"])
