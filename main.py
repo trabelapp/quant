@@ -1298,6 +1298,40 @@ async def index_warm_scheduler():
         await asyncio.sleep(480)
 
 
+def _prune_timed_cache(cache_dict: dict, max_age_seconds: float) -> int:
+    now = time.time()
+    stale_keys = [k for k, v in cache_dict.items() if now - v.get("ts", 0) > max_age_seconds]
+    for k in stale_keys:
+        del cache_dict[k]
+    return len(stale_keys)
+
+
+def _prune_attempt_dict(attempt_dict: dict, window_seconds: float) -> int:
+    now = time.time()
+    stale_keys = [k for k, times in attempt_dict.items() if not any(now - t < window_seconds for t in times)]
+    for k in stale_keys:
+        del attempt_dict[k]
+    return len(stale_keys)
+
+
+async def cache_prune_scheduler():
+    while True:
+        await asyncio.sleep(900)
+        try:
+            removed_hist = _prune_timed_cache(CACHE["historical"], HISTORICAL_TTL * 3)
+            removed_news = _prune_timed_cache(CACHE["news"], NEWS_TTL * 3)
+            removed_short = _prune_timed_cache(CACHE["short_interest"], SHORT_INTEREST_TTL * 2)
+            removed_attempts = sum(
+                _prune_attempt_dict(d, LOGIN_LOCKOUT_SECONDS)
+                for d in (LOGIN_ATTEMPTS, RESET_ATTEMPTS, SEND_CODE_ATTEMPTS, SIGNUP_ATTEMPTS, CONTACT_ATTEMPTS)
+            )
+            if removed_hist or removed_news or removed_short or removed_attempts:
+                print(f"[cache] Pruned stale entries — historical:{removed_hist} news:{removed_news} "
+                      f"short_interest:{removed_short} rate_limit_keys:{removed_attempts}", flush=True)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Cache prune error: {exc}", flush=True)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -1306,6 +1340,7 @@ async def startup():
     asyncio.create_task(scheduler())
     asyncio.create_task(market_scan_scheduler())
     asyncio.create_task(index_warm_scheduler())
+    asyncio.create_task(cache_prune_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
