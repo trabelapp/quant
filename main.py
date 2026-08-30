@@ -35,7 +35,7 @@ DB_FILE = os.getenv("DB_FILE", "users.db")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "http://localhost:11434/v1")
 AI_API_KEY = os.getenv("AI_API_KEY", "ollama")
 AI_MODEL = os.getenv("AI_MODEL", "llama3")
-SESSION_TTL = 24 * 3600
+SESSION_TTL = 30 * 24 * 3600
 
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
