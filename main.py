@@ -106,7 +106,7 @@ AI_STATUS = {"running": False, "processed": 0, "total": 0, "ready": 0, "started_
 AI_TASK = None
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
-OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "75"))
+OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "60"))
 AI_PROMPT_VERSION = 2
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MARKET_SCAN_INTERVAL_SECONDS = 30 * 60
@@ -2477,7 +2477,7 @@ async def terms_page():
 <h2>4. Acceptable Use</h2>
 <p>You agree not to: scrape, reverse-engineer, or systematically extract data from the Service; interfere with or overload our infrastructure; resell or redistribute Service content as your own product; or use the Service for any unlawful purpose.</p>
 <h2>5. Third-Party Data</h2>
-<p>Market data, news, and other information displayed on the Service are sourced from third parties and may be delayed, incomplete, or inaccurate. We do not guarantee the accuracy, completeness, or timeliness of any data shown.</p>
+<p>Market data, news, and other information displayed on the Service are sourced from third parties, including Yahoo Finance, and may be delayed, incomplete, or inaccurate. QUANTIFY is not affiliated with, endorsed by, or sponsored by Yahoo, Inc. We do not guarantee the accuracy, completeness, or timeliness of any data shown.</p>
 <h2>6. Disclaimers and Limitation of Liability</h2>
 <p>The Service is provided "as is" and "as available," without warranties of any kind, express or implied. To the fullest extent permitted by law, QUANTIFY and its operator will not be liable for any direct, indirect, incidental, or consequential damages arising from your use of, or inability to use, the Service, including any investment losses.</p>
 <h2>7. Termination</h2>
