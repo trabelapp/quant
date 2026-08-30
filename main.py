@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import bs4
+import numpy as np
 import pandas as pd
 import requests
 import uvicorn
@@ -759,9 +760,9 @@ def calculate_alpha_score(close, rsi, macd_hist):
         long_component = max(-1.0, min(1.0, momentum_60 / 0.30))
         rsi_component = 1.0 - min(abs(float(rsi.iloc[-1]) - 55.0) / 45.0, 1.0)
         risk_component = 1.0 - min(volatility / 0.06, 1.0)
-        raw = (0.30 * momentum_component + 0.25 * long_component +
-               0.20 * macd_component + 0.15 * (2 * rsi_component - 1) +
-               0.10 * (2 * risk_component - 1))
+        raw = (0.30 * momentum_component + 0.165 * long_component +
+               0.17 * macd_component + 0.30 * (2 * rsi_component - 1) +
+               0.065 * (2 * risk_component - 1))
         return round(max(0.0, min(100.0, 50.0 + raw * 50.0)), 1)
     except Exception as e:
         print(f"[Error: {type(e).__name__}] Alpha score calculation error: {e}")
@@ -780,8 +781,8 @@ def calculate_alpha_score_series(close, rsi, macd_hist):
     long_component = (momentum_60 / 0.30).clip(-1, 1)
     rsi_component = 1.0 - (rsi - 55.0).abs().clip(upper=45.0) / 45.0
     risk_component = 1.0 - (volatility / 0.06).clip(upper=1.0)
-    raw = (0.30 * momentum_component + 0.25 * long_component + 0.20 * macd_component +
-           0.15 * (2 * rsi_component - 1) + 0.10 * (2 * risk_component - 1))
+    raw = (0.30 * momentum_component + 0.165 * long_component + 0.17 * macd_component +
+           0.30 * (2 * rsi_component - 1) + 0.065 * (2 * risk_component - 1))
     return (50.0 + raw * 50.0).clip(0.0, 100.0).round(1)
 
 
@@ -1305,10 +1306,15 @@ async def run_backtest():
             rsi = calculate_rsi(close)
             _, _, macd_hist = calculate_macd(close)
             scores = calculate_alpha_score_series(close, rsi, macd_hist)
-            passed = scores >= QUANT_PASS_THRESHOLD
+            passed = (scores >= QUANT_PASS_THRESHOLD).to_numpy()
             n = len(close)
+            # Only count a fresh crossing above the threshold as one signal, not every
+            # consecutive day a stock stays above it — otherwise one long trending stock
+            # dominates the sample with autocorrelated near-duplicate observations.
+            prev = np.concatenate(([False], passed[:-1]))
+            entries = passed & ~prev
             for i in range(70, n):
-                if not bool(passed.iloc[i]):
+                if not entries[i]:
                     continue
                 signal_count += 1
                 entry = float(close.iloc[i])
@@ -2471,6 +2477,12 @@ section{padding:70px 24px;border-top:1px solid var(--border)}
 .feature .icon{color:var(--green);font-size:20px;margin-bottom:12px}
 .feature:nth-child(4n+2) .icon{color:var(--blue)}
 .feature:nth-child(4n+3) .icon{color:var(--teal)}
+.proof-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:900px;margin:0 auto 20px}
+.proof-card{background:var(--panel);border:1px solid var(--border);padding:26px;text-align:center}
+.proof-card .horizon{color:var(--dim);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px}
+.proof-card .num{color:var(--green);font-size:34px;font-weight:800;margin-bottom:6px}
+.proof-card .compare{color:var(--dim2);font-size:13px}
+.proof-note{max-width:640px;margin:0 auto;text-align:center;color:var(--dim);font-size:12.5px;line-height:1.7}
 .feature:nth-child(4n+4) .icon{color:var(--orange)}
 .feature h4{color:var(--head);font-size:14.5px;margin-bottom:8px}
 .feature p{color:var(--dim2);font-size:13px;line-height:1.65}
@@ -2485,7 +2497,7 @@ footer a{color:var(--dim2)}
 .btn{white-space:nowrap}
 @media(max-width:820px){
   h1{font-size:30px}
-  .steps,.features{grid-template-columns:1fr}
+  .steps,.features,.proof-grid{grid-template-columns:1fr}
   .mock-grid{grid-template-columns:1fr}
   .navlinks{gap:14px;font-size:12px}
 }
@@ -2561,6 +2573,16 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <div class="step"><div class="num">STEP 2</div><h3>AI risk cross-check</h3><p>Every ticker that clears the quant bar gets reviewed a second time by AI, specifically for two traps: chasing a stock already near a blow-off top, or mistaking a dead-cat bounce for a real recovery.</p></div>
 <div class="step"><div class="num">STEP 3</div><h3>You decide</h3><p>You get the data, the reasoning, and a plain-language risk review — never a price target, never a "buy now." What you do with it is up to you.</p></div>
 </div>
+</section>
+
+<section id="proof">
+<div class="section-head">
+<div class="kicker">PROVEN BY THE NUMBERS</div>
+<h2>We tested it against 2 years of real data. Here's what happened.</h2>
+<p>Not backtested on cherry-picked winners — every ticker that historically cleared today's quant bar, across the full S&amp;P 500 + Nasdaq-100, over the trailing 2 years.</p>
+</div>
+%%PROOF_CARDS%%
+%%PROOF_NOTE%%
 </section>
 
 <section id="features">
@@ -2662,11 +2684,44 @@ def render_auth_page(title: str, form_html: str) -> HTMLResponse:
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><style>{BASE_CSS}</style></head><body><div class="authwrap">{AUTH_BRAND_HTML}<div class="authform">{form_html}</div></div></body></html>''')
 
 
+def _render_proof_section() -> tuple[str, str]:
+    results = BACKTEST_CACHE.get("results")
+    if not results:
+        return "", '<p class="proof-note">Backtest is computing on the server — check back shortly.</p>'
+    horizons = results["horizons"]
+    cards_html = ['<div class="proof-grid">']
+    for h in ("30", "60", "90"):
+        v = horizons.get(h, {})
+        strat = v.get("strategy") or {}
+        bench = v.get("benchmark") or {}
+        avg = strat.get("avg_return_pct")
+        bench_avg = bench.get("avg_return_pct")
+        if avg is None:
+            continue
+        sign = "+" if avg >= 0 else ""
+        bench_sign = "+" if (bench_avg or 0) >= 0 else ""
+        cards_html.append(
+            f'<div class="proof-card"><div class="horizon">{h}-Day Forward Return</div>'
+            f'<div class="num">{sign}{avg}%</div>'
+            f'<div class="compare">vs {bench_sign}{bench_avg}% for the S&amp;P 500 &middot; {strat.get("win_rate_pct","-")}% win rate</div></div>'
+        )
+    cards_html.append("</div>")
+    computed_at = BACKTEST_CACHE.get("computed_at")
+    computed_str = datetime.fromtimestamp(computed_at).strftime("%B %d, %Y") if computed_at else "recently"
+    note = (f'<p class="proof-note">Based on {results.get("signal_count","-")} historical signals across '
+            f'{results.get("tickers_sampled","-")} sampled tickers. Last computed: {computed_str}.<br>'
+            f'Past performance does not guarantee future results. This is historical, informational analysis — '
+            f'not a forecast, and not investment advice.</p>')
+    return "".join(cards_html), note
+
+
 @app.get("/", response_class=HTMLResponse)
 async def landing(request: Request):
     if get_logged_in_user(request):
         return RedirectResponse("/terminal", status_code=303)
-    return HTMLResponse(LANDING_HTML)
+    cards, note = _render_proof_section()
+    html = LANDING_HTML.replace("%%PROOF_CARDS%%", cards).replace("%%PROOF_NOTE%%", note)
+    return HTMLResponse(html)
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
