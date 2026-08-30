@@ -122,7 +122,7 @@ RESET_ATTEMPTS = {}
 RESET_MAX_ATTEMPTS = 5
 
 SEND_CODE_ATTEMPTS = {}
-SEND_CODE_MAX_ATTEMPTS = 3
+SEND_CODE_MAX_ATTEMPTS = 5
 
 SIGNUP_ATTEMPTS = {}
 SIGNUP_MAX_ATTEMPTS = 5
@@ -3045,7 +3045,7 @@ async def verify_email(email: str, token: str):
 async def resend_verification(request: Request, email: str = Form(...)):
     email = email.strip().lower()
     if _is_locked_out(SEND_CODE_ATTEMPTS, "verify:"+email, SEND_CODE_MAX_ATTEMPTS):
-        return RedirectResponse("/login?msg=If+that+account+needs+verification,+a+new+email+was+sent.", status_code=303)
+        return RedirectResponse("/login?error=Too+many+requests.+Wait+15+minutes+and+try+again.", status_code=303)
     _register_failed_attempt(SEND_CODE_ATTEMPTS, "verify:"+email)
     conn = db()
     row = conn.execute("SELECT is_active FROM users WHERE email=?", (email,)).fetchone()
@@ -3087,14 +3087,14 @@ async def forgot_page(error: Optional[str] = None):
 async def send_code(email: str = Form(...)):
     email=email.strip().lower()
     if _is_locked_out(SEND_CODE_ATTEMPTS, email, SEND_CODE_MAX_ATTEMPTS):
-        return RedirectResponse("/reset-password?email="+urllib.parse.quote(email),status_code=303)
+        return RedirectResponse("/forgot-password?error=Too+many+code+requests.+Wait+15+minutes+and+try+again.",status_code=303)
     _register_failed_attempt(SEND_CODE_ATTEMPTS, email)
     try:
         conn=db()
         row=conn.execute("SELECT email FROM users WHERE email=?",(email,)).fetchone()
         if row:
             code=f"{secrets.randbelow(1_000_000):06d}"; code_hash=hashlib.sha256(code.encode()).hexdigest()
-            conn.execute("UPDATE users SET reset_code_hash=?,reset_expires=? WHERE email=?",(code_hash,time.time()+300,email))
+            conn.execute("UPDATE users SET reset_code_hash=?,reset_expires=? WHERE email=?",(code_hash,time.time()+900,email))
             conn.commit()
         conn.close()
     except Exception as e:
@@ -3102,7 +3102,7 @@ async def send_code(email: str = Form(...)):
         return RedirectResponse("/forgot-password?error=Database+error",status_code=303)
 
     if row:
-        send_email_notification(email,"[QUANTIFY.] Password Reset Code",f"Your code: {code}\nValid for: 5 minutes")
+        send_email_notification(email,"[QUANTIFY.] Password Reset Code",f"Your code: {code}\nValid for: 15 minutes")
     # Respond identically regardless of whether the account exists, to avoid leaking registration status.
     return RedirectResponse("/reset-password?email="+urllib.parse.quote(email),status_code=303)
 
@@ -3111,7 +3111,7 @@ async def send_code(email: str = Form(...)):
 async def reset_page(email: str, error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     email = html_lib.escape(email)
-    form = f'''<div class="card"><h2>Choose a new password</h2><div class="subtitle">Enter the code we emailed you, plus a new password.</div><div class="error">{error}</div><form action="/api/auth/verify-and-reset" method="post"><input type="hidden" name="email" value="{email}"><label>6-digit code</label><input name="code" required maxlength="6"><label>New password</label><input type="password" name="new_password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Reset password</button></form></div>'''
+    form = f'''<div class="card"><h2>Choose a new password</h2><div class="subtitle">Enter the code we emailed you, plus a new password. Don't see it? Check spam, or wait a minute and try again.</div><div class="error">{error}</div><form action="/api/auth/verify-and-reset" method="post"><input type="hidden" name="email" value="{email}"><label>6-digit code</label><input name="code" required maxlength="6"><label>New password</label><input type="password" name="new_password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Reset password</button></form><div class="links"><a href="/forgot-password">Resend code</a></div></div>'''
     return render_auth_page("Reset Password", form)
 
 
