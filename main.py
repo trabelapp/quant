@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import hashlib
 import html as html_lib
 import hmac
@@ -47,6 +48,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 LEMONSQUEEZY_CHECKOUT_URL = os.getenv("LEMONSQUEEZY_CHECKOUT_URL", "")
 LEMONSQUEEZY_WEBHOOK_SECRET = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
+GUMROAD_CHECKOUT_URL = os.getenv("GUMROAD_CHECKOUT_URL", "")
 TRIAL_DAYS = 7
 
 # Constituent refresh is deliberately infrequent. Market data is fetched in
@@ -296,6 +298,8 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN ls_customer_id TEXT")
         if "ls_subscription_id" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN ls_subscription_id TEXT")
+        if "gumroad_subscription_id" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN gumroad_subscription_id TEXT")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + 7 * 86400,))
@@ -1386,9 +1390,9 @@ def _prune_attempt_dict(attempt_dict: dict, window_seconds: float) -> int:
 
 async def cache_prune_scheduler():
     while True:
-        await asyncio.sleep(900)
+        await asyncio.sleep(300)
         try:
-            removed_hist = _prune_timed_cache(CACHE["historical"], HISTORICAL_TTL * 3)
+            removed_hist = _prune_timed_cache(CACHE["historical"], HISTORICAL_TTL * 1.5)
             removed_news = _prune_timed_cache(CACHE["news"], NEWS_TTL * 3)
             removed_short = _prune_timed_cache(CACHE["short_interest"], SHORT_INTEREST_TTL * 2)
             removed_earnings = _prune_timed_cache(CACHE["earnings"], SHORT_INTEREST_TTL * 2)
@@ -1399,6 +1403,8 @@ async def cache_prune_scheduler():
             if removed_hist or removed_news or removed_short or removed_earnings or removed_attempts:
                 print(f"[cache] Pruned stale entries — historical:{removed_hist} news:{removed_news} "
                       f"short_interest:{removed_short} earnings:{removed_earnings} rate_limit_keys:{removed_attempts}", flush=True)
+            if removed_hist:
+                gc.collect()
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Cache prune error: {exc}", flush=True)
 
@@ -3076,8 +3082,9 @@ async def subscription_page(request: Request):
         plan_html = (f'<span class="badge">Free Trial &middot; {days_left} day{"s" if days_left != 1 else ""} left</span>'
                      f'<p>Every account gets a {TRIAL_DAYS}-day free trial. QUANTIFY is free for everyone during early access regardless of trial status — this is just a preview of what subscription status will look like once paid plans launch.</p>')
 
-    if LEMONSQUEEZY_CHECKOUT_URL:
-        checkout_html = f'<a href="{LEMONSQUEEZY_CHECKOUT_URL}" class="subscribe-btn">Subscribe</a>'
+    checkout_url = GUMROAD_CHECKOUT_URL or LEMONSQUEEZY_CHECKOUT_URL
+    if checkout_url:
+        checkout_html = f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">Subscribe</a>'
     else:
         checkout_html = '<div class="subscribe-btn disabled">Paid plans coming soon</div>'
 
@@ -3199,6 +3206,36 @@ async def lemonsqueezy_webhook(request: Request):
         conn.commit()
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] LemonSqueezy webhook DB update failed: {exc}", flush=True)
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/gumroad/webhook")
+async def gumroad_webhook(request: Request):
+    # Gumroad Ping payloads are unsigned form data (no secret to verify against —
+    # see https://gumroad.com/ping). Acceptable for now since no paywall is enforced;
+    # revisit with API-verified sale lookups before this ever gates access.
+    form = await request.form()
+    email = (form.get("email") or "").strip().lower()
+    if not email:
+        return {"ok": True}
+    resource_name = form.get("resource_name", "sale")
+    subscription_id = str(form.get("subscription_id") or "")
+    refunded = (form.get("refunded") or "").lower() == "true"
+
+    conn = db()
+    try:
+        if resource_name == "refund" or refunded:
+            conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
+        elif resource_name == "sale":
+            conn.execute(
+                "UPDATE users SET subscription_status='active',gumroad_subscription_id=? WHERE email=?",
+                (subscription_id, email),
+            )
+        conn.commit()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Gumroad webhook DB update failed: {exc}", flush=True)
     finally:
         conn.close()
     return {"ok": True}
