@@ -1525,7 +1525,12 @@ async def startup():
     asyncio.create_task(market_scan_scheduler())
     asyncio.create_task(index_warm_scheduler())
     asyncio.create_task(cache_prune_scheduler())
-    asyncio.create_task(backtest_scheduler())
+    # backtest_scheduler() is disabled from auto-running for now — it competes for
+    # memory with the regular 30-min market scan and was implicated in repeated
+    # Render OOM restarts. Load whatever's already on disk (if anything) so the
+    # landing page can still show it, but don't trigger a new full computation
+    # automatically. Trigger manually via /api/admin/run-backtest when needed.
+    load_backtest_cache()
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
