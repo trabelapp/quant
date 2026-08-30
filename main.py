@@ -64,6 +64,10 @@ CONSTITUENT_HTTP_TIMEOUT = 12
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 UNIVERSE_FILE = DATA_DIR / "universe_cache.json"
+BACKTEST_FILE = DATA_DIR / "backtest_cache.json"
+BACKTEST_SAMPLE_SIZE = 200
+BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
+BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 
 SNP500_SOURCE = os.getenv(
     "SNP500_SOURCE",
@@ -235,6 +239,14 @@ def init_db():
             ai_report TEXT,
             note TEXT,
             saved_at REAL NOT NULL,
+            FOREIGN KEY(email) REFERENCES users(email)
+        );
+        CREATE TABLE IF NOT EXISTS watchlist_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            added_at REAL NOT NULL,
+            UNIQUE(email, ticker),
             FOREIGN KEY(email) REFERENCES users(email)
         );
         """)
@@ -757,6 +769,23 @@ def calculate_alpha_score(close, rsi, macd_hist):
         return None
 
 
+def calculate_alpha_score_series(close, rsi, macd_hist):
+    """Vectorized replay of calculate_alpha_score() across an entire price history,
+    used only for the backtest — must stay numerically identical to the per-row version."""
+    momentum_20 = close / close.shift(20) - 1
+    momentum_60 = close / close.shift(60) - 1
+    volatility = close.pct_change().rolling(20).std()
+    macd_scale = (close * 0.01).clip(lower=1e-9)
+    macd_component = (macd_hist / macd_scale).clip(-1, 1)
+    momentum_component = (momentum_20 / 0.15).clip(-1, 1)
+    long_component = (momentum_60 / 0.30).clip(-1, 1)
+    rsi_component = 1.0 - (rsi - 55.0).abs().clip(upper=45.0) / 45.0
+    risk_component = 1.0 - (volatility / 0.06).clip(upper=1.0)
+    raw = (0.30 * momentum_component + 0.25 * long_component + 0.20 * macd_component +
+           0.15 * (2 * rsi_component - 1) + 0.10 * (2 * risk_component - 1))
+    return (50.0 + raw * 50.0).clip(0.0, 100.0).round(1)
+
+
 def _is_rate_limit_error(exc) -> bool:
     msg = str(exc).lower()
     return "rate limit" in msg or "too many requests" in msg
@@ -1260,6 +1289,107 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
             raise
         finally:
             BATCH_STATUS.update({"running": False, "finished_at": time.time()})
+
+# -----------------------------------------------------------------------------
+# Strategy backtest (real historical replay, no invented numbers)
+# -----------------------------------------------------------------------------
+def load_backtest_cache():
+    if not BACKTEST_FILE.exists():
+        return False
+    try:
+        payload = json.loads(BACKTEST_FILE.read_text(encoding="utf-8"))
+        BACKTEST_CACHE.update(payload)
+        return True
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Backtest cache load error: {exc}")
+        return False
+
+
+def _summarize_returns(returns):
+    if not returns:
+        return None
+    win_rate = sum(1 for x in returns if x > 0) / len(returns) * 100
+    return {"avg_return_pct": round(sum(returns) / len(returns), 2), "win_rate_pct": round(win_rate, 1), "n": len(returns)}
+
+
+async def run_backtest():
+    import random
+    tickers = list(UNIVERSE)
+    if not tickers:
+        return
+    sample = tickers if len(tickers) <= BACKTEST_SAMPLE_SIZE else random.sample(tickers, BACKTEST_SAMPLE_SIZE)
+    horizons = [30, 60, 90]
+    forward_returns = {h: [] for h in horizons}
+    bench_returns = {h: [] for h in horizons}
+    signal_count = 0
+    for ticker in sample:
+        try:
+            df = await download_stock(ticker, "1d")
+            if df is None:
+                continue
+            close = normalize_series(df, "Close").dropna()
+            if len(close) < 300:
+                continue
+            rsi = calculate_rsi(close)
+            _, _, macd_hist = calculate_macd(close)
+            scores = calculate_alpha_score_series(close, rsi, macd_hist)
+            passed = scores >= QUANT_PASS_THRESHOLD
+            n = len(close)
+            for i in range(70, n):
+                if not bool(passed.iloc[i]):
+                    continue
+                signal_count += 1
+                entry = float(close.iloc[i])
+                for h in horizons:
+                    if i + h < n and entry:
+                        forward_returns[h].append(float(close.iloc[i + h] / entry - 1) * 100)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Backtest ticker error ({ticker}): {exc}")
+            continue
+    try:
+        spx = await download_stock("^GSPC", "1d")
+        spx_close = normalize_series(spx, "Close").dropna()
+        n = len(spx_close)
+        for i in range(0, n):
+            entry = float(spx_close.iloc[i])
+            for h in horizons:
+                if i + h < n and entry:
+                    bench_returns[h].append(float(spx_close.iloc[i + h] / entry - 1) * 100)
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Backtest benchmark error: {exc}")
+
+    results = {
+        "signal_count": signal_count,
+        "tickers_sampled": len(sample),
+        "horizons": {
+            str(h): {"strategy": _summarize_returns(forward_returns[h]), "benchmark": _summarize_returns(bench_returns[h])}
+            for h in horizons
+        },
+    }
+    BACKTEST_CACHE.update({"computed_at": time.time(), "results": results, "error": None})
+    try:
+        BACKTEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = BACKTEST_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(BACKTEST_CACHE, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(BACKTEST_FILE)
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Backtest cache save error: {exc}")
+
+
+async def backtest_scheduler():
+    load_backtest_cache()
+    while True:
+        needs_refresh = (not BACKTEST_CACHE.get("computed_at")
+                          or time.time() - BACKTEST_CACHE["computed_at"] > BACKTEST_REFRESH_SECONDS)
+        if needs_refresh and UNIVERSE:
+            try:
+                await run_backtest()
+                n = BACKTEST_CACHE.get("results", {}).get("signal_count", 0)
+                print(f"[backtest] Refreshed — {n} historical signals sampled", flush=True)
+            except Exception as exc:
+                BACKTEST_CACHE["error"] = f"{type(exc).__name__}: {exc}"
+                print(f"[Error: {type(exc).__name__}] Backtest scheduler error: {exc}", flush=True)
+        await asyncio.sleep(3600)
 
 # -----------------------------------------------------------------------------
 # Automatic server cache warm-up
@@ -2023,6 +2153,26 @@ async def set_alert(request: Request, ticker: str = Form(...), target_price: flo
     return {"message": f"Alert set: {ticker} at ${target_price:.2f}."}
 
 
+@app.get("/api/alerts/list")
+async def alerts_list(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    conn = db()
+    rows = conn.execute("SELECT id,ticker,target_price,is_sent,created_at FROM user_alerts WHERE email=? ORDER BY created_at DESC", (user,)).fetchall()
+    conn.close()
+    return {"alerts": [dict(r) for r in rows]}
+
+
+@app.post("/api/alerts/remove")
+async def alerts_remove(request: Request, id: int = Form(...)):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    conn = db()
+    conn.execute("DELETE FROM user_alerts WHERE id=? AND email=?", (id, user))
+    conn.commit(); conn.close()
+    return {"message": "Alert removed."}
+
+
 @app.post("/api/portfolio/save")
 async def portfolio_save(request: Request, ticker: str = Form(...), note: str = Form(""), shares: str = Form("")):
     user = get_logged_in_user(request)
@@ -2116,6 +2266,51 @@ async def portfolio_remove(request: Request, id: int = Form(...)):
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
     conn.execute("DELETE FROM portfolio_items WHERE id=? AND email=?", (id, user))
+    conn.commit(); conn.close()
+    return {"message": "Removed."}
+
+
+@app.post("/api/watchlist/add")
+async def watchlist_add(request: Request, ticker: str = Form(...)):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    ticker = normalize_ticker(ticker)
+    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+        return JSONResponse({"error": "Invalid ticker"}, status_code=400)
+    try:
+        conn = db()
+        conn.execute("INSERT OR IGNORE INTO watchlist_items(email,ticker,added_at) VALUES(?,?,?)", (user, ticker, time.time()))
+        conn.commit(); conn.close()
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] Watchlist add error: {e}")
+        return JSONResponse({"error": f"Database error: {type(e).__name__}"}, status_code=500)
+    return {"message": f"Added {ticker} to your watchlist."}
+
+
+@app.get("/api/watchlist")
+async def watchlist_list(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    conn = db()
+    rows = conn.execute("SELECT id,ticker,added_at FROM watchlist_items WHERE email=? ORDER BY added_at DESC", (user,)).fetchall()
+    conn.close()
+    tickers = [r["ticker"] for r in rows]
+    prices = await asyncio.gather(*(get_current_price(t) for t in tickers))
+    price_by_ticker = dict(zip(tickers, prices))
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["price"] = price_by_ticker.get(d["ticker"])
+        items.append(d)
+    return {"items": items}
+
+
+@app.post("/api/watchlist/remove")
+async def watchlist_remove(request: Request, id: int = Form(...)):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    conn = db()
+    conn.execute("DELETE FROM watchlist_items WHERE id=? AND email=?", (id, user))
     conn.commit(); conn.close()
     return {"message": "Removed."}
 
