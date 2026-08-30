@@ -32,6 +32,10 @@ services:
         sync: false
       - key: ADMIN_TOKEN
         sync: false
+      - key: LEMONSQUEEZY_CHECKOUT_URL
+        sync: false
+      - key: LEMONSQUEEZY_WEBHOOK_SECRET
+        sync: false
       - key: AI_CONCURRENCY
         value: "1"
       - key: QUANT_PASS_THRESHOLD

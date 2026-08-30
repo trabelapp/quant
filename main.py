@@ -45,6 +45,9 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+LEMONSQUEEZY_CHECKOUT_URL = os.getenv("LEMONSQUEEZY_CHECKOUT_URL", "")
+LEMONSQUEEZY_WEBHOOK_SECRET = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
+TRIAL_DAYS = 7
 
 # Constituent refresh is deliberately infrequent. Market data is fetched in
 # small batches with pauses, not as hundreds of simultaneous requests.
@@ -277,6 +280,19 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN verify_expires REAL")
         if "disclaimer_accepted_at" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN disclaimer_accepted_at REAL")
+        if "created_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN created_at REAL")
+        if "trial_ends_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_ends_at REAL")
+        if "subscription_status" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN subscription_status TEXT NOT NULL DEFAULT 'trial'")
+        if "ls_customer_id" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN ls_customer_id TEXT")
+        if "ls_subscription_id" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN ls_subscription_id TEXT")
+        now_ts = time.time()
+        conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
+        conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + 7 * 86400,))
 
         scan_info = conn.execute("PRAGMA table_info(daily_scans)").fetchall()
         scan_cols = {r[1] for r in scan_info}
@@ -2412,8 +2428,8 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
     if not row:
         password_hash, salt = make_password_hash(secrets.token_urlsafe(32))
         conn.execute(
-            "INSERT INTO users(email,password_hash,salt,is_active) VALUES(?,?,?,1)",
-            (email, password_hash, salt),
+            "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at) VALUES(?,?,?,1,?,?)",
+            (email, password_hash, salt, time.time(), time.time() + 7 * 86400),
         )
         conn.commit()
     conn.close()
@@ -2571,8 +2587,8 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
     try:
         conn=db()
         conn.execute(
-            "INSERT INTO users(email,password_hash,salt,is_active,verify_token_hash,verify_expires) VALUES(?,?,?,0,?,?)",
-            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL),
+            "INSERT INTO users(email,password_hash,salt,is_active,verify_token_hash,verify_expires,created_at,trial_ends_at) VALUES(?,?,?,0,?,?,?,?)",
+            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL,time.time(),time.time()+7*86400),
         )
         conn.commit()
         conn.close()
@@ -2884,9 +2900,30 @@ load();
 async def subscription_page(request: Request):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
-    user = html_lib.escape(user)
+    conn = db()
+    row = conn.execute("SELECT trial_ends_at,subscription_status FROM users WHERE email=?", (user,)).fetchone()
+    conn.close()
+    trial_ends_at = row["trial_ends_at"] if row else None
+    sub_status = (row["subscription_status"] if row else "trial") or "trial"
+    days_left = max(0, int((trial_ends_at - time.time()) / 86400) + 1) if trial_ends_at else 0
+    user_esc = html_lib.escape(user)
+
+    if sub_status == "active":
+        plan_html = '<span class="badge">Active Subscription</span><p>Your subscription is active. Thanks for supporting QUANTIFY.</p>'
+    elif sub_status in ("expired", "cancelled", "paused"):
+        plan_html = (f'<span class="badge warn">Trial Ended</span>'
+                     f'<p>Your {TRIAL_DAYS}-day free trial has ended. QUANTIFY is still free for everyone during early access — nothing about your account changes today.</p>')
+    else:
+        plan_html = (f'<span class="badge">Free Trial &middot; {days_left} day{"s" if days_left != 1 else ""} left</span>'
+                     f'<p>Every account gets a {TRIAL_DAYS}-day free trial. QUANTIFY is free for everyone during early access regardless of trial status — this is just a preview of what subscription status will look like once paid plans launch.</p>')
+
+    if LEMONSQUEEZY_CHECKOUT_URL:
+        checkout_html = f'<a href="{LEMONSQUEEZY_CHECKOUT_URL}" class="subscribe-btn">Subscribe</a>'
+    else:
+        checkout_html = '<div class="subscribe-btn disabled">Paid plans coming soon</div>'
+
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Subscription</title><style>
-:root{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a}}
+:root{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--orange:#ff9800}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:8px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-radius:6px;flex-wrap:wrap;gap:10px}}
 .brand{{font-weight:700;font-size:16px;color:var(--head);text-decoration:none}}.brand span{{color:var(--dim)}}
@@ -2896,12 +2933,15 @@ a.back{{color:var(--head);text-decoration:underline;font-size:13px;font-weight:6
 .card{{background:var(--panel);border:1px solid var(--border);padding:22px;margin-bottom:16px;border-radius:8px}}
 .card h2{{color:var(--head);font-size:13px;margin:0 0 16px;border-bottom:1px solid var(--border);padding-bottom:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}}
 .badge{{display:inline-block;padding:4px 10px;border-radius:12px;background:rgba(38,166,154,.15);color:var(--green);font-weight:700;font-size:12px}}
+.badge.warn{{background:rgba(255,152,0,.15);color:var(--orange)}}
 p{{color:var(--text);font-size:13px;line-height:1.7;margin-top:14px}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Subscription · {user}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+.subscribe-btn{{display:block;text-align:center;margin-top:18px;background:var(--head);color:var(--bg);padding:12px;border-radius:6px;text-decoration:none;font-weight:700;font-size:13px}}
+.subscribe-btn.disabled{{background:var(--panel2);color:var(--dim);border:1px solid var(--border);cursor:default}}
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Subscription · {user_esc}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap"><div class="card">
 <h2>Current Plan</h2>
-<span class="badge">Free &middot; Early Access</span>
-<p>QUANTIFY is free for everyone while it's in early access — no credit card, no trial period ending. Paid plans with additional features are being considered for the future; if that changes, you'll get plenty of notice before anything about your account changes.</p>
+{plan_html}
+{checkout_html}
 </div></div>
 </body></html>''')
 
@@ -2960,6 +3000,49 @@ async def submit_contact(request: Request, message: str = Form(...)):
     if not ok:
         return JSONResponse({"error": "Could not send your message. Please try again later."}, status_code=500)
     return {"message": "Your message has been sent. We'll get back to you soon."}
+
+
+@app.post("/api/lemonsqueezy/webhook")
+async def lemonsqueezy_webhook(request: Request):
+    body = await request.body()
+    if not LEMONSQUEEZY_WEBHOOK_SECRET:
+        print("[LemonSqueezy] Webhook received but LEMONSQUEEZY_WEBHOOK_SECRET is not set — ignoring.", flush=True)
+        return JSONResponse({"error": "Webhook not configured"}, status_code=503)
+    signature = request.headers.get("X-Signature", "")
+    expected = hmac.new(LEMONSQUEEZY_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        print("[Error: LemonSqueezySignature] Webhook signature mismatch — rejected.", flush=True)
+        return JSONResponse({"error": "Invalid signature"}, status_code=401)
+    try:
+        payload = json.loads(body)
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] LemonSqueezy webhook payload parse error: {exc}", flush=True)
+        return JSONResponse({"error": "Invalid payload"}, status_code=400)
+
+    event_name = payload.get("meta", {}).get("event_name", "")
+    data = payload.get("data", {})
+    attrs = data.get("attributes", {})
+    email = (attrs.get("user_email") or "").strip().lower()
+    if not email:
+        return {"ok": True}
+
+    conn = db()
+    try:
+        if event_name in ("subscription_created", "subscription_updated", "subscription_resumed"):
+            ls_status = attrs.get("status")
+            sub_status = "active" if ls_status in ("active", "on_trial") else (ls_status or "active")
+            conn.execute(
+                "UPDATE users SET subscription_status=?,ls_customer_id=?,ls_subscription_id=? WHERE email=?",
+                (sub_status, str(attrs.get("customer_id", "")), str(data.get("id", "")), email),
+            )
+        elif event_name in ("subscription_cancelled", "subscription_expired"):
+            conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
+        conn.commit()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] LemonSqueezy webhook DB update failed: {exc}", flush=True)
+    finally:
+        conn.close()
+    return {"ok": True}
 
 
 @app.get("/settings", response_class=HTMLResponse)
