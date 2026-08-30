@@ -66,7 +66,7 @@ CONSTITUENT_HTTP_TIMEOUT = 12
 DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 UNIVERSE_FILE = DATA_DIR / "universe_cache.json"
 BACKTEST_FILE = DATA_DIR / "backtest_cache.json"
-BACKTEST_SAMPLE_SIZE = 2000  # comfortably above the ~518-ticker universe, so it always covers the full universe
+BACKTEST_SAMPLE_SIZE = 200
 BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 
