@@ -861,20 +861,16 @@ async def batch_download_stocks(tickers):
 # News / short interest / AI
 # -----------------------------------------------------------------------------
 def fetch_news_sync(ticker: str, attempt: int = 0):
-    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({
-        "q": f"{ticker} stock", "hl": "en-US", "gl": "US", "ceid": "US:en"
-    })
     try:
-        response = requests.get(url, headers={"User-Agent": "QUANTIFY/2.0"}, timeout=6)
-        response.raise_for_status()
-        soup = bs4.BeautifulSoup(response.text, "xml")
+        items = yf.Ticker(ticker).news or []
         result = []
-        for item in soup.find_all("item")[:5]:
-            title, link, pub = item.find("title"), item.find("link"), item.find("pubDate")
-            if title and link:
-                result.append({"title": title.get_text(strip=True),
-                               "url": link.get_text(strip=True),
-                               "published": pub.get_text(strip=True) if pub else None})
+        for item in items[:5]:
+            content = item.get("content", item)
+            title = content.get("title")
+            url = ((content.get("canonicalUrl") or {}).get("url")
+                   or (content.get("clickThroughUrl") or {}).get("url"))
+            if title and url:
+                result.append({"title": title, "url": url, "published": content.get("pubDate")})
         return result
     except Exception as exc:
         if attempt == 0:
