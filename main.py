@@ -81,10 +81,6 @@ NASDAQ100_FALLBACK_SOURCE = os.getenv(
     "NASDAQ100_FALLBACK_SOURCE",
     "https://www.nasdaq.com/products/global-indexes/nasdaq-100/companies",
 )
-SP400_SOURCE = os.getenv(
-    "SP400_SOURCE",
-    "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
-)
 
 app = FastAPI(title="QUANTIFY.")
 ai_client = None
@@ -101,7 +97,7 @@ CACHE = {
     "earnings": {},
 }
 UNIVERSE = []
-UNIVERSE_META = {"sp500": [], "nasdaq100": [], "sp400": []}
+UNIVERSE_META = {"sp500": [], "nasdaq100": []}
 UNIVERSE_STATUS = {"ready": False, "source": None, "updated_at": None, "error": None}
 UNIVERSE_LOCK = asyncio.Lock()
 BATCH_LOCK = asyncio.Lock()
@@ -492,12 +488,10 @@ def load_universe_cache():
         payload = json.loads(UNIVERSE_FILE.read_text(encoding="utf-8"))
         sp = [normalize_ticker(x) for x in payload.get("sp500", [])]
         ndx = [normalize_ticker(x) for x in payload.get("nasdaq100", [])]
-        sp400 = [normalize_ticker(x) for x in payload.get("sp400", [])]
         if len(sp) >= 450 and len(ndx) >= 90:
             UNIVERSE_META["sp500"] = sp
             UNIVERSE_META["nasdaq100"] = ndx
-            UNIVERSE_META["sp400"] = sp400
-            UNIVERSE[:] = list(dict.fromkeys(sp + ndx + sp400))
+            UNIVERSE[:] = list(dict.fromkeys(sp + ndx))
             UNIVERSE_STATUS.update({
                 "ready": True,
                 "source": payload.get("source"),
@@ -665,20 +659,6 @@ def fetch_ndx100_sync():
     raise RuntimeError("Nasdaq-100 sources failed; " + " | ".join(errors))
 
 
-def fetch_sp400_sync():
-    try:
-        html = _fetch_html(SP400_SOURCE)
-        return _extract_table_symbols(
-            html,
-            candidates=("symbol", "ticker", "ticker symbol"),
-            min_count=380,
-            max_count=420,
-        )
-    except Exception as exc:
-        print(f"[Error: RuntimeError] Failed to load S&P 400 source: {type(exc).__name__}: {exc}")
-        raise RuntimeError(f"S&P 400 source failed; {type(exc).__name__}: {exc}")
-
-
 async def refresh_universe(force=False):
     async with UNIVERSE_LOCK:
         if not force and UNIVERSE_STATUS["ready"] and UNIVERSE_STATUS["updated_at"]:
@@ -692,14 +672,10 @@ async def refresh_universe(force=False):
                 asyncio.to_thread(fetch_sp500_sync),
                 asyncio.to_thread(fetch_ndx100_sync),
             )
-            try:
-                sp400 = await asyncio.to_thread(fetch_sp400_sync)
-            except Exception:
-                sp400 = UNIVERSE_META.get("sp400") or []
             payload = {
-                "sp500": sp, "nasdaq100": ndx, "sp400": sp400,
+                "sp500": sp, "nasdaq100": ndx,
                 "updated_at": time.time(),
-                "source": {"sp500": SNP500_SOURCE, "nasdaq100": NASDAQ100_SOURCE, "sp400": SP400_SOURCE},
+                "source": {"sp500": SNP500_SOURCE, "nasdaq100": NASDAQ100_SOURCE},
             }
             UNIVERSE_FILE.parent.mkdir(parents=True, exist_ok=True)
             tmp = UNIVERSE_FILE.with_suffix(".tmp")
@@ -707,8 +683,7 @@ async def refresh_universe(force=False):
             tmp.replace(UNIVERSE_FILE)
             UNIVERSE_META["sp500"] = sp
             UNIVERSE_META["nasdaq100"] = ndx
-            UNIVERSE_META["sp400"] = sp400
-            UNIVERSE[:] = list(dict.fromkeys(sp + ndx + sp400))
+            UNIVERSE[:] = list(dict.fromkeys(sp + ndx))
             UNIVERSE_STATUS.update({"ready": True, "source": payload["source"],
                                     "updated_at": payload["updated_at"], "error": None})
             return True
@@ -1184,7 +1159,7 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                 try:
                     row = await build_scan_row(ticker, mode, df=df, make_ai=False)
                     if row:
-                        universe = "S&P 500" if ticker in UNIVERSE_META["sp500"] else ("Nasdaq-100" if ticker in UNIVERSE_META["nasdaq100"] else "S&P 400")
+                        universe = "S&P 500" if ticker in UNIVERSE_META["sp500"] else "Nasdaq-100"
                         row["universe"] = universe
                         results.append(row)
                 except Exception as exc:
@@ -1718,8 +1693,7 @@ async def api_universe(request: Request, refresh: bool = False):
     if refresh:
         await refresh_universe(force=True)
     return {"status": UNIVERSE_STATUS, "counts": {"sp500": len(UNIVERSE_META["sp500"]),
-            "nasdaq100": len(UNIVERSE_META["nasdaq100"]), "sp400": len(UNIVERSE_META["sp400"]),
-            "combined": len(UNIVERSE)}}
+            "nasdaq100": len(UNIVERSE_META["nasdaq100"]), "combined": len(UNIVERSE)}}
 
 
 @app.get("/api/market-indices")
@@ -1918,7 +1892,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
         df = await download_stock(ticker, "1d")
         analysis = analyze_dataframe(ticker, df)
         if analysis:
-            universe = "S&P 500" if ticker in UNIVERSE_META["sp500"] else ("Nasdaq-100" if ticker in UNIVERSE_META["nasdaq100"] else ("S&P 400" if ticker in UNIVERSE_META["sp400"] else "Other"))
+            universe = "S&P 500" if ticker in UNIVERSE_META["sp500"] else ("Nasdaq-100" if ticker in UNIVERSE_META["nasdaq100"] else "Other")
             quant_pass = 1 if float(analysis.get("alpha_score") or 0) >= QUANT_PASS_THRESHOLD else 0
             conn.execute("""
                 INSERT INTO daily_scans
@@ -2164,9 +2138,9 @@ async def change_password(request: Request, current_password: str = Form(...), n
 LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked</title>
-<meta name="description" content="A daily quant scan of the S&P 500, S&P 400, and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
+<meta name="description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
 <meta property="og:title" content="QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked">
-<meta property="og:description" content="A daily quant scan of the S&P 500, S&P 400, and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
+<meta property="og:description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
 <style>
@@ -2269,8 +2243,8 @@ footer a{color:var(--dim2)}
 
 <section class="hero" style="border-top:none">
 <div class="eyebrow">EARLY ACCESS · FREE WHILE IN BETA</div>
-<h1>Stop scanning <span class="hl">900+</span> stocks by hand.<br>See the ones that actually <span class="hl">cleared the bar</span>.</h1>
-<p class="sub">A daily quant scan of the S&amp;P 500, S&amp;P 400, and Nasdaq-100, double-checked by AI for blow-off-top and dead-cat-bounce risk before it reaches your screen.</p>
+<h1>Stop scanning <span class="hl">518</span> stocks by hand.<br>See the ones that actually <span class="hl">cleared the bar</span>.</h1>
+<p class="sub">A daily quant scan of the S&amp;P 500 and Nasdaq-100, double-checked by AI for blow-off-top and dead-cat-bounce risk before it reaches your screen.</p>
 <div class="cta-row">
 <a class="btn" href="/signup">Get Started Free</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
@@ -2281,7 +2255,7 @@ footer a{color:var(--dim2)}
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
 <div class="mock-grid">
 <div class="mock-col">
-<div class="mock-h">MARKET SCANNER · 13 detected / 900+</div>
+<div class="mock-h">MARKET SCANNER · 13 detected / 518</div>
 <div class="mock-row"><b>MRK</b><span>151.12 <span class="badge badge-ok">Favorable</span></span></div>
 <div class="mock-row"><b>HOOD</b><span>110.71 <span class="badge badge-ok">Favorable</span></span></div>
 <div class="mock-row"><b>DASH</b><span>232.00 <span class="badge badge-warn">Caution</span></span></div>
@@ -2313,7 +2287,7 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <p>Most screeners stop at the math. We add a second pass that specifically hunts for the ways a pure quant signal can fool you.</p>
 </div>
 <div class="steps">
-<div class="step"><div class="num">STEP 1</div><h3>Quant scan, every day</h3><p>Real price data across 900+ S&amp;P 500, S&amp;P 400, and Nasdaq-100 tickers is pulled and scored on momentum, RSI, and MACD. Only the top-scoring names — usually a dozen or two — clear the bar.</p></div>
+<div class="step"><div class="num">STEP 1</div><h3>Quant scan, every day</h3><p>Real price data across all 518 S&amp;P 500 + Nasdaq-100 tickers is pulled and scored on momentum, RSI, and MACD. Only the top-scoring names — usually a dozen or two — clear the bar.</p></div>
 <div class="step"><div class="num">STEP 2</div><h3>AI risk cross-check</h3><p>Every ticker that clears the quant bar gets reviewed a second time by AI, specifically for two traps: chasing a stock already near a blow-off top, or mistaking a dead-cat bounce for a real recovery.</p></div>
 <div class="step"><div class="num">STEP 3</div><h3>You decide</h3><p>You get the data, the reasoning, and a plain-language risk review — never a price target, never a "buy now." What you do with it is up to you.</p></div>
 </div>
@@ -2403,7 +2377,7 @@ details button{margin-top:6px;padding:11px}
 AUTH_BRAND_HTML = """<div class="authbrand">
 <a class="brand" href="/">QUANTIFY<span>.</span></a>
 <h1>Quant-detected stocks,<br>AI risk-checked.</h1>
-<p>A daily scan of the S&amp;P 500, S&amp;P 400, and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk before it ever reaches your screen.</p>
+<p>A daily scan of the S&amp;P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk before it ever reaches your screen.</p>
 <div class="points">
 <div class="point"><b>&#9670;</b> Live market data, never simulated</div>
 <div class="point"><b>&#9670;</b> Plain-language AI risk review on every pick</div>
@@ -2475,7 +2449,7 @@ async def terms_page():
     body = """
 <p>These Terms of Service ("Terms") govern your access to and use of QUANTIFY (the "Service"). By creating an account or using the Service, you agree to these Terms.</p>
 <h2>1. Description of the Service</h2>
-<p>QUANTIFY is an informational and educational tool that runs a quantitative scan of the S&amp;P 500, S&amp;P 400, and Nasdaq-100 and generates AI-written commentary about detected tickers. The Service is not a licensed investment adviser, broker-dealer, or financial planner.</p>
+<p>QUANTIFY is an informational and educational tool that runs a quantitative scan of the S&amp;P 500 and Nasdaq-100 and generates AI-written commentary about detected tickers. The Service is not a licensed investment adviser, broker-dealer, or financial planner.</p>
 <h2>2. Not Investment Advice</h2>
 <p>Nothing on the Service — including quant scores, badges, AI-generated commentary, or any other content — is investment advice, a recommendation, or a solicitation to buy or sell any security. All investment decisions, and all outcomes from those decisions, are solely your own responsibility. Markets involve risk, including the possible loss of your entire investment. Consult a licensed financial professional before making investment decisions.</p>
 <h2>3. Eligibility and Your Account</h2>
