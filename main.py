@@ -3396,7 +3396,7 @@ button:hover{{background:var(--border)}}
 .gain{{color:var(--green);font-weight:700}}
 .loss{{color:var(--red);font-weight:700}}
 .disclaimer-footer{{max-width:900px;margin:20px auto 0;color:var(--dim);font-size:10.5px;line-height:1.6;text-align:center;padding:12px;border-top:1px solid var(--border)}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Portfolio · {user}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Portfolio · {user}</span><a class="back" href="/settings">Settings</a><a class="back" href="/subscription">Subscription</a><a class="back" href="/contact">Contact</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap" id="list">Loading...</div>
 <div class="disclaimer-footer">QUANTIFY is informational and educational only, not investment advice. Nothing here is a recommendation to buy or sell any security. All investment decisions are solely your own responsibility.</div>
 <script>
@@ -3450,7 +3450,7 @@ a.back{{color:var(--head);text-decoration:underline;font-size:13px;font-weight:6
 p{{color:var(--text);font-size:13px;line-height:1.7;margin-top:14px}}
 .subscribe-btn{{display:block;text-align:center;margin-top:18px;background:var(--head);color:var(--bg);padding:12px;border-radius:6px;text-decoration:none;font-weight:700;font-size:13px}}
 .subscribe-btn.disabled{{background:var(--panel2);color:var(--dim);border:1px solid var(--border);cursor:default}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Subscription · {user_esc}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Subscription · {user_esc}</span><a class="back" href="/portfolio">Portfolio</a><a class="back" href="/settings">Settings</a><a class="back" href="/contact">Contact</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap"><div class="card">
 <h2>Current Plan</h2>
 {plan_html}
@@ -3480,7 +3480,7 @@ label{{display:block;font-size:11.5px;font-weight:600;color:var(--dim);margin:14
 textarea{{width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:10px;font:12.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;border-radius:4px;resize:vertical;min-height:140px}}
 button{{margin-top:16px;background:var(--head);border:1px solid var(--head);color:var(--bg);padding:10px 14px;font:12.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-weight:700;cursor:pointer;width:100%;border-radius:4px}}
 .msg{{font-size:12px;min-height:16px;margin-top:8px}}.ok{{color:var(--green)}}.err{{color:var(--red)}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Contact · {user}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Contact · {user}</span><a class="back" href="/portfolio">Portfolio</a><a class="back" href="/settings">Settings</a><a class="back" href="/subscription">Subscription</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap"><div class="card">
 <h2>Contact Us</h2>
 <div class="msg {'ok' if msg else 'err' if error else ''}">{msg or error}</div>
@@ -3619,7 +3619,7 @@ button:hover{{opacity:.9}}
 .card.danger{{border-color:var(--red)}}
 .card.danger h2{{color:var(--red)}}
 button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(--red)}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Settings · {user}</span><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Settings · {user}</span><a class="back" href="/portfolio">Portfolio</a><a class="back" href="/subscription">Subscription</a><a class="back" href="/contact">Contact</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
 <div class="wrap">
 <div class="card"><h2>Account</h2>
 <div id="account-info"><div class="empty-hint">Loading...</div></div>
