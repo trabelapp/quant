@@ -1275,6 +1275,19 @@ async def market_scan_scheduler():
             print(f"[Error: {type(exc).__name__}] Scheduled market scan failed: {exc}", flush=True)
 
 
+async def warm_market_indices():
+    try:
+        await asyncio.gather(download_stock("^GSPC", "1d"), download_stock("^NDX", "1d"))
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Index warm-up failed: {exc}", flush=True)
+
+
+async def index_warm_scheduler():
+    while True:
+        await warm_market_indices()
+        await asyncio.sleep(480)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -1282,6 +1295,7 @@ async def startup():
     asyncio.create_task(refresh_universe())
     asyncio.create_task(scheduler())
     asyncio.create_task(market_scan_scheduler())
+    asyncio.create_task(index_warm_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
