@@ -474,6 +474,18 @@ def disclaimer_accepted(email: str) -> bool:
     conn.close()
     return bool(row and row["disclaimer_accepted_at"])
 
+
+def has_active_access(email: str) -> bool:
+    conn = db()
+    row = conn.execute("SELECT trial_ends_at,subscription_status FROM users WHERE email=?", (email,)).fetchone()
+    conn.close()
+    if not row:
+        return False
+    if row["subscription_status"] == "active":
+        return True
+    trial_ends_at = row["trial_ends_at"]
+    return bool(trial_ends_at and time.time() < trial_ends_at)
+
 # -----------------------------------------------------------------------------
 # Universe loading
 # -----------------------------------------------------------------------------
@@ -1622,8 +1634,11 @@ def start_ai_prefetch(mode="Long-Term Momentum Pullback"):
 # -----------------------------------------------------------------------------
 @app.get("/api/scan")
 async def api_scan(request: Request):
-    if not get_logged_in_user(request):
+    user = get_logged_in_user(request)
+    if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
     conn = db()
     scanned_count = conn.execute(
         "SELECT COUNT(*) FROM daily_scans WHERE scan_date=?", (today_str(),)
@@ -1802,8 +1817,11 @@ async def api_batch_status(request: Request, token: Optional[str] = None):
 
 @app.get("/api/terminal-data-fast")
 async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: str = "1d"):
-    if not get_logged_in_user(request):
+    user = get_logged_in_user(request)
+    if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     ticker = normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
@@ -1872,6 +1890,8 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     user = get_logged_in_user(request)
     if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     ticker=normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}",ticker):
         return JSONResponse({"error":"Invalid ticker"},status_code=400)
@@ -2242,14 +2262,14 @@ footer a{color:var(--dim2)}
 </div></header>
 
 <section class="hero" style="border-top:none">
-<div class="eyebrow">EARLY ACCESS · FREE WHILE IN BETA</div>
+<div class="eyebrow">7-DAY FREE TRIAL · THEN $9.99/MONTH</div>
 <h1>Stop scanning <span class="hl">518</span> stocks by hand.<br>See the ones that actually <span class="hl">cleared the bar</span>.</h1>
 <p class="sub">A daily quant scan of the S&amp;P 500 and Nasdaq-100, double-checked by AI for blow-off-top and dead-cat-bounce risk before it reaches your screen.</p>
 <div class="cta-row">
 <a class="btn" href="/signup">Get Started Free</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
 </div>
-<div class="cta-note">No credit card. Same data for every subscriber — never personalized picks.</div>
+<div class="cta-note">Same data for every subscriber — never personalized picks. Cancel anytime during the trial.</div>
 
 <div class="mock">
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
@@ -2309,7 +2329,7 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <section>
 <div class="final-wrap">
 <h2>See today's detected tickers.</h2>
-<p>Free during early access. Takes under a minute to sign up.</p>
+<p>7-day free trial, then $9.99/month. Takes under a minute to sign up.</p>
 <a class="btn" href="/signup">Get Started Free</a>
 </div>
 <div class="disclaimer">
@@ -2381,7 +2401,7 @@ AUTH_BRAND_HTML = """<div class="authbrand">
 <div class="points">
 <div class="point"><b>&#9670;</b> Live market data, never simulated</div>
 <div class="point"><b>&#9670;</b> Plain-language AI risk review on every pick</div>
-<div class="point"><b>&#9670;</b> Free during early access, no credit card</div>
+<div class="point"><b>&#9670;</b> 7-day free trial, then $9.99/month</div>
 </div>
 </div>"""
 
@@ -2686,7 +2706,7 @@ async def login(email: str = Form(...), password: str = Form(...)):
 @app.get("/signup", response_class=HTMLResponse)
 async def signup_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">Free while in early access — no credit card required.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
+    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">7-day free trial, then $9.99/month. Cancel anytime.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
     return render_auth_page("QUANTIFY. Sign Up", form)
 
 
@@ -2878,6 +2898,7 @@ async def dashboard(request: Request):
     user=get_logged_in_user(request)
     if not user: return RedirectResponse("/login",status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer",status_code=303)
+    if not has_active_access(user): return RedirectResponse("/subscription",status_code=303)
     conn=db(); prefs=conn.execute("SELECT pref_theme,pref_language FROM users WHERE email=?",(user,)).fetchone(); conn.close()
     theme = prefs["pref_theme"] if prefs and prefs["pref_theme"] in ("dark","light") else "dark"
     pref_language = prefs["pref_language"] if prefs and prefs["pref_language"] in LANGUAGE_NAMES else "en"
@@ -2984,8 +3005,8 @@ async function loadIndices(){{try{{const r=await fetch('/api/market-indices');co
 async function loadScoreHistory(t){{const el=document.getElementById('scoretrend');try{{const r=await fetch(`/api/score-history?ticker=${{encodeURIComponent(t)}}`);const d=await r.json();const scores=(d.points||[]).map(p=>p.alpha_score).filter(v=>v!=null);if(scores.length<2){{el.innerHTML=scores.length?scores[scores.length-1].toFixed(1):'-';return}}el.innerHTML=sparklineSVG(scores)+' '+scores[scores.length-1].toFixed(1)}}catch(e){{el.innerText='-'}}}}
 async function autoScanOnOpen(){{try{{await fetch('/api/auto-scan',{{method:'POST'}});}}catch(e){{console.warn('auto-scan trigger failed',e)}};scan()}}
 function updateUcount(d){{document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:''}}
-async function scan(){{const r=await fetch('/api/scan');const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
-async function pollForUpdates(){{try{{const r=await fetch('/api/scan');const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
+async function scan(){{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
+async function pollForUpdates(){{try{{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
 async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';const fastPromise=fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`).then(r=>r.json());const aiPromise=fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`).then(r=>r.json());const d=await fastPromise;if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');renderEarnings(d.fast.earnings);loadScoreHistory(ticker);document.getElementById('short').innerText=d.fast.short_percent==null?'No data':d.fast.short_percent+'%';document.getElementById('longbar').style.width=(d.fast.long_ratio??0)+'%';document.getElementById('shortbar').style.width=(d.fast.short_ratio??0)+'%';const x=await aiPromise;const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100`}}else{{vEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=x.ai?.ai_report||(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':'AI analysis is unavailable.')}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}
 async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 async function savePortfolio(){{const input=prompt('How many shares? (optional — leave blank to just track the ticker)');if(input===null)return;let shares='';if(input.trim()!==''){{const n=parseFloat(input);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
@@ -3047,14 +3068,15 @@ async def subscription_page(request: Request):
     days_left = max(0, int((trial_ends_at - time.time()) / 86400) + 1) if trial_ends_at else 0
     user_esc = html_lib.escape(user)
 
+    trial_active = bool(trial_ends_at and time.time() < trial_ends_at)
     if sub_status == "active":
         plan_html = '<span class="badge">Active Subscription</span><p>Your subscription is active. Thanks for supporting QUANTIFY.</p>'
-    elif sub_status in ("expired", "cancelled", "paused"):
-        plan_html = (f'<span class="badge warn">Trial Ended</span>'
-                     f'<p>Your {TRIAL_DAYS}-day free trial has ended. QUANTIFY is still free for everyone during early access — nothing about your account changes today.</p>')
-    else:
+    elif trial_active:
         plan_html = (f'<span class="badge">Free Trial &middot; {days_left} day{"s" if days_left != 1 else ""} left</span>'
-                     f'<p>Every account gets a {TRIAL_DAYS}-day free trial. QUANTIFY is free for everyone during early access regardless of trial status — this is just a preview of what subscription status will look like once paid plans launch.</p>')
+                     f'<p>Every account gets a {TRIAL_DAYS}-day free trial with full access. Subscribe below anytime to keep it going after your trial ends.</p>')
+    else:
+        plan_html = (f'<span class="badge warn">Trial Ended</span>'
+                     f'<p>Your {TRIAL_DAYS}-day free trial has ended. Subscribe below to keep using the scanner and AI reports.</p>')
 
     checkout_url = GUMROAD_CHECKOUT_URL or LEMONSQUEEZY_CHECKOUT_URL
     if checkout_url:
