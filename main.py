@@ -3697,7 +3697,10 @@ async def subscription_page(request: Request):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
     conn = db()
-    row = conn.execute("SELECT trial_ends_at,subscription_status FROM users WHERE email=?", (user,)).fetchone()
+    row = conn.execute(
+        "SELECT trial_ends_at,subscription_status,gumroad_subscription_id,ls_subscription_id FROM users WHERE email=?",
+        (user,),
+    ).fetchone()
     conn.close()
     trial_ends_at = row["trial_ends_at"] if row else None
     sub_status = (row["subscription_status"] if row else "trial") or "trial"
@@ -3714,11 +3717,26 @@ async def subscription_page(request: Request):
         plan_html = (f'<span class="badge warn">Trial Ended</span>'
                      f'<p>Your {TRIAL_DAYS}-day free trial has ended. Subscribe below to keep using the scanner and AI reports.</p>')
 
-    checkout_url = GUMROAD_CHECKOUT_URL or LEMONSQUEEZY_CHECKOUT_URL
-    if checkout_url:
-        checkout_html = f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">Subscribe</a>'
+    if sub_status == "active":
+        # Billing itself lives with the payment processor, not us -- we only ever
+        # react to their webhooks -- so cancellation has to happen on their end too.
+        # Point people at the right place instead of re-showing a "Subscribe" button,
+        # which risked someone paying twice while already subscribed.
+        if row and row["gumroad_subscription_id"]:
+            checkout_html = ('<p>To cancel or manage billing, use the link in your Gumroad purchase receipt email, '
+                              'or go to <a href="https://app.gumroad.com/library" target="_blank" rel="noopener">'
+                              'app.gumroad.com/library</a> while logged into the account you paid with.</p>')
+        elif row and row["ls_subscription_id"]:
+            checkout_html = ('<p>To cancel or manage billing, use the "Manage Subscription" link in your Lemon Squeezy '
+                              'purchase receipt email.</p>')
+        else:
+            checkout_html = f'<p>To cancel or manage billing, <a href="/contact">contact us</a>.</p>'
     else:
-        checkout_html = '<div class="subscribe-btn disabled">Paid plans coming soon</div>'
+        checkout_url = GUMROAD_CHECKOUT_URL or LEMONSQUEEZY_CHECKOUT_URL
+        if checkout_url:
+            checkout_html = f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">Subscribe</a>'
+        else:
+            checkout_html = '<div class="subscribe-btn disabled">Paid plans coming soon</div>'
 
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QUANTIFY. Subscription</title><style>
 :root{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--orange:#ff9800}}
