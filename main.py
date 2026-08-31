@@ -3192,7 +3192,7 @@ async def accept_disclaimer(request: Request, agree: Optional[str] = Form(None))
     conn = db()
     conn.execute("UPDATE users SET disclaimer_accepted_at=? WHERE email=?", (time.time(), user))
     conn.commit(); conn.close()
-    return RedirectResponse("/terminal", status_code=303)
+    return RedirectResponse("/terminal?welcome=1", status_code=303)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -3458,12 +3458,14 @@ async def dashboard(request: Request):
     user=get_logged_in_user(request)
     if not user: return RedirectResponse("/login",status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer",status_code=303)
-    if not has_active_access(user): return RedirectResponse("/subscription",status_code=303)
-    conn=db(); prefs=conn.execute("SELECT pref_theme,pref_language,pref_default_sort,pref_default_view FROM users WHERE email=?",(user,)).fetchone(); conn.close()
+    if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended",status_code=303)
+    conn=db(); prefs=conn.execute("SELECT pref_theme,pref_language,pref_default_sort,pref_default_view,trial_ends_at FROM users WHERE email=?",(user,)).fetchone(); conn.close()
     theme = prefs["pref_theme"] if prefs and prefs["pref_theme"] in ("dark","light") else "dark"
     pref_language = prefs["pref_language"] if prefs and prefs["pref_language"] in LANGUAGE_NAMES else "en"
     pref_default_sort = prefs["pref_default_sort"] if prefs and prefs["pref_default_sort"] in ("overall_score","change_pct","ticker") else "overall_score"
     pref_default_view = prefs["pref_default_view"] if prefs and prefs["pref_default_view"] in ("list","heatmap") else "list"
+    trial_ends_at = prefs["trial_ends_at"] if prefs else None
+    trial_ends_str = datetime.fromtimestamp(trial_ends_at).strftime("%B %d, %Y") if trial_ends_at else ""
     avatar_letter = html_lib.escape(user[0].upper()) if user else "?"
     user=html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="en" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY.</title><script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
@@ -3606,9 +3608,10 @@ a{{color:var(--head);text-decoration:underline}}
 const USER_LANGUAGE='{pref_language}';
 const DEFAULT_SORT='{pref_default_sort}';
 const DEFAULT_VIEW='{pref_default_view}';
+const TRIAL_ENDS_STR='{trial_ends_str}';
 const STRATEGY_MODE='Long-Term Momentum Pullback';
 let ticker='AAPL',tf='1d',chart,candle,volume,smaLines={{}},idxCharts={{}},bbLines={{}},currentView='list',lastSignals=[],lastUpdated=null;
-function showToast(msg,isErr){{const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(isErr?' err':'');clearTimeout(window._toastTimer);window._toastTimer=setTimeout(()=>t.classList.remove('show'),3500)}}
+function showToast(msg,isErr,duration){{const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(isErr?' err':'');clearTimeout(window._toastTimer);window._toastTimer=setTimeout(()=>t.classList.remove('show'),duration||3500)}}
 function toggleAvatarMenu(){{const m=document.getElementById('avatarMenu');m.style.display=m.style.display==='none'?'block':'none'}}
 document.addEventListener('click',()=>{{const m=document.getElementById('avatarMenu');if(m)m.style.display='none'}});
 function showView(v){{currentView=v;document.getElementById('tabList').classList.toggle('active',v==='list');document.getElementById('tabHeatmap').classList.toggle('active',v==='heatmap');document.getElementById('sortbar').style.display=v==='list'?'flex':'none';document.getElementById('list').style.display=v==='list'?'block':'none';document.getElementById('heatmap').style.display=v==='heatmap'?'flex':'none';if(v==='heatmap')loadHeatmap()}}
@@ -3650,7 +3653,7 @@ async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary')
 <div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
 <div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
 </div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Random (fixed-seed, not reshuffled) sample of ${{res.tickers_sampled}} of ~518 current S&amp;P 500 + Nasdaq-100 tickers, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
-window.onload=()=>{{document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
+window.onload=()=>{{if(new URLSearchParams(location.search).get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
 
@@ -3696,7 +3699,7 @@ load();
 
 
 @app.get("/subscription", response_class=HTMLResponse)
-async def subscription_page(request: Request):
+async def subscription_page(request: Request, reason: Optional[str] = None):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
     conn = db()
@@ -3741,6 +3744,11 @@ async def subscription_page(request: Request):
         else:
             checkout_html = '<div class="subscribe-btn disabled">Paid plans coming soon</div>'
 
+    reason_banner = ""
+    if reason == "trial_ended" and sub_status != "active":
+        reason_banner = ('<div class="reason-banner">Your free trial has ended — that\'s why you were sent here. '
+                          'Subscribe below to get back into the scanner and AI reports.</div>')
+
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Subscription</title><style>
 :root{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--orange:#ff9800}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:8px}}
@@ -3756,8 +3764,9 @@ a.back{{color:var(--head);text-decoration:underline;font-size:13px;font-weight:6
 p{{color:var(--text);font-size:13px;line-height:1.7;margin-top:14px}}
 .subscribe-btn{{display:block;text-align:center;margin-top:18px;background:var(--head);color:var(--bg);padding:12px;border-radius:6px;text-decoration:none;font-weight:700;font-size:13px}}
 .subscribe-btn.disabled{{background:var(--panel2);color:var(--dim);border:1px solid var(--border);cursor:default}}
+.reason-banner{{max-width:520px;margin:0 auto 12px;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:12px 16px;border-radius:8px;font-size:13px;font-weight:600;line-height:1.5}}
 </style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:12.5px">Subscription · {user_esc}</span><a class="back" href="/portfolio">Portfolio</a><a class="back" href="/settings">Settings</a><a class="back" href="/contact">Contact</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
-<div class="wrap"><div class="card">
+<div class="wrap">{reason_banner}<div class="card">
 <h2>Current Plan</h2>
 {plan_html}
 {checkout_html}
