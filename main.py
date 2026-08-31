@@ -111,6 +111,7 @@ BATCH_LOCK = asyncio.Lock()
 BATCH_STATUS = {"running": False, "processed": 0, "total": 0, "saved": 0, "started_at": None, "finished_at": None, "error": None}
 AI_STATUS = {"running": False, "processed": 0, "total": 0, "ready": 0, "started_at": None, "finished_at": None, "error": None}
 AI_TASK = None
+AI_QUOTA_EXHAUSTED_DATE = None  # date_str() of the last day the AI provider reported a tokens-per-day cap hit
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
 OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "50"))
@@ -1017,6 +1018,9 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd,
                     volume_ratio=None, news=None):
     if not ai_client:
         return None
+    global AI_QUOTA_EXHAUSTED_DATE
+    if AI_QUOTA_EXHAUSTED_DATE == today_str():
+        return None
     language_name = LANGUAGE_NAMES.get(language, "English")
     near_high = pct_from_high is not None and pct_from_high >= -5
     near_low = pct_from_low is not None and pct_from_low <= 5
@@ -1094,6 +1098,13 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd,
                 verdict = None
             return {"report_json": content, "timing_score": score, "timing_verdict": verdict}
         except RateLimitError as exc:
+            if "tokens per day" in str(exc).lower() or "TPD" in str(exc):
+                # This is a hard daily cap, not a transient per-minute limit — every
+                # remaining ticker today will fail identically, so stop burning
+                # retries (and wall-clock time) on requests that cannot succeed.
+                AI_QUOTA_EXHAUSTED_DATE = today_str()
+                print(f"[Error: RateLimitError] AI daily token quota exhausted — skipping retries for the rest of today ({ticker}): {exc}")
+                return None
             wait = 3.0 * (attempt + 1)
             match = re.search(r"try again in ([\d.]+)s", str(exc))
             if match:
