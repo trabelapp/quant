@@ -2598,6 +2598,7 @@ async def change_password(request: Request, current_password: str = Form(...), n
 # -----------------------------------------------------------------------------
 LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="google-site-verification" content="ijDMR9nIE6oGHc1hocnPovy0BwrxRdGBL3DvWNy6OZI" />
 <title>QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked</title>
 <meta name="description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
 <meta property="og:title" content="QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked">
