@@ -7,7 +7,7 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     disk:
       name: quantify-data
-      mountPath: /var/data
+      mountPath: /data
       sizeGB: 1
     envVars:
       - key: HOST
@@ -15,9 +15,9 @@ services:
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: DATA_DIR
-        value: /var/data
+        value: /data
       - key: DB_FILE
-        value: /var/data/users.db
+        value: /data/users.db
       - key: AI_BASE_URL
         sync: false
       - key: AI_MODEL
