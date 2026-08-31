@@ -1285,8 +1285,17 @@ def load_backtest_cache():
 def _summarize_returns(returns):
     if not returns:
         return None
-    win_rate = sum(1 for x in returns if x > 0) / len(returns) * 100
-    return {"avg_return_pct": round(sum(returns) / len(returns), 2), "win_rate_pct": round(win_rate, 1), "n": len(returns)}
+    wins = [x for x in returns if x > 0]
+    losses = [x for x in returns if x <= 0]
+    win_rate = len(wins) / len(returns) * 100
+    return {
+        "avg_return_pct": round(sum(returns) / len(returns), 2),
+        "win_rate_pct": round(win_rate, 1),
+        "n": len(returns),
+        "avg_win_pct": round(sum(wins) / len(wins), 2) if wins else None,
+        "avg_loss_pct": round(sum(losses) / len(losses), 2) if losses else None,
+        "worst_pct": round(min(returns), 2),
+    }
 
 
 async def run_backtest():
@@ -2510,7 +2519,13 @@ section{padding:70px 24px;border-top:1px solid var(--border)}
 .proof-card .horizon{color:var(--dim);font-size:11px;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px}
 .proof-card .num{color:var(--green);font-size:34px;font-weight:800;margin-bottom:6px}
 .proof-card .compare{color:var(--dim2);font-size:13px}
+.proof-card .risk-row{color:var(--dim);font-size:11.5px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
 .proof-note{max-width:640px;margin:0 auto;text-align:center;color:var(--dim);font-size:12.5px;line-height:1.7}
+.methodology{max-width:700px;margin:28px auto 0;background:var(--panel);border:1px solid var(--border);padding:20px 24px;border-radius:8px}
+.methodology h4{color:var(--head);font-size:12px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+.methodology ul{margin:0;padding-left:18px;color:var(--dim2);font-size:12.5px;line-height:1.8}
+.methodology li{margin-bottom:4px}
+.methodology b{color:var(--head)}
 .feature:nth-child(4n+4) .icon{color:var(--orange)}
 .feature h4{color:var(--head);font-size:14.5px;margin-bottom:8px}
 .feature p{color:var(--dim2);font-size:13px;line-height:1.65}
@@ -2608,10 +2623,20 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <div class="section-head">
 <div class="kicker">PROVEN BY THE NUMBERS</div>
 <h2>We tested it against 2 years of real data. Here's what happened.</h2>
-<p>Not backtested on cherry-picked winners — every ticker that historically cleared today's quant bar, across the full S&amp;P 500 + Nasdaq-100, over the trailing 2 years.</p>
+<p>Not cherry-picked winners — a random, unweighted sample of tickers from the S&amp;P 500 + Nasdaq-100, replayed against 2 years of real price history using the exact formula running today.</p>
 </div>
 %%PROOF_CARDS%%
 %%PROOF_NOTE%%
+<div class="methodology">
+<h4>How this was measured — read before you trust it</h4>
+<ul>
+<li><b>Sample:</b> a random 200 of the ~518 current S&amp;P 500 + Nasdaq-100 constituents, not hand-picked.</li>
+<li><b>Signal counting:</b> only a fresh crossing above the score threshold counts as one signal — a stock staying "Favorable" for a week isn't counted 7 times.</li>
+<li><b>Survivorship bias:</b> this uses today's index membership applied to the past 2 years. Stocks removed from these indices during that window (delisted, acquired, or dropped for poor performance) aren't included, which can flatter results.</li>
+<li><b>Gross returns:</b> figures don't account for spreads, slippage, or taxes — real returns would be somewhat lower.</li>
+<li><b>Out-of-sample check:</b> the scoring weights were tuned on the first 70% of this window and separately verified on the untouched last 30% — performance held up rather than collapsing, which is what overfitting would look like.</li>
+</ul>
+</div>
 </section>
 
 <section id="features">
@@ -2729,10 +2754,18 @@ def _render_proof_section() -> tuple[str, str]:
             continue
         sign = "+" if avg >= 0 else ""
         bench_sign = "+" if (bench_avg or 0) >= 0 else ""
+        avg_win = strat.get("avg_win_pct")
+        avg_loss = strat.get("avg_loss_pct")
+        worst = strat.get("worst_pct")
+        risk_row = ""
+        if avg_win is not None and avg_loss is not None:
+            risk_row = (f'<div class="risk-row">When right: +{avg_win}% avg &middot; When wrong: {avg_loss}% avg'
+                        f'{f" &middot; Worst case: {worst}%" if worst is not None else ""}</div>')
         cards_html.append(
             f'<div class="proof-card"><div class="horizon">{h}-Day Forward Return</div>'
             f'<div class="num">{sign}{avg}%</div>'
-            f'<div class="compare">vs {bench_sign}{bench_avg}% for the S&amp;P 500 &middot; {strat.get("win_rate_pct","-")}% win rate</div></div>'
+            f'<div class="compare">vs {bench_sign}{bench_avg}% for the S&amp;P 500 &middot; {strat.get("win_rate_pct","-")}% win rate</div>'
+            f'{risk_row}</div>'
         )
     cards_html.append("</div>")
     computed_at = BACKTEST_CACHE.get("computed_at")
@@ -3420,8 +3453,10 @@ async function loadWatchlist(){{try{{const r=await fetch('/api/watchlist');if(r.
 async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary');if(r.status===402)return;const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){{el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${{h}}-Day Forward Return</h4>
 <div class="backtest-row"><span>Strategy avg</span><b class="${{cls(v.strategy?.avg_return_pct)}}">${{fmtPct(v.strategy?.avg_return_pct)}}</b></div>
 <div class="backtest-row"><span>Strategy win rate</span><b>${{v.strategy?.win_rate_pct??'-'}}%</b></div>
+<div class="backtest-row"><span>When right / wrong</span><b>${{fmtPct(v.strategy?.avg_win_pct)}} / ${{fmtPct(v.strategy?.avg_loss_pct)}}</b></div>
+<div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
 <div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
-</div>`).join('');el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Based on ${{res.signal_count}} historical signals across ${{res.tickers_sampled}} sampled tickers over the trailing 2 years. Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
+</div>`).join('');el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Random sample of ${{res.tickers_sampled}} of ~518 current S&amp;P 500 + Nasdaq-100 tickers, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
 window.onload=()=>{{document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
