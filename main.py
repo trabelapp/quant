@@ -3855,11 +3855,13 @@ async def gumroad_webhook(request: Request):
     # nightly reconciliation pass instead of getting access instantly.
     form = await request.form()
     email = (form.get("email") or "").strip().lower()
-    if not email:
-        return {"ok": True}
     resource_name = form.get("resource_name", "sale")
     sale_id = str(form.get("sale_id") or "")
     refunded = (form.get("refunded") or "").lower() == "true"
+    print(f"[gumroad] Ping received: resource_name={resource_name} email={email or '(none)'} "
+          f"sale_id={sale_id or '(none)'} test={form.get('test')}", flush=True)
+    if not email:
+        return {"ok": True}
 
     conn = db()
     try:
@@ -3867,20 +3869,28 @@ async def gumroad_webhook(request: Request):
             # Downgrading access on an unverified ping is the safe direction to
             # err in (worst case a legitimate subscriber has to re-subscribe),
             # unlike granting it, so this doesn't need API verification.
-            conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
+            cur = conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
             conn.commit()
+            if cur.rowcount == 0:
+                print(f"[gumroad] Refund ping for {email} matched no QUANTIFY account.", flush=True)
         elif resource_name == "sale" and sale_id:
             data = await asyncio.to_thread(_gumroad_api_get, f"/sales/{sale_id}", {})
             sale = (data or {}).get("sale") or {}
             verified_email = (sale.get("email") or "").strip().lower()
             if verified_email and verified_email == email and not sale.get("ended") and not sale.get("cancelled"):
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE users SET subscription_status='active',gumroad_subscription_id=? WHERE email=?",
                     (str(sale.get("subscription_id") or ""), email),
                 )
                 conn.commit()
+                if cur.rowcount == 0:
+                    print(f"[gumroad] Verified sale for {email} (sale_id={sale_id}) matched no QUANTIFY account "
+                          f"— the buyer needs to sign up on QUANTIFY with this exact email.", flush=True)
+                else:
+                    print(f"[gumroad] Granted active access to {email} (sale_id={sale_id})", flush=True)
             else:
-                print(f"[gumroad] Sale ping for {email} (sale_id={sale_id}) could not be verified — ignored.", flush=True)
+                print(f"[gumroad] Sale ping for {email} (sale_id={sale_id}) could not be verified "
+                      f"(verified_email={verified_email or '(lookup failed)'}) — ignored.", flush=True)
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] Gumroad webhook DB update failed: {exc}", flush=True)
     finally:
