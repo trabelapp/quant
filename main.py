@@ -1368,14 +1368,21 @@ async def backtest_scheduler():
     while True:
         needs_refresh = (not BACKTEST_CACHE.get("computed_at")
                           or time.time() - BACKTEST_CACHE["computed_at"] > BACKTEST_REFRESH_SECONDS)
-        if needs_refresh and UNIVERSE:
-            try:
-                await run_backtest()
-                n = BACKTEST_CACHE.get("results", {}).get("signal_count", 0)
-                print(f"[backtest] Refreshed — {n} historical signals sampled", flush=True)
-            except Exception as exc:
-                BACKTEST_CACHE["error"] = f"{type(exc).__name__}: {exc}"
-                print(f"[Error: {type(exc).__name__}] Backtest scheduler error: {exc}", flush=True)
+        if not needs_refresh:
+            await asyncio.sleep(3600)
+            continue
+        if not UNIVERSE:
+            # Universe hasn't loaded yet (e.g. right after a fresh deploy with no
+            # persistent disk) — retry soon instead of waiting a full hour.
+            await asyncio.sleep(30)
+            continue
+        try:
+            await run_backtest()
+            n = BACKTEST_CACHE.get("results", {}).get("signal_count", 0)
+            print(f"[backtest] Refreshed — {n} historical signals sampled", flush=True)
+        except Exception as exc:
+            BACKTEST_CACHE["error"] = f"{type(exc).__name__}: {exc}"
+            print(f"[Error: {type(exc).__name__}] Backtest scheduler error: {exc}", flush=True)
         await asyncio.sleep(3600)
 
 # -----------------------------------------------------------------------------
@@ -1534,12 +1541,10 @@ async def startup():
     asyncio.create_task(market_scan_scheduler())
     asyncio.create_task(index_warm_scheduler())
     asyncio.create_task(cache_prune_scheduler())
-    # backtest_scheduler() is disabled from auto-running for now — it competes for
-    # memory with the regular 30-min market scan and was implicated in repeated
-    # Render OOM restarts. Load whatever's already on disk (if anything) so the
-    # landing page can still show it, but don't trigger a new full computation
-    # automatically. Trigger manually via /api/admin/run-backtest when needed.
-    load_backtest_cache()
+    # run_backtest() now shares BATCH_LOCK with the regular scan (see run_backtest),
+    # so this can no longer run concurrently with it and double up on memory — that
+    # was the actual cause of tonight's OOM restarts, not the scheduler itself.
+    asyncio.create_task(backtest_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
