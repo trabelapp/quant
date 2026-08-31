@@ -1318,7 +1318,8 @@ async def _run_backtest_locked():
     sample = tickers if len(tickers) <= BACKTEST_SAMPLE_SIZE else random.Random(42).sample(tickers, BACKTEST_SAMPLE_SIZE)
     horizons = [30, 60, 90]
     forward_returns = {h: [] for h in horizons}
-    in_sample_60, out_sample_60 = [], []
+    in_sample = {h: [] for h in horizons}
+    out_sample = {h: [] for h in horizons}
     bench_returns = {h: [] for h in horizons}
     signal_count = 0
     for ticker in sample:
@@ -1349,8 +1350,7 @@ async def _run_backtest_locked():
                     if i + h < n and entry:
                         ret = float(close.iloc[i + h] / entry - 1) * 100
                         forward_returns[h].append(ret)
-                        if h == 60:
-                            (in_sample_60 if i < split_idx else out_sample_60).append(ret)
+                        (in_sample[h] if i < split_idx else out_sample[h]).append(ret)
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Backtest ticker error ({ticker}): {exc}")
             continue
@@ -1374,8 +1374,8 @@ async def _run_backtest_locked():
             for h in horizons
         },
         "validation": {
-            "in_sample_60d": _summarize_returns(in_sample_60),
-            "out_of_sample_60d": _summarize_returns(out_sample_60),
+            **{f"in_sample_{h}d": _summarize_returns(in_sample[h]) for h in horizons},
+            **{f"out_of_sample_{h}d": _summarize_returns(out_sample[h]) for h in horizons},
         },
     }
     BACKTEST_CACHE.update({"computed_at": time.time(), "results": results, "error": None})
@@ -2649,7 +2649,7 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <li><b>Survivorship bias:</b> this uses today's index membership applied to the past 2 years. Stocks removed from these indices during that window (delisted, acquired, or dropped for poor performance) aren't included, which can flatter results.</li>
 <li><b>Gross returns:</b> figures don't account for spreads, slippage, or taxes — real returns would be somewhat lower.</li>
 <li><b>Out-of-sample check:</b> %%VALIDATION_NOTE%%</li>
-<li><b>Sample is fixed, not reshuffled:</b> the same 200 tickers are used every time this recomputes (weekly) — the numbers only move because new price data comes in, not because a different random draw got picked.</li>
+<li><b>Sample is fixed, not reshuffled:</b> the same 200 tickers are used every time this recomputes — normally about once a week, though a server restart can also trigger a one-off recompute if there's no cached result yet. Either way it's the same fixed draw; the numbers only move because new price data came in, not because a different random sample got picked.</li>
 </ul>
 </div>
 </section>
@@ -2755,26 +2755,39 @@ def render_auth_page(title: str, form_html: str) -> HTMLResponse:
 
 def _render_validation_note(results: dict) -> str:
     val = results.get("validation") or {}
-    in_s = val.get("in_sample_60d")
-    out_s = val.get("out_of_sample_60d")
-    if not in_s or not out_s:
+    lines = []
+    verdicts = []
+    for h in (30, 60, 90):
+        in_s = val.get(f"in_sample_{h}d")
+        out_s = val.get(f"out_of_sample_{h}d")
+        if not in_s or not out_s:
+            continue
+        in_avg, out_avg = in_s["avg_return_pct"], out_s["avg_return_pct"]
+        in_wr, out_wr = in_s["win_rate_pct"], out_s["win_rate_pct"]
+        avg_held = out_avg >= in_avg * 0.7
+        wr_held = out_wr >= in_wr - 8  # allow some natural drift, but not a large drop
+        if avg_held and wr_held:
+            v = "held up"
+        elif avg_held:
+            v = "return held, win rate dropped"
+        elif wr_held:
+            v = "win rate held, return dropped"
+        else:
+            v = "weakened on both"
+        verdicts.append(v)
+        lines.append(f"{h}-day — in-sample: {'+' if in_avg>=0 else ''}{in_avg}% avg, {in_wr}% win rate (n={in_s['n']}); "
+                      f"out-of-sample: {'+' if out_avg>=0 else ''}{out_avg}% avg, {out_wr}% win rate (n={out_s['n']}) — {v}.")
+    if not lines:
         return "not enough data yet to report an in-sample vs out-of-sample split."
-    in_avg, out_avg = in_s["avg_return_pct"], out_s["avg_return_pct"]
-    in_wr, out_wr = in_s["win_rate_pct"], out_s["win_rate_pct"]
-    avg_held = out_avg >= in_avg * 0.7
-    wr_held = out_wr >= in_wr - 8  # allow some natural drift, but not a large drop
-    if avg_held and wr_held:
-        verdict = "held up on both average return and win rate"
-    elif avg_held:
-        verdict = "the average return held up, but the win rate was meaningfully lower — a more mixed result than the return alone suggests"
-    elif wr_held:
-        verdict = "the win rate held up, but the average return was meaningfully lower"
+    if all(v == "held up" for v in verdicts):
+        headline = "it held up across all three horizons"
+    elif all(v == "weakened on both" for v in verdicts):
+        headline = "it weakened across all three horizons — treat the full-period numbers above with real caution"
     else:
-        verdict = "weakened notably on both measures — treat the full-period numbers above with more caution"
-    return (f"the scoring weights were tuned on the first 70% of this window (60-day avg there: "
-            f"{'+' if in_avg>=0 else ''}{in_avg}%, {in_wr}% win rate, n={in_s['n']}) and "
-            f"separately measured on the untouched last 30% (60-day avg: {'+' if out_avg>=0 else ''}{out_avg}%, "
-            f"{out_wr}% win rate, n={out_s['n']}) — {verdict}.")
+        headline = "it's mixed across horizons, not uniformly good or bad — see all three below rather than anchoring on one"
+    detail = " ".join(lines)
+    return (f"the scoring weights were tuned on the first 70% of this window and separately measured on the "
+            f"untouched last 30%, at every horizon this page reports (not just the one that looks best): {headline}. {detail}")
 
 
 def _render_proof_section() -> tuple[str, str, str]:
@@ -3497,7 +3510,7 @@ async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary')
 <div class="backtest-row"><span>When right / wrong</span><b>${{fmtPct(v.strategy?.avg_win_pct)}} / ${{fmtPct(v.strategy?.avg_loss_pct)}}</b></div>
 <div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
 <div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
-</div>`).join('');const val=res.validation;const valLine=(val?.in_sample_60d&&val?.out_of_sample_60d)?`In-sample 60d avg (first 70% of window, what tuning saw): ${{fmtPct(val.in_sample_60d.avg_return_pct)}} (${{val.in_sample_60d.win_rate_pct}}% win, n=${{val.in_sample_60d.n}}) &middot; Out-of-sample (untouched last 30%): ${{fmtPct(val.out_of_sample_60d.avg_return_pct)}} (${{val.out_of_sample_60d.win_rate_pct}}% win, n=${{val.out_of_sample_60d.n}}).`:'';el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Random (fixed-seed, not reshuffled) sample of ${{res.tickers_sampled}} of ~518 current S&amp;P 500 + Nasdaq-100 tickers, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
+</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Random (fixed-seed, not reshuffled) sample of ${{res.tickers_sampled}} of ~518 current S&amp;P 500 + Nasdaq-100 tickers, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
 window.onload=()=>{{document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
