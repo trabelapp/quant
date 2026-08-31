@@ -1213,6 +1213,7 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                         results.append(row)
                 except Exception as exc:
                     print(f"[Error: {type(exc).__name__}] Scan row error ({ticker}): {exc}")
+            del raw  # 518 tickers' worth of price history -- free it now, not at function exit
 
             for row in results:
                 row["short_percent"] = None
@@ -1284,6 +1285,7 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
             raise
         finally:
             BATCH_STATUS.update({"running": False, "finished_at": time.time()})
+            gc.collect()
 
 # -----------------------------------------------------------------------------
 # Strategy backtest (real historical replay, no invented numbers)
