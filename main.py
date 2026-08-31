@@ -1390,7 +1390,11 @@ async def _run_backtest_locked():
 
 
 async def backtest_scheduler():
-    load_backtest_cache()
+    loaded = load_backtest_cache()
+    computed_at = BACKTEST_CACHE.get("computed_at")
+    age_hr = round((time.time() - computed_at) / 3600, 1) if computed_at else None
+    print(f"[backtest] cache file loaded={loaded} computed_at_age_hours={age_hr} "
+          f"(file={BACKTEST_FILE}, exists={BACKTEST_FILE.exists()})", flush=True)
     while True:
         needs_refresh = (not BACKTEST_CACHE.get("computed_at")
                           or time.time() - BACKTEST_CACHE["computed_at"] > BACKTEST_REFRESH_SECONDS)
