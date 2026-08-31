@@ -69,7 +69,9 @@ CONSTITUENT_HTTP_TIMEOUT = 12
 DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 UNIVERSE_FILE = DATA_DIR / "universe_cache.json"
 BACKTEST_FILE = DATA_DIR / "backtest_cache.json"
-BACKTEST_SAMPLE_SIZE = 200
+BACKTEST_SAMPLE_SIZE = 600  # >= full universe size (~518), so this is effectively "no sampling" --
+                             # the sequential per-ticker download run just takes longer, which the
+                             # 2GB/1vCPU instance and the once-a-week cadence both have room for
 BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 
@@ -1331,10 +1333,10 @@ async def _run_backtest_locked():
     tickers = list(UNIVERSE)
     if not tickers:
         return
-    # Fixed seed so the sample is the same every time this runs (as long as the universe
-    # itself hasn't changed) — otherwise every redeploy or scheduled refresh silently
-    # reshuffles which 200 tickers get used, and the headline numbers visibly jump
-    # around between site visits for no defensible reason.
+    # BACKTEST_SAMPLE_SIZE is set above the real universe size, so this covers every
+    # ticker (no sampling) -- the seeded Random() only matters if BACKTEST_SAMPLE_SIZE
+    # is ever lowered again, in which case it keeps whichever subset gets picked
+    # deterministic instead of reshuffling on every redeploy.
     sample = tickers if len(tickers) <= BACKTEST_SAMPLE_SIZE else random.Random(42).sample(tickers, BACKTEST_SAMPLE_SIZE)
     horizons = [30, 60, 90]
     forward_returns = {h: [] for h in horizons}
@@ -2775,19 +2777,19 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <div class="section-head">
 <div class="kicker">PROVEN BY THE NUMBERS</div>
 <h2>We tested it against 2 years of real data. Here's what happened.</h2>
-<p>Not cherry-picked winners — a random, unweighted sample of tickers from the S&amp;P 500 + Nasdaq-100, replayed against 2 years of real price history using the exact formula running today.</p>
+<p>Not cherry-picked winners — every ticker in the S&amp;P 500 + Nasdaq-100, replayed against 2 years of real price history using the exact formula running today.</p>
 </div>
 %%PROOF_CARDS%%
 %%PROOF_NOTE%%
 <div class="methodology">
 <h4>How this was measured — read before you trust it</h4>
 <ul>
-<li><b>Sample:</b> a random 200 of the ~518 current S&amp;P 500 + Nasdaq-100 constituents, not hand-picked.</li>
+<li><b>Universe:</b> every current S&amp;P 500 + Nasdaq-100 constituent (~518 tickers) — no sampling, nothing hand-picked or left out.</li>
 <li><b>Signal counting:</b> only a fresh crossing above the score threshold counts as one signal — a stock staying "Favorable" for a week isn't counted 7 times.</li>
 <li><b>Survivorship bias:</b> this uses today's index membership applied to the past 2 years. Stocks removed from these indices during that window (delisted, acquired, or dropped for poor performance) aren't included, which can flatter results.</li>
 <li><b>Gross returns:</b> figures don't account for spreads, slippage, or taxes — real returns would be somewhat lower.</li>
 <li><b>Out-of-sample check:</b> %%VALIDATION_NOTE%%</li>
-<li><b>Sample is fixed, not reshuffled:</b> the same 200 tickers are used every time this recomputes — normally about once a week, though a server restart can also trigger a one-off recompute if there's no cached result yet. Either way it's the same fixed draw; the numbers only move because new price data came in, not because a different random sample got picked.</li>
+<li><b>Recomputed periodically, not per-visit:</b> normally about once a week, though a server restart can also trigger a one-off recompute if there's no cached result yet. Either way the universe covered doesn't change; the numbers only move because new price data came in.</li>
 </ul>
 </div>
 </section>
@@ -2962,7 +2964,7 @@ def _render_proof_section() -> tuple[str, str, str]:
     computed_at = BACKTEST_CACHE.get("computed_at")
     computed_str = datetime.fromtimestamp(computed_at).strftime("%B %d, %Y") if computed_at else "recently"
     note = (f'<p class="proof-note">Based on {results.get("signal_count","-")} historical signals across '
-            f'{results.get("tickers_sampled","-")} sampled tickers. Last computed: {computed_str}.<br>'
+            f'all {results.get("tickers_sampled","-")} tickers in the universe. Last computed: {computed_str}.<br>'
             f'Past performance does not guarantee future results. This is historical, informational analysis — '
             f'not a forecast, and not investment advice.</p>')
     return "".join(cards_html), note, _render_validation_note(results)
@@ -3652,7 +3654,7 @@ async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary')
 <div class="backtest-row"><span>When right / wrong</span><b>${{fmtPct(v.strategy?.avg_win_pct)}} / ${{fmtPct(v.strategy?.avg_loss_pct)}}</b></div>
 <div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
 <div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
-</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Random (fixed-seed, not reshuffled) sample of ${{res.tickers_sampled}} of ~518 current S&amp;P 500 + Nasdaq-100 tickers, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
+</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling), ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
 window.onload=()=>{{if(new URLSearchParams(location.search).get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
