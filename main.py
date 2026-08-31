@@ -290,6 +290,10 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN pref_language TEXT NOT NULL DEFAULT 'en'")
         if "pref_default_mode" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN pref_default_mode TEXT NOT NULL DEFAULT 'Long-Term Momentum Pullback'")
+        if "pref_default_sort" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN pref_default_sort TEXT NOT NULL DEFAULT 'overall_score'")
+        if "pref_default_view" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN pref_default_view TEXT NOT NULL DEFAULT 'list'")
         if "verify_token_hash" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN verify_token_hash TEXT")
         if "verify_expires" not in user_cols:
@@ -2367,7 +2371,7 @@ async def get_settings(request: Request):
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
     row = conn.execute(
-        "SELECT email,pref_theme,pref_language,created_at,trial_ends_at,subscription_status FROM users WHERE email=?",
+        "SELECT email,pref_theme,pref_language,pref_default_sort,pref_default_view,created_at,trial_ends_at,subscription_status FROM users WHERE email=?",
         (user,)
     ).fetchone()
     conn.close()
@@ -2395,16 +2399,21 @@ async def delete_account(request: Request, password: str = Form(...)):
 
 
 @app.post("/api/settings")
-async def update_settings(request: Request, theme: str = Form(...), language: str = Form(...)):
+async def update_settings(request: Request, theme: str = Form(...), language: str = Form(...),
+                           default_sort: str = Form("overall_score"), default_view: str = Form("list")):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     if theme not in ("dark", "light"):
         return JSONResponse({"error": "Invalid theme"}, status_code=400)
     if language not in LANGUAGE_NAMES:
         return JSONResponse({"error": "Invalid language"}, status_code=400)
+    if default_sort not in ("overall_score", "change_pct", "ticker"):
+        return JSONResponse({"error": "Invalid default sort"}, status_code=400)
+    if default_view not in ("list", "heatmap"):
+        return JSONResponse({"error": "Invalid default view"}, status_code=400)
     conn = db()
-    conn.execute("UPDATE users SET pref_theme=?,pref_language=? WHERE email=?",
-                 (theme, language, user))
+    conn.execute("UPDATE users SET pref_theme=?,pref_language=?,pref_default_sort=?,pref_default_view=? WHERE email=?",
+                 (theme, language, default_sort, default_view, user))
     conn.commit(); conn.close()
     return {"message": "Settings saved."}
 
@@ -3224,9 +3233,11 @@ async def dashboard(request: Request):
     if not user: return RedirectResponse("/login",status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer",status_code=303)
     if not has_active_access(user): return RedirectResponse("/subscription",status_code=303)
-    conn=db(); prefs=conn.execute("SELECT pref_theme,pref_language FROM users WHERE email=?",(user,)).fetchone(); conn.close()
+    conn=db(); prefs=conn.execute("SELECT pref_theme,pref_language,pref_default_sort,pref_default_view FROM users WHERE email=?",(user,)).fetchone(); conn.close()
     theme = prefs["pref_theme"] if prefs and prefs["pref_theme"] in ("dark","light") else "dark"
     pref_language = prefs["pref_language"] if prefs and prefs["pref_language"] in LANGUAGE_NAMES else "en"
+    pref_default_sort = prefs["pref_default_sort"] if prefs and prefs["pref_default_sort"] in ("overall_score","change_pct","ticker") else "overall_score"
+    pref_default_view = prefs["pref_default_view"] if prefs and prefs["pref_default_view"] in ("list","heatmap") else "list"
     avatar_letter = html_lib.escape(user[0].upper()) if user else "?"
     user=html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="en" data-theme="{theme}"><head><meta charset="utf-8"><title>QUANTIFY.</title><script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
@@ -3367,6 +3378,8 @@ a{{color:var(--head);text-decoration:underline}}
 </div>
 <div class="toast" id="toast"></div><script>
 const USER_LANGUAGE='{pref_language}';
+const DEFAULT_SORT='{pref_default_sort}';
+const DEFAULT_VIEW='{pref_default_view}';
 const STRATEGY_MODE='Long-Term Momentum Pullback';
 let ticker='AAPL',tf='1d',chart,candle,volume,smaLines={{}},idxCharts={{}},bbLines={{}},currentView='list',lastSignals=[],lastUpdated=null;
 function showToast(msg,isErr){{const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(isErr?' err':'');clearTimeout(window._toastTimer);window._toastTimer=setTimeout(()=>t.classList.remove('show'),3500)}}
@@ -3409,7 +3422,7 @@ async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary')
 <div class="backtest-row"><span>Strategy win rate</span><b>${{v.strategy?.win_rate_pct??'-'}}%</b></div>
 <div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
 </div>`).join('');el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">Based on ${{res.signal_count}} historical signals across ${{res.tickers_sampled}} sampled tickers over the trailing 2 years. Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
-window.onload=()=>{{init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
+window.onload=()=>{{document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
 
@@ -3675,6 +3688,8 @@ button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(
 <div class="card"><h2>Display</h2>
 <label>Theme</label><select id="theme"><option value="dark">Dark</option><option value="light">Light</option></select>
 <label>AI report language</label><select id="language"><option value="en">English</option><option value="ko">Korean (한국어)</option></select>
+<label>Default scanner sort</label><select id="default_sort"><option value="overall_score">Score</option><option value="change_pct">Change %</option><option value="ticker">Ticker A-Z</option></select>
+<label>Default scanner view</label><select id="default_view"><option value="list">List</option><option value="heatmap">Heatmap</option></select>
 <button onclick="saveSettings()">Save Settings</button><div class="msg" id="settings-msg"></div>
 </div>
 <div class="card"><h2>Price Alerts</h2>
@@ -3694,10 +3709,10 @@ button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(
 </div>
 <script>
 function fmtDate(ts){{return ts?new Date(ts*1000).toLocaleDateString():'-'}}
-async function loadSettings(){{const r=await fetch('/api/settings');const d=await r.json();if(d.pref_theme)document.getElementById('theme').value=d.pref_theme;if(d.pref_language)document.getElementById('language').value=d.pref_language;
+async function loadSettings(){{const r=await fetch('/api/settings');const d=await r.json();if(d.pref_theme)document.getElementById('theme').value=d.pref_theme;if(d.pref_language)document.getElementById('language').value=d.pref_language;if(d.pref_default_sort)document.getElementById('default_sort').value=d.pref_default_sort;if(d.pref_default_view)document.getElementById('default_view').value=d.pref_default_view;
 const statusLabel={{active:'Active Subscription',trial:'Free Trial',expired:'Trial Ended',cancelled:'Cancelled',paused:'Paused'}}[d.subscription_status]||d.subscription_status;
 document.getElementById('account-info').innerHTML=`<div class="info-row"><span>Email</span><b>${{d.email||'-'}}</b></div><div class="info-row"><span>Member since</span><b>${{fmtDate(d.created_at)}}</b></div><div class="info-row"><span>Plan status</span><b>${{statusLabel||'-'}}</b></div>`}}
-async function saveSettings(){{const f=new FormData();f.append('theme',document.getElementById('theme').value);f.append('language',document.getElementById('language').value);const r=await fetch('/api/settings',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('settings-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error}}
+async function saveSettings(){{const f=new FormData();f.append('theme',document.getElementById('theme').value);f.append('language',document.getElementById('language').value);f.append('default_sort',document.getElementById('default_sort').value);f.append('default_view',document.getElementById('default_view').value);const r=await fetch('/api/settings',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('settings-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error}}
 async function changePassword(){{const f=new FormData();f.append('current_password',document.getElementById('current_password').value);f.append('new_password',document.getElementById('new_password').value);const r=await fetch('/api/settings/password',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('password-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error;if(r.ok){{document.getElementById('current_password').value='';document.getElementById('new_password').value=''}}}}
 async function loadAlerts(){{const r=await fetch('/api/alerts/list');const d=await r.json();const el=document.getElementById('alerts-list');if(!d.alerts?.length){{el.innerHTML='<div class="empty-hint">No alerts set. Open a ticker in the terminal and click Set Alert.</div>';return}}el.innerHTML=d.alerts.map(a=>`<div class="alert-row"><span>${{a.ticker}} @ $${{a.target_price}}${{a.is_sent?' <span style="color:var(--dim)">(sent)</span>':''}}</span><button class="remove-btn" onclick="removeAlert(${{a.id}})">Remove</button></div>`).join('')}}
 async function removeAlert(id){{const f=new FormData();f.append('id',id);await fetch('/api/alerts/remove',{{method:'POST',body:f}});loadAlerts()}}
