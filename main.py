@@ -2543,7 +2543,7 @@ async def delete_account(request: Request, password: str = Form(...)):
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
     row = conn.execute("SELECT password_hash,salt FROM users WHERE email=?", (user,)).fetchone()
-    if not row or not row["password_hash"] or not verify_password(password, row["password_hash"], row["salt"]):
+    if not row or not row["password_hash"] or not await asyncio.to_thread(verify_password, password, row["password_hash"], row["salt"]):
         conn.close()
         return JSONResponse({"error": "Incorrect password."}, status_code=400)
     for table in ("sessions", "portfolio_items", "watchlist_items", "user_alerts"):
@@ -2581,14 +2581,14 @@ async def change_password(request: Request, current_password: str = Form(...), n
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
     row = conn.execute("SELECT password_hash,salt FROM users WHERE email=?", (user,)).fetchone()
-    if not row or not verify_password(current_password, row["password_hash"], row["salt"]):
+    if not row or not await asyncio.to_thread(verify_password, current_password, row["password_hash"], row["salt"]):
         conn.close()
         return JSONResponse({"error": "Current password is incorrect."}, status_code=400)
     ok, error = validate_password_policy(new_password)
     if not ok:
         conn.close()
         return JSONResponse({"error": error}, status_code=400)
-    password_hash, salt = make_password_hash(new_password)
+    password_hash, salt = await asyncio.to_thread(make_password_hash, new_password)
     conn.execute("UPDATE users SET password_hash=?,salt=? WHERE email=?", (password_hash, salt, user))
     conn.commit(); conn.close()
     return {"message": "Password changed."}
@@ -3135,7 +3135,7 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
     conn = db()
     row = conn.execute("SELECT email FROM users WHERE email=?", (email,)).fetchone()
     if not row:
-        password_hash, salt = make_password_hash(secrets.token_urlsafe(32))
+        password_hash, salt = await asyncio.to_thread(make_password_hash, secrets.token_urlsafe(32))
         conn.execute(
             "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at) VALUES(?,?,?,1,?,?)",
             (email, password_hash, salt, time.time(), time.time() + 7 * 86400),
@@ -3228,7 +3228,8 @@ async def login(email: str = Form(...), password: str = Form(...)):
     valid = False
     if row["password_hash"] and row["salt"]:
         try:
-            valid = verify_password(
+            valid = await asyncio.to_thread(
+                verify_password,
                 password,
                 row["password_hash"],
                 row["salt"],
@@ -3290,7 +3291,7 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
     if not validate_email(email): return RedirectResponse("/signup?error=Invalid+email",status_code=303)
     ok,error=validate_password_policy(password)
     if not ok: return RedirectResponse("/signup?error="+urllib.parse.quote(error),status_code=303)
-    password_hash,salt=make_password_hash(password)
+    password_hash,salt=await asyncio.to_thread(make_password_hash, password)
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     try:
@@ -3308,7 +3309,7 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
         print(f"[Error: {type(e).__name__}] Signup error: {e}")
         return RedirectResponse("/signup?error=Database+error",status_code=303)
 
-    if not send_verification_email(request, email, token):
+    if not await asyncio.to_thread(send_verification_email, request, email, token):
         return RedirectResponse("/login?msg=Account+created.+Verification+email+could+not+be+sent+-+contact+support.",status_code=303)
     return RedirectResponse("/check-email?email="+urllib.parse.quote(email),status_code=303)
 
@@ -3363,7 +3364,7 @@ async def resend_verification(request: Request, email: str = Form(...)):
                      (token_hash, time.time()+VERIFY_TOKEN_TTL, email))
         conn.commit()
         conn.close()
-        send_verification_email(request, email, token)
+        await asyncio.to_thread(send_verification_email, request, email, token)
     else:
         conn.close()
     return RedirectResponse("/login?msg=If+that+account+needs+verification,+a+new+email+was+sent.", status_code=303)
@@ -3409,7 +3410,7 @@ async def send_code(email: str = Form(...)):
         return RedirectResponse("/forgot-password?error=Database+error",status_code=303)
 
     if row:
-        send_email_notification(email,"[QUANTIFY.] Password Reset Code",f"Your code: {code}\nValid for: 15 minutes")
+        await asyncio.to_thread(send_email_notification, email,"[QUANTIFY.] Password Reset Code",f"Your code: {code}\nValid for: 15 minutes")
     # Respond identically regardless of whether the account exists, to avoid leaking registration status.
     return RedirectResponse("/reset-password?email="+urllib.parse.quote(email),status_code=303)
 
@@ -3438,7 +3439,7 @@ async def verify_reset(email: str = Form(...), code: str = Form(...), new_passwo
             _register_failed_attempt(RESET_ATTEMPTS, email)
             return RedirectResponse("/reset-password?email="+urllib.parse.quote(email)+"&error=Invalid+or+expired+code",status_code=303)
         _clear_attempts(RESET_ATTEMPTS, email)
-        password_hash,salt=make_password_hash(new_password)
+        password_hash,salt=await asyncio.to_thread(make_password_hash, new_password)
         conn.execute("UPDATE users SET password_hash=?,salt=?,reset_code_hash=NULL,reset_expires=NULL WHERE email=?",(password_hash,salt,email))
         conn.execute("DELETE FROM sessions WHERE email=?",(email,))
         conn.commit(); conn.close()
@@ -3811,7 +3812,7 @@ async def submit_contact(request: Request, message: str = Form(...)):
     _register_failed_attempt(CONTACT_ATTEMPTS, user)
     if not SENDER_EMAIL:
         return JSONResponse({"error": "Contact form is not configured yet. Please try again later."}, status_code=503)
-    ok = send_email_notification(SENDER_EMAIL, f"[QUANTIFY Contact] Message from {user}",
+    ok = await asyncio.to_thread(send_email_notification, SENDER_EMAIL, f"[QUANTIFY Contact] Message from {user}",
                                   f"From: {user}\n\n{message}")
     if not ok:
         return JSONResponse({"error": "Could not send your message. Please try again later."}, status_code=500)
