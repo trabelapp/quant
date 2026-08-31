@@ -2777,14 +2777,14 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <div class="section-head">
 <div class="kicker">PROVEN BY THE NUMBERS</div>
 <h2>We tested it against 2 years of real data. Here's what happened.</h2>
-<p>Not cherry-picked winners — every ticker in the S&amp;P 500 + Nasdaq-100, replayed against 2 years of real price history using the exact formula running today.</p>
+<p>Not cherry-picked winners — replayed against 2 years of real price history using the exact formula running today. See exactly what's covered below.</p>
 </div>
 %%PROOF_CARDS%%
 %%PROOF_NOTE%%
 <div class="methodology">
 <h4>How this was measured — read before you trust it</h4>
 <ul>
-<li><b>Universe:</b> every current S&amp;P 500 + Nasdaq-100 constituent (~518 tickers) — no sampling, nothing hand-picked or left out.</li>
+<li><b>Universe:</b> %%UNIVERSE_NOTE%%</li>
 <li><b>Signal counting:</b> only a fresh crossing above the score threshold counts as one signal — a stock staying "Favorable" for a week isn't counted 7 times.</li>
 <li><b>Survivorship bias:</b> this uses today's index membership applied to the past 2 years. Stocks removed from these indices during that window (delisted, acquired, or dropped for poor performance) aren't included, which can flatter results.</li>
 <li><b>Gross returns:</b> figures don't account for spreads, slippage, or taxes — real returns would be somewhat lower.</li>
@@ -2930,11 +2930,21 @@ def _render_validation_note(results: dict) -> str:
             f"untouched last 30%, at every horizon this page reports (not just the one that looks best): {headline}. {detail}")
 
 
-def _render_proof_section() -> tuple[str, str, str]:
+def _render_universe_note(tickers_sampled) -> str:
+    # Full-universe coverage only actually holds once the cache has been recomputed
+    # since BACKTEST_SAMPLE_SIZE was raised -- until then this still honestly
+    # describes whatever's in the currently-displayed numbers, not the code's intent.
+    if isinstance(tickers_sampled, int) and tickers_sampled >= 500:
+        return "every current S&amp;P 500 + Nasdaq-100 constituent (~518 tickers) — no sampling, nothing hand-picked or left out."
+    return (f"a sample of {tickers_sampled} of the ~518 current S&amp;P 500 + Nasdaq-100 constituents. "
+            f"(The site is moving to covering the full universe with no sampling — this note updates automatically once that recompute finishes.)")
+
+
+def _render_proof_section() -> tuple[str, str, str, str]:
     results = BACKTEST_CACHE.get("results")
     if not results:
         placeholder = '<p class="proof-note">Backtest is computing on the server — check back shortly.</p>'
-        return "", placeholder, "not available yet — check back after the first computation finishes."
+        return "", placeholder, "not available yet — check back after the first computation finishes.", "not available yet."
     horizons = results["horizons"]
     cards_html = ['<div class="proof-grid">']
     for h in ("30", "60", "90"):
@@ -2963,20 +2973,21 @@ def _render_proof_section() -> tuple[str, str, str]:
     cards_html.append("</div>")
     computed_at = BACKTEST_CACHE.get("computed_at")
     computed_str = datetime.fromtimestamp(computed_at).strftime("%B %d, %Y") if computed_at else "recently"
+    tickers_sampled = results.get("tickers_sampled")
     note = (f'<p class="proof-note">Based on {results.get("signal_count","-")} historical signals across '
-            f'all {results.get("tickers_sampled","-")} tickers in the universe. Last computed: {computed_str}.<br>'
+            f'{tickers_sampled if tickers_sampled is not None else "-"} tickers. Last computed: {computed_str}.<br>'
             f'Past performance does not guarantee future results. This is historical, informational analysis — '
             f'not a forecast, and not investment advice.</p>')
-    return "".join(cards_html), note, _render_validation_note(results)
+    return "".join(cards_html), note, _render_validation_note(results), _render_universe_note(tickers_sampled)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def landing(request: Request):
     if get_logged_in_user(request):
         return RedirectResponse("/terminal", status_code=303)
-    cards, note, validation_note = _render_proof_section()
+    cards, note, validation_note, universe_note = _render_proof_section()
     html = (LANDING_HTML.replace("%%PROOF_CARDS%%", cards).replace("%%PROOF_NOTE%%", note)
-            .replace("%%VALIDATION_NOTE%%", validation_note))
+            .replace("%%VALIDATION_NOTE%%", validation_note).replace("%%UNIVERSE_NOTE%%", universe_note))
     return HTMLResponse(html)
 
 
@@ -3654,7 +3665,7 @@ async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary')
 <div class="backtest-row"><span>When right / wrong</span><b>${{fmtPct(v.strategy?.avg_win_pct)}} / ${{fmtPct(v.strategy?.avg_loss_pct)}}</b></div>
 <div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
 <div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
-</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling), ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
+</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';const universeText=res.tickers_sampled>=500?`All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${{res.tickers_sampled}} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">${{universeText}}, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
 window.onload=()=>{{if(new URLSearchParams(location.search).get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
