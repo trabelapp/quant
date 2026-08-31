@@ -46,6 +46,10 @@ services:
         sync: false
       - key: GUMROAD_CHECKOUT_URL
         sync: false
+      - key: GUMROAD_ACCESS_TOKEN
+        sync: false
+      - key: SITE_URL
+        value: https://quantify.trading
       - key: AI_CONCURRENCY
         value: "1"
       - key: QUANT_PASS_THRESHOLD

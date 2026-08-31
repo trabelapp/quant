@@ -50,7 +50,10 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 LEMONSQUEEZY_CHECKOUT_URL = os.getenv("LEMONSQUEEZY_CHECKOUT_URL", "")
 LEMONSQUEEZY_WEBHOOK_SECRET = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
 GUMROAD_CHECKOUT_URL = os.getenv("GUMROAD_CHECKOUT_URL", "")
+GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
+SITE_URL = os.getenv("SITE_URL", "https://quantify.trading")
 TRIAL_DAYS = 7
+TRIAL_REMINDER_HOURS_BEFORE = 48
 
 # Constituent refresh is deliberately infrequent. Market data is fetched in
 # small batches with pauses, not as hundreds of simultaneous requests.
@@ -312,6 +315,10 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN ls_subscription_id TEXT")
         if "gumroad_subscription_id" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN gumroad_subscription_id TEXT")
+        if "trial_reminder_sent_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_reminder_sent_at REAL")
+        if "trial_ended_email_sent_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_ended_email_sent_at REAL")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + 7 * 86400,))
@@ -1562,6 +1569,117 @@ async def cache_prune_scheduler():
             print(f"[Error: {type(exc).__name__}] Cache prune error: {exc}", flush=True)
 
 
+def _trial_subscribe_link() -> str:
+    return f"{SITE_URL}/subscription"
+
+
+def send_trial_reminder_email(email: str, days_left: int) -> bool:
+    body = (
+        f"Your QUANTIFY free trial ends in {days_left} day{'s' if days_left != 1 else ''}.\n\n"
+        f"After that, you'll need to subscribe ($9.99/month) to keep using the scanner and AI reports.\n\n"
+        f"Subscribe anytime: {_trial_subscribe_link()}\n\n"
+        f"Questions? Just reply to this email."
+    )
+    return send_email_notification(email, "[QUANTIFY.] Your free trial ends soon", body)
+
+
+def send_trial_ended_email(email: str) -> bool:
+    body = (
+        f"Your {TRIAL_DAYS}-day QUANTIFY free trial has ended.\n\n"
+        f"Subscribe to keep using the scanner and AI reports: {_trial_subscribe_link()}\n\n"
+        f"Questions? Just reply to this email."
+    )
+    return send_email_notification(email, "[QUANTIFY.] Your free trial has ended", body)
+
+
+async def trial_lifecycle_scheduler():
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            now = time.time()
+            conn = db()
+            soon_cutoff = now + TRIAL_REMINDER_HOURS_BEFORE * 3600
+            soon = conn.execute(
+                "SELECT email,trial_ends_at FROM users WHERE subscription_status='trial' "
+                "AND trial_reminder_sent_at IS NULL AND trial_ends_at IS NOT NULL "
+                "AND trial_ends_at > ? AND trial_ends_at <= ?",
+                (now, soon_cutoff),
+            ).fetchall()
+            for row in soon:
+                days_left = max(1, round((row["trial_ends_at"] - now) / 86400))
+                try:
+                    if send_trial_reminder_email(row["email"], days_left):
+                        conn.execute("UPDATE users SET trial_reminder_sent_at=? WHERE email=?", (now, row["email"]))
+                        conn.commit()
+                except Exception as exc:
+                    print(f"[Error: {type(exc).__name__}] Trial reminder email failed for {row['email']}: {exc}", flush=True)
+
+            ended = conn.execute(
+                "SELECT email FROM users WHERE subscription_status='trial' "
+                "AND trial_ended_email_sent_at IS NULL AND trial_ends_at IS NOT NULL AND trial_ends_at <= ?",
+                (now,),
+            ).fetchall()
+            for row in ended:
+                try:
+                    if send_trial_ended_email(row["email"]):
+                        conn.execute("UPDATE users SET trial_ended_email_sent_at=? WHERE email=?", (now, row["email"]))
+                        conn.commit()
+                except Exception as exc:
+                    print(f"[Error: {type(exc).__name__}] Trial-ended email failed for {row['email']}: {exc}", flush=True)
+            conn.close()
+            if soon or ended:
+                print(f"[trial] Sent {len(soon)} reminder(s), {len(ended)} trial-ended email(s)", flush=True)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Trial lifecycle scheduler error: {exc}", flush=True)
+
+
+def _gumroad_api_get(path: str, params: dict) -> Optional[dict]:
+    if not GUMROAD_ACCESS_TOKEN:
+        return None
+    try:
+        resp = requests.get(f"https://api.gumroad.com/v2{path}",
+                             params={**params, "access_token": GUMROAD_ACCESS_TOKEN}, timeout=10)
+        data = resp.json()
+        if resp.status_code == 200 and data.get("success"):
+            return data
+        print(f"[gumroad] API call {path} failed ({resp.status_code}): {data}", flush=True)
+        return None
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Gumroad API call {path} failed: {exc}", flush=True)
+        return None
+
+
+async def gumroad_reconcile_scheduler():
+    # Gumroad's Ping webhook has no "subscription cancelled" event at all (only
+    # sale/refund) — a user who cancels future billing without a refund never
+    # generates a ping, so we'd otherwise keep their access active forever.
+    # Gumroad's own docs recommend reconciling periodically via the API instead
+    # of treating pings as authoritative state.
+    while True:
+        await asyncio.sleep(24 * 3600)
+        if not GUMROAD_ACCESS_TOKEN:
+            continue
+        try:
+            conn = db()
+            rows = conn.execute(
+                "SELECT email,gumroad_subscription_id FROM users "
+                "WHERE subscription_status='active' AND gumroad_subscription_id IS NOT NULL AND gumroad_subscription_id<>''"
+            ).fetchall()
+            downgraded = 0
+            for row in rows:
+                data = await asyncio.to_thread(_gumroad_api_get, f"/subscribers/{row['gumroad_subscription_id']}", {})
+                sub = (data or {}).get("subscribers") or {}
+                if sub and (sub.get("status") != "alive" or sub.get("ended_at")):
+                    conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (row["email"],))
+                    conn.commit()
+                    downgraded += 1
+            conn.close()
+            if downgraded:
+                print(f"[gumroad] Reconciliation downgraded {downgraded} account(s) with an ended subscription", flush=True)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Gumroad reconcile scheduler error: {exc}", flush=True)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -1575,6 +1693,8 @@ async def startup():
     # so this can no longer run concurrently with it and double up on memory — that
     # was the actual cause of tonight's OOM restarts, not the scheduler itself.
     asyncio.create_task(backtest_scheduler())
+    asyncio.create_task(trial_lifecycle_scheduler())
+    asyncio.create_task(gumroad_reconcile_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
@@ -3714,26 +3834,41 @@ async def lemonsqueezy_webhook(request: Request):
 @app.post("/api/gumroad/webhook")
 async def gumroad_webhook(request: Request):
     # Gumroad Ping payloads are unsigned form data (no secret to verify against —
-    # see https://gumroad.com/ping). Acceptable for now since no paywall is enforced;
-    # revisit with API-verified sale lookups before this ever gates access.
+    # see https://gumroad.com/ping) and Gumroad's own docs warn that a ping can be
+    # forged or dropped, so it must be treated as a trigger, not as data: on a
+    # "sale" ping we look the sale back up via the API (GUMROAD_ACCESS_TOKEN) and
+    # only grant access if that lookup confirms it's real and matches the email
+    # claimed. Without a configured token we can't verify, so we don't grant
+    # access off an unverified ping — worst case a legitimate buyer waits for the
+    # nightly reconciliation pass instead of getting access instantly.
     form = await request.form()
     email = (form.get("email") or "").strip().lower()
     if not email:
         return {"ok": True}
     resource_name = form.get("resource_name", "sale")
-    subscription_id = str(form.get("subscription_id") or "")
+    sale_id = str(form.get("sale_id") or "")
     refunded = (form.get("refunded") or "").lower() == "true"
 
     conn = db()
     try:
         if resource_name == "refund" or refunded:
+            # Downgrading access on an unverified ping is the safe direction to
+            # err in (worst case a legitimate subscriber has to re-subscribe),
+            # unlike granting it, so this doesn't need API verification.
             conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
-        elif resource_name == "sale":
-            conn.execute(
-                "UPDATE users SET subscription_status='active',gumroad_subscription_id=? WHERE email=?",
-                (subscription_id, email),
-            )
-        conn.commit()
+            conn.commit()
+        elif resource_name == "sale" and sale_id:
+            data = await asyncio.to_thread(_gumroad_api_get, f"/sales/{sale_id}", {})
+            sale = (data or {}).get("sale") or {}
+            verified_email = (sale.get("email") or "").strip().lower()
+            if verified_email and verified_email == email and not sale.get("ended") and not sale.get("cancelled"):
+                conn.execute(
+                    "UPDATE users SET subscription_status='active',gumroad_subscription_id=? WHERE email=?",
+                    (str(sale.get("subscription_id") or ""), email),
+                )
+                conn.commit()
+            else:
+                print(f"[gumroad] Sale ping for {email} (sale_id={sale_id}) could not be verified — ignored.", flush=True)
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] Gumroad webhook DB update failed: {exc}", flush=True)
     finally:
