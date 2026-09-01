@@ -12,6 +12,7 @@ import sqlite3
 import time
 import urllib.parse
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -123,6 +124,7 @@ OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "50"))
 AI_PROMPT_VERSION = 4
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MARKET_SCAN_INTERVAL_SECONDS = 30 * 60
+MARKET_SCAN_CLOSED_INTERVAL_SECONDS = 60 * 60  # prices don't move outside the session, no reason to scan every 30m
 
 LOGIN_ATTEMPTS = {}
 LOGIN_MAX_ATTEMPTS = 5
@@ -425,6 +427,18 @@ def today_str():
 
 def display_date():
     return datetime.now().strftime("%B %d, %Y")
+
+
+def is_market_hours() -> bool:
+    # Regular US equity session, Mon-Fri 9:30am-4:00pm ET. Doesn't account for market
+    # holidays (~9/year) -- an occasional wasted scan on a holiday is a fine trade-off
+    # against the complexity of a full holiday calendar, especially compared to the
+    # much bigger win of not scanning every 30 minutes through nights and weekends.
+    now = datetime.now(ZoneInfo("America/New_York"))
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 + 30 <= minutes < 16 * 60
 
 # -----------------------------------------------------------------------------
 # Authentication
@@ -1555,15 +1569,32 @@ async def scheduler():
 
 
 async def market_scan_scheduler():
+    consecutive_bad_scans = 0
     while True:
-        await asyncio.sleep(MARKET_SCAN_INTERVAL_SECONDS)
+        # Prices don't move while the market's closed, so there's nothing to gain from
+        # scanning every 30 minutes through nights and weekends -- that's most of the
+        # week's yfinance request volume for zero benefit. And if yfinance is wholesale
+        # rate-limiting us, retrying on a fixed cadence regardless never gives the rate
+        # limit window a chance to actually clear -- each attempt can just re-trigger
+        # it. Back off (capped) after scans that mostly failed, reset once one works.
+        base = MARKET_SCAN_INTERVAL_SECONDS if is_market_hours() else MARKET_SCAN_CLOSED_INTERVAL_SECONDS
+        wait = min(base * (2 ** consecutive_bad_scans), 4 * 3600)
+        await asyncio.sleep(wait)
         if BATCH_LOCK.locked():
             print("[scheduler] Skipping scheduled market scan — a scan is already running.", flush=True)
             continue
         try:
-            print("[scheduler] Starting scheduled 30-minute market scan.", flush=True)
-            await run_eod_batch_process()
+            print(f"[scheduler] Starting scheduled market scan (waited {wait/60:.0f}m).", flush=True)
+            results = await run_eod_batch_process()
+            universe_size = len(UNIVERSE) or 1
+            if len(results) < universe_size * 0.5:
+                consecutive_bad_scans += 1
+                print(f"[scheduler] Scan only covered {len(results)}/{universe_size} tickers — "
+                      f"likely still rate-limited. Backing off (consecutive_bad_scans={consecutive_bad_scans}).", flush=True)
+            else:
+                consecutive_bad_scans = 0
         except Exception as exc:
+            consecutive_bad_scans += 1
             print(f"[Error: {type(exc).__name__}] Scheduled market scan failed: {exc}", flush=True)
 
 
