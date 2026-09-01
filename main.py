@@ -838,11 +838,12 @@ async def _download_single_with_backoff(ticker, period, interval):
 INTERVAL_PERIODS = {"1h": "730d", "1d": "2y", "1wk": "5y", "1mo": "max"}
 
 
-async def download_stock(ticker: str, interval="1d"):
+async def download_stock(ticker: str, interval="1d", cache=True):
     key = f"single:{ticker}:{interval}"
-    cached = CACHE["historical"].get(key)
-    if cached and time.time() - cached["ts"] < HISTORICAL_TTL:
-        return cached["data"]
+    if cache:
+        cached = CACHE["historical"].get(key)
+        if cached and time.time() - cached["ts"] < HISTORICAL_TTL:
+            return cached["data"]
     period = INTERVAL_PERIODS.get(interval, "2y")
     data = await _download_single_with_backoff(ticker, period, interval)
     if data is None or data.empty:
@@ -853,7 +854,7 @@ async def download_stock(ticker: str, interval="1d"):
         except Exception:
             data = data.xs(ticker, axis=1, level=-1)
     data = data.dropna(how="all")
-    if len(data) >= 30:
+    if cache and len(data) >= 30:
         CACHE["historical"][key] = {"data": data, "ts": time.time()}
     return data
 
@@ -1344,9 +1345,15 @@ async def _run_backtest_locked():
     out_sample = {h: [] for h in horizons}
     bench_returns = {h: [] for h in horizons}
     signal_count = 0
-    for ticker in sample:
+    for i_ticker, ticker in enumerate(sample):
         try:
-            df = await download_stock(ticker, "1d")
+            # cache=False: this loop touches every ticker in the universe exactly once
+            # and never revisits it, so caching would just dump ~518 large DataFrames
+            # into a cache meant for short-lived chart/scan lookups -- over the several
+            # minutes this sequential loop takes, that's a plausible driver of the
+            # gradual memory growth Render flagged after this went from 200 to full
+            # universe tonight.
+            df = await download_stock(ticker, "1d", cache=False)
             if df is None:
                 continue
             close = normalize_series(df, "Close").dropna()
@@ -1376,8 +1383,10 @@ async def _run_backtest_locked():
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Backtest ticker error ({ticker}): {exc}")
             continue
+        if (i_ticker + 1) % 100 == 0:
+            gc.collect()
     try:
-        spx = await download_stock("^GSPC", "1d")
+        spx = await download_stock("^GSPC", "1d", cache=False)
         spx_close = normalize_series(spx, "Close").dropna()
         n = len(spx_close)
         for i in range(0, n):
