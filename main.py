@@ -5,6 +5,7 @@ import html as html_lib
 import hmac
 import json
 import os
+import pickle
 import re
 import secrets
 import smtplib
@@ -74,6 +75,7 @@ CONSTITUENT_HTTP_TIMEOUT = 12
 DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 UNIVERSE_FILE = DATA_DIR / "universe_cache.json"
 BACKTEST_FILE = DATA_DIR / "backtest_cache.json"
+HISTORICAL_SNAPSHOT_FILE = DATA_DIR / "historical_snapshot.pkl"
 BACKTEST_SAMPLE_SIZE = 200  # Reverted from a brief full-universe (600) experiment: that roughly
                              # doubled our total yfinance request volume (regular scan + backtest
                              # both hitting ~518 tickers), which is the likely trigger for yfinance
@@ -858,6 +860,40 @@ async def _download_single_with_backoff(ticker, period, interval):
 
 INTERVAL_PERIODS = {"1h": "730d", "1d": "2y", "1wk": "5y", "1mo": "max"}
 
+# The in-memory historical cache doesn't survive a restart, which left the fallback with
+# nothing to serve during tonight's yfinance outage after a deploy. This mirrors the same
+# {ticker: {"data":.., "ts":..}} shape but on disk, written once per successful daily
+# scan (not per ticker -- 518 individual writes would be needlessly slow) so there's a
+# real chart to fall back to even hours after a restart.
+_PERSISTED_SNAPSHOT_CACHE = {"data": None, "mtime": None}
+
+
+def save_historical_snapshot(raw: dict):
+    try:
+        snapshot = {ticker: {"data": df, "ts": time.time()} for ticker, df in raw.items()}
+        HISTORICAL_SNAPSHOT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HISTORICAL_SNAPSHOT_FILE.with_suffix(".tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump(snapshot, f)
+        tmp.replace(HISTORICAL_SNAPSHOT_FILE)
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Historical snapshot save failed: {exc}", flush=True)
+
+
+def _get_persisted_snapshot() -> dict:
+    try:
+        if not HISTORICAL_SNAPSHOT_FILE.exists():
+            return {}
+        mtime = HISTORICAL_SNAPSHOT_FILE.stat().st_mtime
+        if _PERSISTED_SNAPSHOT_CACHE["data"] is None or _PERSISTED_SNAPSHOT_CACHE["mtime"] != mtime:
+            with open(HISTORICAL_SNAPSHOT_FILE, "rb") as f:
+                _PERSISTED_SNAPSHOT_CACHE["data"] = pickle.load(f)
+            _PERSISTED_SNAPSHOT_CACHE["mtime"] = mtime
+        return _PERSISTED_SNAPSHOT_CACHE["data"] or {}
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Historical snapshot load failed: {exc}", flush=True)
+        return {}
+
 
 async def download_stock(ticker: str, interval="1d", cache=True):
     key = f"single:{ticker}:{interval}"
@@ -869,10 +905,18 @@ async def download_stock(ticker: str, interval="1d", cache=True):
     if data is None or data.empty:
         if cached is not None:
             age_min = (time.time() - cached["ts"]) / 60
-            print(f"[Fallback] Live fetch failed for {ticker} — serving cached data from {age_min:.0f}m ago", flush=True)
+            print(f"[Fallback] Live fetch failed for {ticker} — serving in-memory cached data from {age_min:.0f}m ago", flush=True)
             stale = cached["data"].copy()
             stale.attrs["stale_as_of"] = cached["ts"]
             return stale
+        if interval == "1d":
+            persisted = _get_persisted_snapshot().get(ticker)
+            if persisted is not None:
+                age_hr = (time.time() - persisted["ts"]) / 3600
+                print(f"[Fallback] Live fetch failed for {ticker} — serving disk snapshot from {age_hr:.1f}h ago", flush=True)
+                stale = persisted["data"].copy()
+                stale.attrs["stale_as_of"] = persisted["ts"]
+                return stale
         return None
     if isinstance(data.columns, pd.MultiIndex):
         try:
@@ -1262,6 +1306,12 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                         results.append(row)
                 except Exception as exc:
                     print(f"[Error: {type(exc).__name__}] Scan row error ({ticker}): {exc}")
+            # Only overwrite the on-disk snapshot when this scan actually got most of the
+            # universe -- a mostly-empty scan (e.g. rate-limited) would otherwise stomp a
+            # good snapshot from an earlier run with a near-empty one, destroying the
+            # exact fallback data this is meant to protect.
+            if len(raw) >= len(UNIVERSE) * 0.5:
+                await asyncio.to_thread(save_historical_snapshot, raw)
             del raw  # 518 tickers' worth of price history -- free it now, not at function exit
 
             for row in results:
