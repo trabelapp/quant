@@ -69,9 +69,12 @@ CONSTITUENT_HTTP_TIMEOUT = 12
 DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 UNIVERSE_FILE = DATA_DIR / "universe_cache.json"
 BACKTEST_FILE = DATA_DIR / "backtest_cache.json"
-BACKTEST_SAMPLE_SIZE = 600  # >= full universe size (~518), so this is effectively "no sampling" --
-                             # the sequential per-ticker download run just takes longer, which the
-                             # 2GB/1vCPU instance and the once-a-week cadence both have room for
+BACKTEST_SAMPLE_SIZE = 200  # Reverted from a brief full-universe (600) experiment: that roughly
+                             # doubled our total yfinance request volume (regular scan + backtest
+                             # both hitting ~518 tickers), which is the likely trigger for yfinance
+                             # rate-limiting us wholesale and the resulting memory/uptime incident.
+                             # The dynamic universe-note copy already handles this sample size
+                             # honestly, so reverting is copy-safe.
 BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 
@@ -903,9 +906,29 @@ async def batch_download_stocks(tickers):
     missing = [t for t in unique if t not in results]
     if missing:
         print(f"[Retry] Retrying {len(missing)} tickers missing from batch download individually: {missing}")
-        for ticker in missing:
+        consecutive_rate_limits = 0
+        for i_missing, ticker in enumerate(missing):
+            # Circuit breaker: if yfinance is rate-limiting us wholesale (not just this
+            # ticker), grinding through the rest one-by-one with a 10s backoff EACH is
+            # what turned a transient rate limit into an ~90-minute BATCH_LOCK-holding
+            # stall that showed up as a slow, sustained memory climb. A few consecutive
+            # rate-limit hits in a row means the whole batch is blocked, not this ticker
+            # specifically -- bail out and let the next scheduled scan try again fresh.
+            if consecutive_rate_limits >= 5:
+                skipped = len(missing) - i_missing
+                print(f"[RateLimit] {consecutive_rate_limits} consecutive rate-limit failures — "
+                      f"aborting the remaining {skipped} individual retries instead of grinding through them.")
+                break
             try:
-                data = await _download_single_with_backoff(ticker, "2y", "1d")
+                data = await asyncio.to_thread(_download_group, [ticker], "2y", "1d", True)
+                consecutive_rate_limits = 0
+            except Exception as exc:
+                if _is_rate_limit_error(exc):
+                    consecutive_rate_limits += 1
+                else:
+                    print(f"[Error: {type(exc).__name__}] Individual retry failed ({ticker}): {exc}")
+                continue
+            try:
                 if data is None or data.empty:
                     continue
                 if isinstance(data.columns, pd.MultiIndex):
@@ -919,7 +942,7 @@ async def batch_download_stocks(tickers):
                     CACHE["historical"][f"single:{ticker}:1d"] = {"data": df, "ts": time.time()}
                     results[ticker] = df
             except Exception as exc:
-                print(f"[Error: {type(exc).__name__}] Individual retry failed ({ticker}): {exc}")
+                print(f"[Error: {type(exc).__name__}] Individual retry parse failed ({ticker}): {exc}")
             await asyncio.sleep(0.2)
     return results
 
