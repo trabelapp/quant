@@ -2798,14 +2798,37 @@ async def watchlist_list(request: Request):
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
     rows = conn.execute("SELECT id,ticker,added_at FROM watchlist_items WHERE email=? ORDER BY added_at DESC", (user,)).fetchall()
-    conn.close()
     tickers = [r["ticker"] for r in rows]
+    scan_by_ticker = {}
+    if tickers:
+        placeholders = ",".join("?" * len(tickers))
+        scan_rows = conn.execute(
+            f"SELECT ticker,change_pct,timing_verdict,ROUND((alpha_score+timing_score)/2.0,1) AS overall_score "
+            f"FROM daily_scans WHERE scan_date=? AND ticker IN ({placeholders})",
+            (today_str(), *tickers),
+        ).fetchall()
+        scan_by_ticker = {r["ticker"]: dict(r) for r in scan_rows}
+    conn.close()
     prices = await asyncio.gather(*(get_current_price(t) for t in tickers))
     price_by_ticker = dict(zip(tickers, prices))
     items = []
     for r in rows:
         d = dict(r)
         d["price"] = price_by_ticker.get(d["ticker"])
+        scan = scan_by_ticker.get(d["ticker"], {})
+        d["change_pct"] = scan.get("change_pct")
+        d["overall_score"] = scan.get("overall_score")
+        d["timing_verdict"] = scan.get("timing_verdict")
+        d["sector"] = (SECTOR_CACHE.get(d["ticker"]) or {}).get("sector")
+        cached = CACHE["historical"].get(f"single:{d['ticker']}:1d")
+        sparkline = []
+        if cached is not None:
+            try:
+                closes = normalize_series(cached["data"], "Close").dropna().tail(15)
+                sparkline = [round(float(v), 2) for v in closes]
+            except Exception:
+                sparkline = []
+        d["sparkline"] = sparkline
         items.append(d)
     return {"items": items}
 
@@ -2986,9 +3009,31 @@ section{padding:70px 24px;border-top:1px solid var(--border)}
 footer{border-top:1px solid var(--border);padding:34px 24px;text-align:center;color:var(--dim);font-size:12px}
 footer a{color:var(--dim2)}
 .btn{white-space:nowrap}
+[data-reveal]{opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s ease}
+[data-reveal].is-visible{opacity:1;transform:translateY(0)}
+@media(prefers-reduced-motion:reduce){[data-reveal]{transition:none;opacity:1;transform:none}}
+.btn{transition:transform .15s ease,box-shadow .15s ease}
+.btn:hover{transform:translateY(-1px);box-shadow:0 10px 24px -10px rgba(46,204,113,.55)}
+.btn-ghost:hover{box-shadow:none}
+.step,.feature,.proof-card,.diff-col{transition:transform .2s ease,border-color .2s ease}
+.step:hover,.feature:hover,.proof-card:hover{transform:translateY(-3px);border-color:var(--dim2)}
+.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:6px;animation:pulse 2s ease-in-out infinite;vertical-align:middle}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.mock-chartline svg polyline{stroke-dasharray:500;stroke-dashoffset:500;animation:draw 1.6s ease-out .2s forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);max-width:900px;margin:0 auto;border:1px solid var(--border)}
+.diff-col{background:var(--panel);padding:30px}
+.diff-col.against{opacity:.65}
+.diff-col h4{font-size:13px;margin-bottom:18px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim)}
+.diff-col.for h4{color:var(--green)}
+.diff-item{display:flex;gap:10px;margin-bottom:15px;font-size:13.5px;color:var(--dim2);line-height:1.55}
+.diff-item .mark{flex-shrink:0;font-weight:bold;width:14px}
+.diff-col.for .mark{color:var(--green)}
+.diff-col.against .mark{color:var(--dim)}
+.feature .icon svg{display:block}
 @media(max-width:820px){
   h1{font-size:30px}
-  .steps,.features,.proof-grid{grid-template-columns:1fr}
+  .steps,.features,.proof-grid,.diff-grid{grid-template-columns:1fr}
   .mock-grid{grid-template-columns:1fr}
   .navlinks{gap:14px;font-size:12px}
 }
@@ -3025,13 +3070,13 @@ footer a{color:var(--dim2)}
 <a class="btn" href="/signup">Get Started Free</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
 </div>
-<div class="cta-note">Same data for every subscriber — never personalized picks. Cancel anytime during the trial.</div>
+<div class="cta-note">No credit card required to start. Same data for every subscriber — never personalized picks.</div>
 
-<div class="mock">
+<div class="mock" data-reveal>
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
 <div class="mock-grid">
 <div class="mock-col">
-<div class="mock-h">MARKET SCANNER · 13 detected / 518</div>
+<div class="mock-h"><span class="live-dot"></span>MARKET SCANNER · 13 detected / 518</div>
 <div class="mock-row"><b>MRK</b><span>151.12 <span class="badge badge-ok">Favorable</span></span></div>
 <div class="mock-row"><b>HOOD</b><span>110.71 <span class="badge badge-ok">Favorable</span></span></div>
 <div class="mock-row"><b>DASH</b><span>232.00 <span class="badge badge-warn">Caution</span></span></div>
@@ -3062,7 +3107,7 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 <h2>Two filters. Not one.</h2>
 <p>Most screeners stop at the math. We add a second pass that specifically hunts for the ways a pure quant signal can fool you.</p>
 </div>
-<div class="steps">
+<div class="steps" data-reveal>
 <div class="step"><div class="num">STEP 1</div><h3>Quant scan, every day</h3><p>Real price data across all 518 S&amp;P 500 + Nasdaq-100 tickers is pulled and scored on long-term trend (200-day moving average) and pullback depth from the recent high. Only the top-scoring names — usually a dozen or two — clear the bar.</p></div>
 <div class="step"><div class="num">STEP 2</div><h3>AI risk cross-check</h3><p>Every ticker that clears the quant bar gets reviewed a second time by AI, specifically for two traps: chasing a stock already near a blow-off top, or mistaking a dead-cat bounce for a real recovery.</p></div>
 <div class="step"><div class="num">STEP 3</div><h3>You decide</h3><p>You get the data, the reasoning, and a plain-language risk review — never a price target, never a "buy now." What you do with it is up to you.</p></div>
@@ -3090,16 +3135,40 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 </div>
 </section>
 
+<section>
+<div class="section-head">
+<div class="kicker">WHY THIS IS DIFFERENT</div>
+<h2>Most signal services show you a highlight reel.</h2>
+<p>We show you the full validation — including the losses.</p>
+</div>
+<div class="diff-grid" data-reveal>
+<div class="diff-col against">
+<h4>The usual approach</h4>
+<div class="diff-item"><span class="mark">&times;</span><span>A handful of cherry-picked win screenshots, no losing trades shown</span></div>
+<div class="diff-item"><span class="mark">&times;</span><span>"This stock is about to explode" — hype with no disclosed methodology</span></div>
+<div class="diff-item"><span class="mark">&times;</span><span>A black-box pick with no reasoning you can check</span></div>
+<div class="diff-item"><span class="mark">&times;</span><span>Pay more for "VIP" or "premium" picks other subscribers don't see</span></div>
+</div>
+<div class="diff-col for">
+<h4>QUANTIFY</h4>
+<div class="diff-item"><span class="mark">&#10003;</span><span>Full backtest published on this page — wins and losses, in-sample and out-of-sample</span></div>
+<div class="diff-item"><span class="mark">&#10003;</span><span>One entry rule, plainly disclosed: long-term uptrend, pulled back 10-25% from its recent high</span></div>
+<div class="diff-item"><span class="mark">&#10003;</span><span>Every pick ships with the AI's actual reasoning and the two failure modes it checked</span></div>
+<div class="diff-item"><span class="mark">&#10003;</span><span>One plan. Every subscriber sees the same data, the same day.</span></div>
+</div>
+</div>
+</section>
+
 <section id="features">
 <div class="section-head">
 <div class="kicker">FEATURES</div>
 <h2>Built on real data, not vibes</h2>
 </div>
-<div class="features">
-<div class="feature"><div class="icon">◆</div><h4>Live market data</h4><p>Real prices and volume from the actual market — no simulated or backfilled data.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>Plain-language AI review</h4><p>Every detected ticker gets a written quant review and explicit risk check, in plain English.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>52-week &amp; trend context</h4><p>Distance from the 52-week high/low and 200-day trend, so you see where a stock actually sits.</p></div>
-<div class="feature"><div class="icon">◆</div><h4>Price alerts &amp; news</h4><p>Set a target price and get emailed when it's hit, with live headlines next to the chart.</p></div>
+<div class="features" data-reveal>
+<div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 14v4M9 8v10M14 11v7M18 5v13"/></svg></div><h4>Live market data</h4><p>Real prices and volume from the actual market — no simulated or backfilled data.</p></div>
+<div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5h16v10H8l-4 4v-4H3z"/></svg></div><h4>Plain-language AI review</h4><p>Every detected ticker gets a written quant review and explicit risk check, in plain English.</p></div>
+<div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 15l5-6 4 3 7-9M19 3h-4v4"/></svg></div><h4>52-week &amp; trend context</h4><p>Distance from the 52-week high/low and 200-day trend, so you see where a stock actually sits.</p></div>
+<div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 3a5 5 0 00-5 5v3l-2 4h14l-2-4V8a5 5 0 00-5-5zM9 18a2 2 0 004 0"/></svg></div><h4>Price alerts &amp; news</h4><p>Set a target price and get emailed when it's hit, with live headlines next to the chart.</p></div>
 </div>
 </section>
 
@@ -3119,6 +3188,18 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 QUANTIFY. — informational and educational only, not investment advice.<br>
 <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/pricing">Pricing</a> · <a href="/faq">FAQ</a> · <a href="/about">About</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
 </footer>
+<script>
+if('IntersectionObserver' in window){
+  const io=new IntersectionObserver((entries)=>{entries.forEach(e=>{if(e.isIntersecting){e.target.classList.add('is-visible');io.unobserve(e.target)}})},{threshold:0.05,rootMargin:'0px 0px 100px 0px'});
+  document.querySelectorAll('[data-reveal]').forEach(el=>io.observe(el));
+}else{
+  document.querySelectorAll('[data-reveal]').forEach(el=>el.classList.add('is-visible'));
+}
+// Fast/flick scrolling (or any observer edge case) should never leave content stuck at
+// opacity:0 -- this is a marketing page, a permanently blank section is worse than no
+// animation at all. Belt-and-suspenders: force-reveal anything still hidden shortly after load.
+setTimeout(()=>document.querySelectorAll('[data-reveal]:not(.is-visible)').forEach(el=>el.classList.add('is-visible')),2500);
+</script>
 </body></html>"""
 
 
@@ -3242,7 +3323,7 @@ def _render_proof_section() -> tuple[str, str, str, str]:
         placeholder = '<p class="proof-note">Backtest is computing on the server — check back shortly.</p>'
         return "", placeholder, "not available yet — check back after the first computation finishes.", "not available yet."
     horizons = results["horizons"]
-    cards_html = ['<div class="proof-grid">']
+    cards_html = ['<div class="proof-grid" data-reveal>']
     for h in ("30", "60", "90"):
         v = horizons.get(h, {})
         strat = v.get("strategy") or {}
@@ -3295,6 +3376,8 @@ async def robots_txt(request: Request):
         "Allow: /\n"
         "Disallow: /terminal\n"
         "Disallow: /market\n"
+        "Disallow: /watchlist\n"
+        "Disallow: /backtest\n"
         "Disallow: /portfolio\n"
         "Disallow: /settings\n"
         "Disallow: /accept-disclaimer\n"
@@ -3489,6 +3572,31 @@ h1.page-title{color:var(--head);font-size:19px;margin:2px 0 14px}
 .heat-group-header{grid-column:1/-1;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.3px;margin:10px 0 4px}
 .groupby-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .groupby-row select{background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:5px 8px;border-radius:4px;font-size:11.5px}
+.badge{padding:3px 9px;border-radius:12px;font-weight:700;font-size:11px;display:inline-block}
+.badge-ok{background:rgba(38,166,154,.15);color:var(--green)}
+.badge-warn{background:rgba(255,152,0,.15);color:var(--orange)}
+.badge-danger{background:rgba(239,83,80,.15);color:var(--red)}
+.badge-pending{background:var(--panel2);color:var(--dim)}
+button{background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:7px 14px;font:12.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;cursor:pointer;border-radius:4px;font-weight:600}
+button:hover{background:var(--border)}
+input[type=text],input[type=number]{background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:8px 10px;border-radius:4px;font-size:13px}
+.add-row{display:flex;gap:8px;margin-bottom:12px}
+.add-row input{flex:1}
+.watch-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border2,var(--border))}
+.watch-row:last-child{border-bottom:none}
+.watch-row .wt-name{display:flex;align-items:center;gap:10px;cursor:pointer}
+.watch-row .wt-name b{color:var(--head);font-size:14px}
+.watch-row .wt-price{text-align:right;font-size:12.5px}
+.remove-btn{background:transparent;border:1px solid var(--red);color:var(--red);padding:4px 10px;font-size:11px;font-weight:600}
+.gain{color:var(--green)}
+.loss{color:var(--red)}
+.backtest-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.backtest-card{background:var(--panel2);border:1px solid var(--border);padding:12px;border-radius:4px}
+.backtest-card h4{margin:0 0 10px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px}
+.backtest-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12.5px}
+.backtest-row b.gain{color:var(--green)}
+.backtest-row b.loss{color:var(--red)}
+.backtest-meta{font-size:11px;color:var(--dim);margin-top:10px;line-height:1.6}
 @media(max-width:900px){
   body{padding-left:8px;padding-bottom:64px}
   .sidebar{left:0;right:0;top:auto;bottom:0;width:auto;height:56px;flex-direction:row;justify-content:space-around;border-right:none;border-top:1px solid var(--border);padding:0}
@@ -3500,8 +3608,8 @@ h1.page-title{color:var(--head);font-size:19px;margin:2px 0 14px}
 _APP_SHELL_NAV_LINKS = [
     ("scanner", "/terminal", "SCN", "Scanner"),
     ("market", "/market", "SUM", "Market"),
-    ("watchlist", "/terminal#watchlistSection", "WL", "Watchlist"),
-    ("backtest", "/terminal#backtestSection", "BT", "Backtest"),
+    ("watchlist", "/watchlist", "WL", "Watchlist"),
+    ("backtest", "/backtest", "BT", "Backtest"),
     ("portfolio", "/portfolio", "PF", "Portfolio"),
 ]
 
@@ -4110,8 +4218,8 @@ a{{color:var(--head);text-decoration:underline}}
 <a class="side-brand" href="/terminal" title="QUANTIFY.">Q</a>
 <a class="side-link active" href="/terminal">SCN<span class="side-tip">Scanner</span></a>
 <a class="side-link" href="/market">SUM<span class="side-tip">Market</span></a>
-<a class="side-link" href="/terminal#watchlistSection">WL<span class="side-tip">Watchlist</span></a>
-<a class="side-link" href="/terminal#backtestSection">BT<span class="side-tip">Backtest</span></a>
+<a class="side-link" href="/watchlist">WL<span class="side-tip">Watchlist</span></a>
+<a class="side-link" href="/backtest">BT<span class="side-tip">Backtest</span></a>
 <a class="side-link" href="/portfolio">PF<span class="side-tip">Portfolio</span></a>
 <div class="side-spacer"></div>
 <a class="side-link" href="/settings">SET<span class="side-tip">Settings</span></a>
@@ -4120,10 +4228,6 @@ a{{color:var(--head);text-decoration:underline}}
 <a class="side-link" href="/logout" style="color:var(--red)">OUT<span class="side-tip">Log out</span></a>
 </nav>
 <header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> on the left updates a few times a day — click any ticker to load its chart, technicals, and full AI report on the right.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input id="target" type="number" placeholder="Target price $" style="width:110px" title="Get an email when the price reaches this value"><button onclick="setAlert()" title="Email me when the price hits my target">&#128276; Set Alert</button><button onclick="savePortfolio()" title="Add this ticker to My Portfolio">&#9734; Save to Portfolio</button><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div><div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:#e8e8e8"></i>SMA 20</span><span><i style="background:#ff9800"></i>SMA 50</span><span><i style="background:#ef5350"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:#26a69a"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
-<div class="below-grid">
-<section class="panel wide" id="watchlistSection"><h3>Watchlist</h3><div class="watch-add-row"><input id="watchInput" placeholder="Add ticker (e.g. NVDA)" onkeydown="if(event.key==='Enter')addWatch()"><button onclick="addWatch()">Add</button></div><div id="watchlistBody"><div class="empty-hint">Loading...</div></div></section>
-<section class="panel wide" id="backtestSection"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
-</div>
 <div class="toast" id="toast"></div><script>
 const USER_LANGUAGE='{pref_language}';
 const DEFAULT_SORT='{pref_default_sort}';
@@ -4158,17 +4262,7 @@ async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementB
 async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 async function savePortfolio(){{const input=prompt('How many shares? (optional — leave blank to just track the ticker)');if(input===null)return;let shares='';if(input.trim()!==''){{const n=parseFloat(input);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 function changeTF(x){{tf=x;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tf===x));chart.timeScale().applyOptions({{timeVisible:x==='1h'}});loadTicker(ticker)}}
-async function addWatch(){{const t=document.getElementById('watchInput').value.trim();if(!t)return;const f=new FormData();f.append('ticker',t);const r=await fetch('/api/watchlist/add',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok);if(r.ok){{document.getElementById('watchInput').value='';loadWatchlist()}}}}
-async function removeWatch(id){{const f=new FormData();f.append('id',id);await fetch('/api/watchlist/remove',{{method:'POST',body:f}});loadWatchlist()}}
-async function loadWatchlist(){{try{{const r=await fetch('/api/watchlist');if(r.status===402)return;const d=await r.json();const el=document.getElementById('watchlistBody');if(!d.items?.length){{el.innerHTML='<div class="empty-hint">Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.</div>';return}}el.innerHTML=d.items.map(it=>`<div class="watch-row"><b onclick="loadTicker('${{it.ticker}}');document.querySelector('.grid').scrollIntoView({{behavior:'smooth'}})">${{it.ticker}}</b><span>${{it.price!=null?'$'+it.price:'-'}}</span><button class="remove-btn" onclick="removeWatch(${{it.id}})">Remove</button></div>`).join('')}}catch(e){{console.error('Watchlist load failed',e)}}}}
-async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary');if(r.status===402)return;const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){{el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${{h}}-Day Forward Return</h4>
-<div class="backtest-row"><span>Strategy avg</span><b class="${{cls(v.strategy?.avg_return_pct)}}">${{fmtPct(v.strategy?.avg_return_pct)}}</b></div>
-<div class="backtest-row"><span>Strategy win rate</span><b>${{v.strategy?.win_rate_pct??'-'}}%</b></div>
-<div class="backtest-row"><span>When right / wrong</span><b>${{fmtPct(v.strategy?.avg_win_pct)}} / ${{fmtPct(v.strategy?.avg_loss_pct)}}</b></div>
-<div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
-<div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
-</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';const universeText=res.tickers_sampled>=500?`All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${{res.tickers_sampled}} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">${{universeText}}, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
-window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}const qTicker=qp.get('ticker');if(qTicker){{history.replaceState(null,'','/terminal')}}let seenOnboarding=false;try{{seenOnboarding=localStorage.getItem('onboarded')==='1'}}catch(e){{}}if(!seenOnboarding)openOnboarding();document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadWatchlist();loadBacktest();if(qTicker)setTimeout(()=>loadTicker(qTicker),300);setInterval(pollForUpdates,20000)}};
+window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}const qTicker=qp.get('ticker');if(qTicker){{history.replaceState(null,'','/terminal')}}let seenOnboarding=false;try{{seenOnboarding=localStorage.getItem('onboarded')==='1'}}catch(e){{}}if(!seenOnboarding)openOnboarding();document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();if(qTicker)setTimeout(()=>loadTicker(qTicker),300);setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
 
 
@@ -4203,6 +4297,49 @@ loadMarketSummary();loadHeatmap();setInterval(()=>{loadMarketSummary();loadHeatm
 </script>
 """
     return render_app_shell("Market", "market", body)
+
+
+@app.get("/watchlist", response_class=HTMLResponse)
+async def watchlist_page(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return RedirectResponse("/login", status_code=303)
+    if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
+    if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
+    body = """
+<section class="panel"><h3>Watchlist</h3><div class="add-row"><input id="watchInput" type="text" placeholder="Add ticker (e.g. NVDA)" onkeydown="if(event.key==='Enter')addWatch()"><button onclick="addWatch()">Add</button></div><div id="watchlistBody"><div class="empty-hint">Loading...</div></div></section>
+<script>
+function sparklineSVG(arr){if(!arr||arr.length<2)return '';const w=60,h=22;const min=Math.min(...arr),max=Math.max(...arr),range=(max-min)||1;const pts=arr.map((v,i)=>`${(i/(arr.length-1)*w).toFixed(1)},${(h-((v-min)/range*h)).toFixed(1)}`).join(' ');const color=arr[arr.length-1]>=arr[0]?'#26a69a':'#ef5350';return `<svg width="${w}" height="${h}" style="vertical-align:middle;flex-shrink:0"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`}
+function verdictClass(v){return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':'badge-pending'}
+async function addWatch(){const t=document.getElementById('watchInput').value.trim();if(!t)return;const f=new FormData();f.append('ticker',t);const r=await fetch('/api/watchlist/add',{method:'POST',body:f});const d=await r.json();if(!r.ok)alert(d.error||'Could not add ticker');document.getElementById('watchInput').value='';load()}
+async function removeWatch(id){const f=new FormData();f.append('id',id);await fetch('/api/watchlist/remove',{method:'POST',body:f});load()}
+async function load(){try{const r=await fetch('/api/watchlist');if(r.status===402){location.href='/subscription';return}const d=await r.json();const el=document.getElementById('watchlistBody');if(!d.items?.length){el.innerHTML='<div class="empty-hint">Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.</div>';return}el.innerHTML=d.items.map(it=>`<div class="watch-row"><div class="wt-name" onclick="location.href='/terminal?ticker=${it.ticker}'">${sparklineSVG(it.sparkline)}<div><b>${it.ticker}</b>${it.sector?`<div style="font-size:10.5px;color:var(--dim)">${it.sector}</div>`:''}</div></div><div class="wt-price">${it.price!=null?'$'+it.price:'-'}${it.change_pct!=null?` <span class="${it.change_pct>=0?'gain':'loss'}">${it.change_pct>=0?'+':''}${it.change_pct}%</span>`:''}${it.timing_verdict?`<div style="margin-top:4px"><span class="badge ${verdictClass(it.timing_verdict)}">${it.timing_verdict}</span></div>`:''}</div><button class="remove-btn" onclick="removeWatch(${it.id})">Remove</button></div>`).join('')}catch(e){console.error('Watchlist load failed',e)}}
+load();
+</script>
+"""
+    return render_app_shell("Watchlist", "watchlist", body)
+
+
+@app.get("/backtest", response_class=HTMLResponse)
+async def backtest_page(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return RedirectResponse("/login", status_code=303)
+    if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
+    if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
+    body = """
+<section class="panel"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have pulled back 10-25% from their own recent 20-day high. This exact rule was chosen by backtesting thousands of alternative entry rules against two years of real price history, ranking them on the first 70% of that window only, then validating the leaders on the untouched final 30% — the out-of-sample numbers below are that validation, not the numbers used to pick the rule. See the <a href="/faq" style="color:var(--head);text-decoration:underline">FAQ</a> for more.</p></section>
+<script>
+async function load(){try{const r=await fetch('/api/backtest-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${h}-Day Forward Return</h4>
+<div class="backtest-row"><span>Strategy avg</span><b class="${cls(v.strategy?.avg_return_pct)}">${fmtPct(v.strategy?.avg_return_pct)}</b></div>
+<div class="backtest-row"><span>Strategy win rate</span><b>${v.strategy?.win_rate_pct??'-'}%</b></div>
+<div class="backtest-row"><span>When right / wrong</span><b>${fmtPct(v.strategy?.avg_win_pct)} / ${fmtPct(v.strategy?.avg_loss_pct)}</b></div>
+<div class="backtest-row"><span>Worst case</span><b class="loss">${fmtPct(v.strategy?.worst_pct)}</b></div>
+<div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${cls(v.benchmark?.avg_return_pct)}">${fmtPct(v.benchmark?.avg_return_pct)}</b></div>
+</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${h}d`]&&val?.[`out_of_sample_${h}d`]).map(h=>{const i=val[`in_sample_${h}d`],o=val[`out_of_sample_${h}d`];return `${h}d: in-sample ${fmtPct(i.avg_return_pct)} / ${i.win_rate_pct}% win (n=${i.n}) vs out-of-sample ${fmtPct(o.avg_return_pct)} / ${o.win_rate_pct}% win (n=${o.n})`});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${valParts.join(' &middot; ')}.`:'';const universeText=res.tickers_sampled>=500?`All ${res.tickers_sampled} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${res.tickers_sampled} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${cards}</div><div class="backtest-meta">${universeText}, ${res.signal_count} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${valLine} Last computed: ${d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}. Past performance does not guarantee future results.</div>`}catch(e){console.error('Backtest load failed',e)}}
+load();
+</script>
+"""
+    return render_app_shell("Backtest", "backtest", body)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)
