@@ -104,6 +104,25 @@ NASDAQ100_FALLBACK_SOURCE = os.getenv(
 )
 
 app = FastAPI(title="QUANTIFY.")
+
+# Without this, the browser can serve a stale, fully-rendered copy of a logged-in page
+# straight from its back-forward cache after logout -- hitting Back looks like you're
+# still logged in (the DOM is just a frozen snapshot; no request ever reaches the
+# server, so the session being deleted server-side doesn't matter until the user
+# actually clicks something). Cache-Control: no-store is what disables bfcache for a
+# page in every major browser, not just disk/memory caching.
+_NO_STORE_PREFIXES = ("/terminal", "/market", "/portfolio", "/settings", "/subscription", "/contact", "/api/")
+
+
+@app.middleware("http")
+async def no_store_authenticated_pages(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(_NO_STORE_PREFIXES):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 ai_client = None
 try:
     ai_client = OpenAI(base_url=AI_BASE_URL, api_key=AI_API_KEY)
