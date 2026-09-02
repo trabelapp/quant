@@ -138,10 +138,13 @@ PULLBACK_HALF_WIDTH = (PULLBACK_MAX - PULLBACK_MIN) / 2
 OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "50"))
 AI_PROMPT_VERSION = 4
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
-# Fixed daily scan times (US/Eastern): 1h before open, 1h after open, then every 2h,
-# plus one right at the close. Five scans/day instead of a flat interval -- deliberately
-# anchored to when price action actually happens rather than a generic cadence.
-SCAN_TIMES_ET = [(8, 30), (10, 30), (12, 30), (14, 30), (16, 0)]
+# Hourly full-universe recompute, 08:00-18:00 ET, weekdays (pre-market positioning
+# through after-hours settling). Feasible now that data is an unlimited-call paid feed
+# (~36s per full 518-ticker scan) instead of yfinance's free/rate-limited scrape. The
+# strategy's own signal (20d-high pullback + 200d SMA) is daily-bar-based, so anything
+# faster than hourly wouldn't actually change -- this is the ceiling of what's meaningful.
+SCAN_WINDOW_START_HOUR_ET = 8
+SCAN_WINDOW_END_HOUR_ET = 18
 SCAN_RETRY_INTERVAL_SECONDS = 15 * 60
 SCAN_MAX_ATTEMPTS_PER_SLOT = 3
 
@@ -1631,15 +1634,15 @@ async def scheduler():
 
 
 def _next_scan_time_et(now_et: datetime) -> datetime:
-    todays = [now_et.replace(hour=h, minute=mnt, second=0, microsecond=0) for h, mnt in SCAN_TIMES_ET]
+    todays = [now_et.replace(hour=h, minute=0, second=0, microsecond=0)
+              for h in range(SCAN_WINDOW_START_HOUR_ET, SCAN_WINDOW_END_HOUR_ET + 1)]
     upcoming_today = [t for t in todays if t > now_et]
     if upcoming_today and now_et.weekday() < 5:
         return min(upcoming_today)
     day = now_et + timedelta(days=1)
     while day.weekday() >= 5:
         day += timedelta(days=1)
-    h, mnt = SCAN_TIMES_ET[0]
-    return day.replace(hour=h, minute=mnt, second=0, microsecond=0)
+    return day.replace(hour=SCAN_WINDOW_START_HOUR_ET, minute=0, second=0, microsecond=0)
 
 
 async def market_scan_scheduler():
@@ -2119,7 +2122,7 @@ async def api_heatmap(request: Request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
     rows = conn.execute("""
-        SELECT ticker,universe,change_pct,alpha_score FROM daily_scans
+        SELECT ticker,universe,change_pct,alpha_score,quant_pass,timing_verdict FROM daily_scans
         WHERE scan_date=? ORDER BY ticker
     """, (today_str(),)).fetchall()
     conn.close()
@@ -2173,7 +2176,7 @@ async def market_summary(request: Request):
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     conn = db()
-    rows = conn.execute("SELECT change_pct,timing_verdict,quant_pass FROM daily_scans WHERE scan_date=?", (today_str(),)).fetchall()
+    rows = conn.execute("SELECT universe,change_pct,timing_verdict,quant_pass FROM daily_scans WHERE scan_date=?", (today_str(),)).fetchall()
     conn.close()
     total = len(rows)
     advancers = sum(1 for r in rows if (r["change_pct"] or 0) > 0)
@@ -2184,6 +2187,16 @@ async def market_summary(request: Request):
     for r in rows:
         if r["timing_verdict"] in verdict_counts:
             verdict_counts[r["timing_verdict"]] += 1
+    by_universe = {}
+    for uni in ("S&P 500", "Nasdaq-100"):
+        urows = [r for r in rows if r["universe"] == uni]
+        ucount = len(urows)
+        by_universe[uni] = {
+            "count": ucount,
+            "advancers": sum(1 for r in urows if (r["change_pct"] or 0) > 0),
+            "decliners": sum(1 for r in urows if (r["change_pct"] or 0) < 0),
+            "avg_change_pct": round(sum(r["change_pct"] or 0 for r in urows) / ucount, 2) if ucount else None,
+        }
 
     def day_change(df):
         try:
@@ -2195,6 +2208,7 @@ async def market_summary(request: Request):
     sp500_df, ndx_df = await asyncio.gather(download_stock("^GSPC", "1d"), download_stock("^NDX", "1d"))
     return {"universe_count": total, "advancers": advancers, "decliners": decliners,
             "avg_change_pct": avg_change, "detected_count": detected, "verdict_breakdown": verdict_counts,
+            "by_universe": by_universe,
             "sp500_change_pct": day_change(sp500_df) if sp500_df is not None else None,
             "nasdaq_change_pct": day_change(ndx_df) if ndx_df is not None else None}
 
@@ -2775,7 +2789,7 @@ header{border-bottom:1px solid var(--border);position:sticky;top:0;background:#0
 .nav{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;max-width:1080px;margin:0 auto}
 .logo{color:var(--head);font-weight:bold;font-size:16px;letter-spacing:1px}
 .logo span{color:var(--green)}
-.navlinks{display:flex;align-items:center;gap:28px;font-size:13px}
+.navlinks{display:flex;align-items:center;gap:22px;font-size:13px;flex-wrap:wrap;justify-content:flex-end}
 .navlinks a.muted{color:var(--text)}
 .btn{display:inline-block;padding:9px 18px;border:1px solid var(--green);color:var(--green);background:#0e241b;font:13px 'Courier New',monospace;font-weight:bold;cursor:pointer;letter-spacing:.3px}
 .btn:hover{background:#123326}
@@ -2872,6 +2886,8 @@ footer a{color:var(--dim2)}
 <a class="muted" href="#how">How it works</a>
 <a class="muted" href="#proof">Results</a>
 <a class="muted" href="#features">Features</a>
+<a class="muted" href="/pricing">Pricing</a>
+<a class="muted" href="/faq">FAQ</a>
 <a class="muted" href="/login">Log in</a>
 <a class="btn" href="/signup">Get Started Free</a>
 </div>
@@ -2977,7 +2993,7 @@ Not extended near the high, well above its 52-week low — low blow-off-top and 
 
 <footer>
 QUANTIFY. — informational and educational only, not investment advice.<br>
-<a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
+<a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/pricing">Pricing</a> · <a href="/faq">FAQ</a> · <a href="/about">About</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
 </footer>
 </body></html>"""
 
@@ -3154,6 +3170,7 @@ async def robots_txt(request: Request):
         "User-agent: *\n"
         "Allow: /\n"
         "Disallow: /terminal\n"
+        "Disallow: /market\n"
         "Disallow: /portfolio\n"
         "Disallow: /settings\n"
         "Disallow: /accept-disclaimer\n"
@@ -3165,10 +3182,123 @@ async def robots_txt(request: Request):
 @app.get("/sitemap.xml")
 async def sitemap_xml(request: Request):
     base = str(request.base_url).rstrip("/")
-    urls = ["/", "/login", "/signup", "/terms", "/privacy"]
+    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/terms", "/privacy"]
     items = "".join(f"<url><loc>{base}{u}</loc></url>" for u in urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
     return Response(content=xml, media_type="application/xml")
+
+
+MARKETING_CSS = """
+:root{--bg:#050807;--panel:#030504;--panel2:#081310;--border:#14221b;--text:#9ab8af;--head:#dff5ed;--dim:#436659;--dim2:#567d6e;--green:#2ecc71;--red:#e74c3c;--orange:#f39c12;--blue:#3498db;--teal:#22d3c4}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:15px/1.6 'Courier New',monospace;-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+header{border-bottom:1px solid var(--border);position:sticky;top:0;background:#050807;z-index:10}
+.nav{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap;gap:10px}
+.logo{color:var(--head);font-weight:bold;font-size:16px;letter-spacing:1px}
+.logo span{color:var(--green)}
+.navlinks{display:flex;align-items:center;gap:22px;font-size:13px;flex-wrap:wrap}
+.navlinks a.muted{color:var(--text)}
+.btn{display:inline-block;padding:9px 18px;border:1px solid var(--green);color:var(--green);background:#0e241b;font:13px 'Courier New',monospace;font-weight:bold;cursor:pointer;letter-spacing:.3px}
+.btn:hover{background:#123326}
+main{padding:60px 24px 80px}
+main h1{color:var(--head);font-size:34px;line-height:1.25;letter-spacing:-.5px;margin-bottom:16px}
+main h2{color:var(--head);font-size:18px;margin:34px 0 10px}
+main p,main li{font-size:14.5px;line-height:1.75;margin-bottom:12px;color:var(--text)}
+main ul{padding-left:20px;margin-bottom:12px}
+.eyebrow{display:inline-block;font-size:12px;color:var(--orange);border:1px solid #3a2a08;background:#14100a;padding:5px 12px;letter-spacing:.5px;margin-bottom:22px}
+.sublead{color:var(--dim2);font-size:16px;margin-bottom:30px;max-width:640px}
+.price-card{max-width:420px;margin:10px 0 30px;border:1px solid var(--border);background:var(--panel2);padding:28px;text-align:center}
+.price-card .amount{color:var(--head);font-size:40px;font-weight:bold}
+.price-card .amount span{font-size:15px;color:var(--dim);font-weight:normal}
+.price-card ul{list-style:none;padding:0;text-align:left;margin:20px 0}
+.price-card ul li{padding:6px 0;font-size:13.5px;margin-bottom:0}
+.price-card ul li:before{content:"\\2713  ";color:var(--green)}
+.faq-item{border-bottom:1px solid var(--border);padding:18px 0}
+.faq-item h2{margin-top:0}
+.disclaimer{border:1px solid #3a2a08;background:#14100a;padding:16px 20px;margin-top:30px;font-size:13px;color:var(--dim2)}
+footer{border-top:1px solid var(--border);padding:30px 24px;text-align:center;color:var(--dim);font-size:12.5px}
+footer a{color:var(--dim2)}
+@media(max-width:640px){main h1{font-size:26px}.nav{justify-content:center}}
+"""
+
+_MARKETING_NAV = ('<a class="muted" href="/pricing">Pricing</a>'
+                   '<a class="muted" href="/faq">FAQ</a>'
+                   '<a class="muted" href="/about">About</a>'
+                   '<a class="muted" href="/login">Log in</a>'
+                   '<a class="btn" href="/signup">Get Started Free</a>')
+
+
+def render_marketing_page(title: str, description: str, body_html: str) -> HTMLResponse:
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. — {title}</title><meta name="description" content="{description}"><style>{MARKETING_CSS}</style></head><body>
+<header><div class="nav"><a class="logo" href="/">QUANTIFY<span>.</span></a><div class="navlinks">{_MARKETING_NAV}</div></div></header>
+<main><div class="wrap">{body_html}</div></main>
+<footer>QUANTIFY. — informational and educational only, not investment advice.<br>
+<a href="/login">Log in</a> &middot; <a href="/signup">Sign up</a> &middot; <a href="/pricing">Pricing</a> &middot; <a href="/faq">FAQ</a> &middot; <a href="/about">About</a> &middot; <a href="/terms">Terms</a> &middot; <a href="/privacy">Privacy</a>
+</footer>
+</body></html>''')
+
+
+@app.get("/pricing", response_class=HTMLResponse)
+async def pricing_page():
+    body = """
+<div class="eyebrow">SIMPLE PRICING</div>
+<h1>One plan. Everything included.</h1>
+<p class="sublead">No tiers to compare and nothing paywalled inside the app — every subscriber gets the full quant scanner, AI risk review, market view, and portfolio tools.</p>
+<div class="price-card">
+<div class="amount">$9.99<span>/month</span></div>
+<p style="color:var(--dim);font-size:13px;margin:6px 0 0">7-day free trial, then billed monthly. Cancel anytime.</p>
+<ul>
+<li>Full S&amp;P 500 + Nasdaq-100 quant scan, updated hourly during market hours</li>
+<li>AI risk review on every ticker that clears the quant bar</li>
+<li>Live charts, technicals, and a market-wide heatmap</li>
+<li>Watchlist, portfolio tracking, and price alerts</li>
+<li>Backtest methodology published openly, in-sample and out-of-sample</li>
+</ul>
+<a class="btn" href="/signup" style="display:block;text-align:center">Start Free Trial</a>
+</div>
+<h2>What happens after the trial?</h2>
+<p>Your card is charged $9.99 when the 7-day trial ends, unless you cancel first from Settings. Cancel anytime — access continues through the end of whatever period you've already paid for.</p>
+<h2>Questions?</h2>
+<p>See the <a href="/faq">FAQ</a>, or <a href="mailto:quantify.app.official@gmail.com">email us directly</a>.</p>
+<div class="disclaimer">QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer. Nothing on this page or in the app is investment advice.</div>
+"""
+    return render_marketing_page("Pricing", "QUANTIFY pricing: $9.99/month after a 7-day free trial, one plan, everything included.", body)
+
+
+@app.get("/faq", response_class=HTMLResponse)
+async def faq_page():
+    body = """
+<div class="eyebrow">FAQ</div>
+<h1>Frequently asked questions</h1>
+<div class="faq-item"><h2>Is this financial advice?</h2><p>No. QUANTIFY is an informational and educational tool. The quant score, badges, and AI commentary are a mathematical model's output on available data, and they can be wrong. Nothing here is a recommendation to buy or sell anything — consult a licensed financial advisor before making investment decisions.</p></div>
+<div class="faq-item"><h2>What do the Favorable / Caution / Risk badges mean?</h2><p><b>Favorable</b> means the AI's entry-timing check found the setup clean. <b>Caution</b> means it found some risk worth knowing about before you look closer. <b>Risk</b> means it found something that argues for skipping or waiting. None of the three is ever a buy or sell order — they're a starting point for your own research.</p></div>
+<div class="faq-item"><h2>What's the strategy behind the scan?</h2><p>QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have pulled back 10-25% from their own recent 20-day high — a "buy the dip in an uptrend" pattern, not a breakout or momentum chase. This exact rule was validated by backtesting thousands of alternative entry rules against two years of real price history and comparing in-sample results against a held-out out-of-sample period never used for tuning. See the full numbers on the <a href="/#proof">home page</a>.</p></div>
+<div class="faq-item"><h2>How often does the data update?</h2><p>The full S&amp;P 500 + Nasdaq-100 scan recomputes hourly, 8am-6pm ET on trading days, using a licensed market data feed.</p></div>
+<div class="faq-item"><h2>Can I run my own custom screener?</h2><p>Not yet — today there's one validated strategy, and you can filter the results by badge and by index (S&amp;P 500 / Nasdaq-100). A configurable multi-strategy screener is on the roadmap.</p></div>
+<div class="faq-item"><h2>Is my payment information secure?</h2><p>Yes. Billing is handled by Gumroad — QUANTIFY never sees or stores your card details.</p></div>
+<div class="faq-item"><h2>How do I cancel?</h2><p>From Settings or the Subscription page once you're logged in. Cancelling stops future billing; you keep access through the end of the period you already paid for.</p></div>
+<div class="disclaimer">QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer.</div>
+"""
+    return render_marketing_page("FAQ", "Frequently asked questions about QUANTIFY: pricing, the strategy, data updates, and cancellation.", body)
+
+
+@app.get("/about", response_class=HTMLResponse)
+async def about_page():
+    body = """
+<div class="eyebrow">ABOUT</div>
+<h1>What QUANTIFY is — and isn't</h1>
+<p class="sublead">A quant scan of the S&amp;P 500 and Nasdaq-100, with an AI risk check layered on top. Built for people willing to do their own research, not people looking for someone to tell them what to buy.</p>
+<h2>What it is</h2>
+<p>One validated quant rule — a pullback in an established uptrend — run across 518 stocks, refreshed hourly during market hours. Every ticker that clears the bar also gets an AI-written review checking for the specific ways that setup can fail (a blow-off top disguised as a pullback, a dead-cat bounce, a stock that's actually in a downtrend). The scoring and the backtest methodology behind it are published openly, in-sample and out-of-sample, not just cherry-picked results.</p>
+<h2>What it isn't</h2>
+<p>QUANTIFY is not a broker, not a licensed investment adviser, and not a signal service telling you when to buy or sell. It doesn't place trades, hold your money, or know your financial situation. It surfaces one specific pattern and flags risk around it — sizing, diversification, and the actual decision are entirely yours.</p>
+<h2>Why one strategy</h2>
+<p>Most retail screening tools bury you in adjustable filters that are easy to overfit and hard to trust. QUANTIFY ships one entry rule at a time, validated against real out-of-sample data before it goes live, rather than a wall of knobs that look sophisticated but were never actually tested.</p>
+<div class="disclaimer">QUANTIFY is an informational and educational tool. Nothing on this page or in the app is investment advice. Questions: <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</div>
+"""
+    return render_marketing_page("About", "What QUANTIFY is and isn't — one validated quant strategy with an AI risk check, not investment advice.", body)
 
 
 LEGAL_CSS = """
@@ -3190,6 +3320,83 @@ a{color:#2962ff}
 
 def render_legal_page(title: str, updated: str, body_html: str) -> HTMLResponse:
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title><style>{LEGAL_CSS}</style></head><body><div class="wrap"><header><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="back" href="/">&larr; Back to home</a></header><h1>{title}</h1><div class="updated">Last updated: {updated}</div>{body_html}</div></body></html>''')
+
+
+# Reusable logged-in-app page shell (sidebar + base black-theme CSS lifted from the
+# terminal page). The terminal/portfolio/subscription/contact/settings pages each still
+# hand-roll their own complete document (pre-existing pattern, left as-is) -- this exists
+# so any NEW logged-in page (starting with /market) doesn't paste an 8th copy of the same
+# CSS. Not retrofitted onto the existing five pages.
+APP_SHELL_CSS = """
+:root{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--red:#ef5350;--orange:#ff9800}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:8px 8px 8px 68px}
+header,.panel{background:var(--panel);border:1px solid var(--border)}
+.sidebar{position:fixed;left:0;top:0;bottom:0;width:56px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:4px;z-index:40}
+.sidebar .side-brand{color:var(--head);font-weight:800;font-size:15px;margin-bottom:14px;text-decoration:none}
+.side-link{width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:8px;color:var(--dim);text-decoration:none;font-size:9.5px;font-weight:700;letter-spacing:.3px;cursor:pointer;background:transparent;border:1px solid transparent;position:relative}
+.side-link:hover{background:var(--panel2);color:var(--head)}
+.side-link.active{background:var(--panel2);color:var(--head);border-color:var(--border)}
+.side-link .side-tip{position:absolute;left:52px;top:50%;transform:translateY(-50%);background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:4px 9px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .1s}
+.side-link:hover .side-tip{opacity:1}
+.side-spacer{flex:1}
+header{padding:10px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-radius:6px}
+.brand{font-weight:700;font-size:16px;color:var(--head);text-decoration:none;letter-spacing:.2px}
+.brand span{color:var(--dim)}
+.wrap{max-width:1100px;margin:0 auto}
+h1.page-title{color:var(--head);font-size:19px;margin:2px 0 14px}
+.panel{border-radius:4px;padding:14px;margin-bottom:10px}
+.panel h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--dim);border-bottom:1px solid var(--border);padding-bottom:8px}
+.notice{padding:10px;background:var(--panel2);border:1px solid var(--border);margin-bottom:8px;line-height:1.5;border-radius:4px}
+.empty-hint{color:var(--dim);font-size:12px;padding:8px 0}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.summary-tile{background:var(--panel2);border:1px solid var(--border);padding:10px;border-radius:4px;text-align:center}
+.summary-tile .label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px}
+.summary-tile .value{color:var(--head);font-weight:700;font-size:16px;margin-top:4px}
+.summary-tile .value.gain{color:var(--green)}
+.summary-tile .value.loss{color:var(--red)}
+.heat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(52px,1fr));gap:2px}
+.heat-tile{padding:7px 2px;text-align:center;font-size:9.5px;font-weight:700;cursor:pointer;color:#04150c;border-radius:3px}
+.heat-tile.badge-favorable{box-shadow:0 0 0 2px #26a69a inset}
+.heat-tile.badge-caution{box-shadow:0 0 0 2px #ff9800 inset}
+.heat-tile.badge-risk{box-shadow:0 0 0 2px #ef5350 inset}
+.heat-group-header{grid-column:1/-1;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.3px;margin:10px 0 4px}
+@media(max-width:900px){
+  body{padding-left:8px;padding-bottom:64px}
+  .sidebar{left:0;right:0;top:auto;bottom:0;width:auto;height:56px;flex-direction:row;justify-content:space-around;border-right:none;border-top:1px solid var(--border);padding:0}
+  .sidebar .side-brand,.side-spacer{display:none}
+  .side-link .side-tip{display:none}
+}
+"""
+
+_APP_SHELL_NAV_LINKS = [
+    ("scanner", "/terminal", "SCN", "Scanner"),
+    ("market", "/market", "SUM", "Market"),
+    ("watchlist", "/terminal#watchlistSection", "WL", "Watchlist"),
+    ("backtest", "/terminal#backtestSection", "BT", "Backtest"),
+    ("portfolio", "/portfolio", "PF", "Portfolio"),
+]
+
+
+def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "") -> HTMLResponse:
+    nav_html = "".join(
+        f'<a class="side-link{" active" if key == active_nav else ""}" href="{href}">{label}'
+        f'<span class="side-tip">{tip}</span></a>'
+        for key, href, label, tip in _APP_SHELL_NAV_LINKS
+    )
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}</style></head><body>
+<nav class="sidebar">
+<a class="side-brand" href="/terminal" title="QUANTIFY.">Q</a>
+{nav_html}
+<div class="side-spacer"></div>
+<a class="side-link" href="/settings">SET<span class="side-tip">Settings</span></a>
+<a class="side-link" href="/subscription">SUB<span class="side-tip">Subscription</span></a>
+<a class="side-link" href="/contact">CT<span class="side-tip">Contact Us</span></a>
+<a class="side-link" href="/logout" style="color:var(--red)">OUT<span class="side-tip">Log out</span></a>
+</nav>
+<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a></header>
+<div class="wrap"><h1 class="page-title">{title}</h1>{body_html}</div>
+</body></html>''')
 
 
 @app.get("/terms", response_class=HTMLResponse)
@@ -3696,7 +3903,7 @@ a{{color:var(--head);text-decoration:underline}}
 .tabs{{display:flex;gap:4px;margin-bottom:8px}}
 .tab{{flex:1;padding:7px;font-size:11px;background:var(--panel2);color:var(--dim);border:1px solid var(--border);cursor:pointer;border-radius:4px;font-weight:600}}
 .tab.active{{color:var(--bg);background:var(--head);border-color:var(--head)}}
-.sortbar{{display:flex;gap:4px;margin-bottom:8px}}.sortbar select{{flex:1;font-size:11px}}
+.sortbar{{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}}.sortbar select{{flex:1;min-width:88px;font-size:11px}}
 .heatmap{{overflow:auto;flex:1;display:flex;flex-direction:column;gap:4px}}
 .heat-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:2px}}
 .heat-tile{{padding:6px 2px;text-align:center;font-size:9px;font-weight:700;cursor:pointer;color:#04150c;border-radius:3px}}
@@ -3774,9 +3981,9 @@ a{{color:var(--head);text-decoration:underline}}
 <nav class="sidebar">
 <a class="side-brand" href="/terminal" title="QUANTIFY.">Q</a>
 <a class="side-link active" href="/terminal">SCN<span class="side-tip">Scanner</span></a>
-<a class="side-link" onclick="document.getElementById('marketSummarySection').scrollIntoView({{behavior:'smooth'}})">SUM<span class="side-tip">Market Summary</span></a>
-<a class="side-link" onclick="document.getElementById('watchlistSection').scrollIntoView({{behavior:'smooth'}})">WL<span class="side-tip">Watchlist</span></a>
-<a class="side-link" onclick="document.getElementById('backtestSection').scrollIntoView({{behavior:'smooth'}})">BT<span class="side-tip">Backtest</span></a>
+<a class="side-link" href="/market">SUM<span class="side-tip">Market</span></a>
+<a class="side-link" href="/terminal#watchlistSection">WL<span class="side-tip">Watchlist</span></a>
+<a class="side-link" href="/terminal#backtestSection">BT<span class="side-tip">Backtest</span></a>
 <a class="side-link" href="/portfolio">PF<span class="side-tip">Portfolio</span></a>
 <div class="side-spacer"></div>
 <a class="side-link" href="/settings">SET<span class="side-tip">Settings</span></a>
@@ -3784,9 +3991,8 @@ a{{color:var(--head);text-decoration:underline}}
 <a class="side-link" href="/contact">CT<span class="side-tip">Contact Us</span></a>
 <a class="side-link" href="/logout" style="color:var(--red)">OUT<span class="side-tip">Log out</span></a>
 </nav>
-<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> on the left updates a few times a day — click any ticker to load its chart, technicals, and full AI report on the right.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input id="target" type="number" placeholder="Target price $" style="width:110px" title="Get an email when the price reaches this value"><button onclick="setAlert()" title="Email me when the price hits my target">&#128276; Set Alert</button><button onclick="savePortfolio()" title="Add this ticker to My Portfolio">&#9734; Save to Portfolio</button><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div><div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:#e8e8e8"></i>SMA 20</span><span><i style="background:#ff9800"></i>SMA 50</span><span><i style="background:#ef5350"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:#26a69a"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
+<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> on the left updates a few times a day — click any ticker to load its chart, technicals, and full AI report on the right.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input id="target" type="number" placeholder="Target price $" style="width:110px" title="Get an email when the price reaches this value"><button onclick="setAlert()" title="Email me when the price hits my target">&#128276; Set Alert</button><button onclick="savePortfolio()" title="Add this ticker to My Portfolio">&#9734; Save to Portfolio</button><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div><div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:#e8e8e8"></i>SMA 20</span><span><i style="background:#ff9800"></i>SMA 50</span><span><i style="background:#ef5350"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:#26a69a"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
 <div class="below-grid">
-<section class="panel wide" id="marketSummarySection"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel wide" id="watchlistSection"><h3>Watchlist</h3><div class="watch-add-row"><input id="watchInput" placeholder="Add ticker (e.g. NVDA)" onkeydown="if(event.key==='Enter')addWatch()"><button onclick="addWatch()">Add</button></div><div id="watchlistBody"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel wide" id="backtestSection"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
 </div>
@@ -3811,7 +4017,7 @@ function sparklineSVG(arr){{if(!arr||arr.length<2)return '';const w=48,h=18;cons
 function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':'badge-pending'}}
 function renderEarnings(e){{const el=document.getElementById('earningsInfo');if(!e||(!e.last&&!e.next)){{el.innerText='Earnings: no data available';return}}const parts=[];if(e.last){{const beat=e.last.beat;const cls=beat===true?'beat':beat===false?'miss':'';const label=beat===true?'Beat':beat===false?'Miss':'Met';const surprise=e.last.surprise_pct!=null?` (${{label}} ${{e.last.surprise_pct>0?'+':''}}${{e.last.surprise_pct}}%)`:'';parts.push(`Last earnings <b>${{e.last.date}}</b>: EPS $${{e.last.eps_actual}} vs $${{e.last.eps_estimate??'-'}} est.<span class="${{cls}}">${{surprise}}</span>`)}}if(e.next){{parts.push(`Next earnings: <b>${{e.next.date}}</b>`)}}el.innerHTML=parts.join(' &middot; ')}}
 function itemSigClass(v){{return v==='Favorable'?'sig-favorable':v==='Caution'?'sig-caution':v==='Risk'?'sig-risk':''}}
-function renderList(){{if(!lastSignals.length)return;const key=document.getElementById('sortKey').value;const sorted=[...lastSignals].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));document.getElementById('list').innerHTML=sorted.map(s=>`<div class="item ${{itemSigClass(s.timing_verdict)}}" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span style="display:flex;align-items:center;gap:6px">${{sparklineSVG(s.sparkline)}}<span style="text-align:right">${{s.price}} · ${{s.change_pct}}%<br><small>Score ${{s.overall_score}} · <span class="badge ${{verdictClass(s.timing_verdict)}}">${{s.timing_verdict||'Analyzing'}}</span></small></span></span></div>`).join('')}}
+function renderList(){{if(!lastSignals.length)return;const badge=document.getElementById('filterBadge').value;const uni=document.getElementById('filterUniverse').value;const key=document.getElementById('sortKey').value;const filtered=lastSignals.filter(s=>(!badge||s.timing_verdict===badge)&&(!uni||s.universe===uni));const sorted=[...filtered].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));document.getElementById('list').innerHTML=sorted.length?sorted.map(s=>`<div class="item ${{itemSigClass(s.timing_verdict)}}" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span style="display:flex;align-items:center;gap:6px">${{sparklineSVG(s.sparkline)}}<span style="text-align:right">${{s.price}} · ${{s.change_pct}}%<br><small>Score ${{s.overall_score}} · <span class="badge ${{verdictClass(s.timing_verdict)}}">${{s.timing_verdict||'Analyzing'}}</span></small></span></span></div>`).join(''):'<div class="notice">No tickers match this filter.</div>'}}
 function init(){{const c=document.getElementById('chart');chart=LightweightCharts.createChart(c,{{width:c.clientWidth,height:c.clientHeight,layout:{{background:{{type:'solid',color:'#000000'}},textColor:'#a8a8a8'}},grid:{{vertLines:{{color:'#161616'}},horzLines:{{color:'#161616'}}}},timeScale:{{timeVisible:true}}}});candle=chart.addCandlestickSeries({{upColor:'#26a69a',downColor:'#ef5350',borderUpColor:'#26a69a',borderDownColor:'#ef5350',wickUpColor:'#26a69a',wickDownColor:'#ef5350'}});volume=chart.addHistogramSeries({{color:'rgba(38,166,154,.5)',priceFormat:{{type:'volume'}},priceScaleId:''}});volume.priceScale().applyOptions({{scaleMargins:{{top:.8,bottom:0}}}});smaLines.sma20=chart.addLineSeries({{color:'#e8e8e8',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma50=chart.addLineSeries({{color:'#ff9800',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma200=chart.addLineSeries({{color:'#ef5350',lineWidth:1,priceLineVisible:false,lastValueVisible:false}});bbLines.upper=chart.addLineSeries({{color:'#9b6bff',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});bbLines.lower=chart.addLineSeries({{color:'#9b6bff',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});window.onresize=()=>{{chart.resize(c.clientWidth,c.clientHeight);Object.entries(idxCharts).forEach(([k,ic])=>{{const el=document.getElementById('idx-'+k);if(el)ic.resize(el.clientWidth,el.clientHeight)}})}};['sp500','ndx'].forEach(k=>{{const el=document.getElementById('idx-'+k);const ic=LightweightCharts.createChart(el,{{width:el.clientWidth,height:el.clientHeight,layout:{{background:{{type:'solid',color:'#000000'}},textColor:'#a8a8a8',fontSize:9}},grid:{{vertLines:{{visible:false}},horzLines:{{visible:false}}}},rightPriceScale:{{visible:false}},timeScale:{{visible:false}},handleScroll:false,handleScale:false}});idxCharts[k]=ic;idxCharts[k+'_line']=ic.addLineSeries({{color:'#e8e8e8',lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}})}})}}
 async function loadIndices(){{try{{const r=await fetch('/api/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;const boxEl=document.getElementById('idx-'+k);if(boxEl&&boxEl.clientWidth&&boxEl.clientHeight)idxCharts[k].resize(boxEl.clientWidth,boxEl.clientHeight);idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);idxCharts[k+'_line'].applyOptions({{color:chg>=0?'#26a69a':'#ef5350'}});const valEl=document.getElementById('idx-'+k+'-val');if(valEl)valEl.innerHTML=`${{last}} <span style="color:${{chg>=0?'#26a69a':'#ef5350'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
 async function loadScoreHistory(t){{const el=document.getElementById('scoretrend');try{{const r=await fetch(`/api/score-history?ticker=${{encodeURIComponent(t)}}`);const d=await r.json();const scores=(d.points||[]).map(p=>p.alpha_score).filter(v=>v!=null);if(scores.length<2){{el.innerHTML=scores.length?scores[scores.length-1].toFixed(1):'-';return}}el.innerHTML=sparklineSVG(scores)+' '+scores[scores.length-1].toFixed(1)}}catch(e){{el.innerText='-'}}}}
@@ -3823,15 +4029,6 @@ async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementB
 async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 async function savePortfolio(){{const input=prompt('How many shares? (optional — leave blank to just track the ticker)');if(input===null)return;let shares='';if(input.trim()!==''){{const n=parseFloat(input);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 function changeTF(x){{tf=x;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tf===x));loadTicker(ticker)}}
-async function loadMarketSummary(){{try{{const r=await fetch('/api/market-summary');if(r.status===402)return;const d=await r.json();const el=document.getElementById('marketSummaryBody');const chg=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');el.innerHTML=`
-<div class="summary-tile"><div class="label">S&amp;P 500</div><div class="value ${{cls(d.sp500_change_pct)}}">${{chg(d.sp500_change_pct)}}</div></div>
-<div class="summary-tile"><div class="label">Nasdaq-100</div><div class="value ${{cls(d.nasdaq_change_pct)}}">${{chg(d.nasdaq_change_pct)}}</div></div>
-<div class="summary-tile"><div class="label">Advancers</div><div class="value gain">${{d.advancers??'-'}}</div></div>
-<div class="summary-tile"><div class="label">Decliners</div><div class="value loss">${{d.decliners??'-'}}</div></div>
-<div class="summary-tile"><div class="label">Avg Change</div><div class="value ${{cls(d.avg_change_pct)}}">${{chg(d.avg_change_pct)}}</div></div>
-<div class="summary-tile"><div class="label">Cleared Quant Bar</div><div class="value">${{d.detected_count??'-'}} / ${{d.universe_count??'-'}}</div></div>
-<div class="summary-tile"><div class="label">Favorable</div><div class="value gain">${{d.verdict_breakdown?.Favorable??0}}</div></div>
-<div class="summary-tile"><div class="label">Caution / Risk</div><div class="value loss">${{(d.verdict_breakdown?.Caution??0)+(d.verdict_breakdown?.Risk??0)}}</div></div>`}}catch(e){{console.error('Market summary load failed',e)}}}}
 async function addWatch(){{const t=document.getElementById('watchInput').value.trim();if(!t)return;const f=new FormData();f.append('ticker',t);const r=await fetch('/api/watchlist/add',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok);if(r.ok){{document.getElementById('watchInput').value='';loadWatchlist()}}}}
 async function removeWatch(id){{const f=new FormData();f.append('id',id);await fetch('/api/watchlist/remove',{{method:'POST',body:f}});loadWatchlist()}}
 async function loadWatchlist(){{try{{const r=await fetch('/api/watchlist');if(r.status===402)return;const d=await r.json();const el=document.getElementById('watchlistBody');if(!d.items?.length){{el.innerHTML='<div class="empty-hint">Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.</div>';return}}el.innerHTML=d.items.map(it=>`<div class="watch-row"><b onclick="loadTicker('${{it.ticker}}');document.querySelector('.grid').scrollIntoView({{behavior:'smooth'}})">${{it.ticker}}</b><span>${{it.price!=null?'$'+it.price:'-'}}</span><button class="remove-btn" onclick="removeWatch(${{it.id}})">Remove</button></div>`).join('')}}catch(e){{console.error('Watchlist load failed',e)}}}}
@@ -3842,8 +4039,39 @@ async function loadBacktest(){{try{{const r=await fetch('/api/backtest-summary')
 <div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
 <div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${{cls(v.benchmark?.avg_return_pct)}}">${{fmtPct(v.benchmark?.avg_return_pct)}}</b></div>
 </div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';const universeText=res.tickers_sampled>=500?`All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${{res.tickers_sampled}} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">${{universeText}}, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
-window.onload=()=>{{if(new URLSearchParams(location.search).get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}let seenOnboarding=false;try{{seenOnboarding=localStorage.getItem('onboarded')==='1'}}catch(e){{}}if(!seenOnboarding)openOnboarding();document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadMarketSummary();loadWatchlist();loadBacktest();setInterval(pollForUpdates,20000)}};
+window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}const qTicker=qp.get('ticker');if(qTicker){{history.replaceState(null,'','/terminal')}}let seenOnboarding=false;try{{seenOnboarding=localStorage.getItem('onboarded')==='1'}}catch(e){{}}if(!seenOnboarding)openOnboarding();document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();loadWatchlist();loadBacktest();if(qTicker)setTimeout(()=>loadTicker(qTicker),300);setInterval(pollForUpdates,20000)}};
 </script></body></html>''')
+
+
+@app.get("/market", response_class=HTMLResponse)
+async def market_page(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return RedirectResponse("/login", status_code=303)
+    if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
+    if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
+    body = """
+<section class="panel"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel"><h3>By Universe</h3><div id="byUniverseBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart</small></h3><div id="heatmapBody"><div class="empty-hint">Loading...</div></div></section>
+<script>
+function heatColor(chg){if(chg==null)return '#333';const c=Math.max(-5,Math.min(5,chg));const t=(c+5)/10;const r=Math.round(239+(38-239)*t),g=Math.round(83+(166-83)*t),b=Math.round(80+(154-80)*t);return `rgb(${r},${g},${b})`}
+function badgeClass(v){return v==='Favorable'?'badge-favorable':v==='Caution'?'badge-caution':v==='Risk'?'badge-risk':''}
+function groupByUniverse(items){const groups={};items.forEach(t=>{const g=t.universe||'Other';(groups[g]=groups[g]||[]).push(t)});return groups}
+async function loadHeatmap(){const el=document.getElementById('heatmapBody');try{const r=await fetch('/api/heatmap');if(r.status===402){location.href='/subscription';return}const d=await r.json();if(!d.tiles?.length){el.innerHTML='<div class="notice">No scan data yet — check back after the next scan.</div>';return}const groups=groupByUniverse(d.tiles);el.innerHTML=Object.entries(groups).map(([g,items])=>`<div class="heat-group-header">${g} (${items.length})</div><div class="heat-grid">`+items.map(t=>`<div class="heat-tile ${badgeClass(t.timing_verdict)}" style="background:${heatColor(t.change_pct)}" title="${t.ticker} · ${t.change_pct??'-'}% · Score ${t.alpha_score??'-'} · ${t.timing_verdict||'Not yet reviewed'}" onclick="location.href='/terminal?ticker=${t.ticker}'">${t.ticker}</div>`).join('')+'</div>').join('')}catch(e){el.innerHTML='<div class="notice">Could not load the heatmap.</div>';console.error('Heatmap load failed',e)}}
+async function loadMarketSummary(){try{const r=await fetch('/api/market-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const chg=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');document.getElementById('marketSummaryBody').innerHTML=`
+<div class="summary-tile"><div class="label">S&amp;P 500</div><div class="value ${cls(d.sp500_change_pct)}">${chg(d.sp500_change_pct)}</div></div>
+<div class="summary-tile"><div class="label">Nasdaq-100</div><div class="value ${cls(d.nasdaq_change_pct)}">${chg(d.nasdaq_change_pct)}</div></div>
+<div class="summary-tile"><div class="label">Advancers</div><div class="value gain">${d.advancers??'-'}</div></div>
+<div class="summary-tile"><div class="label">Decliners</div><div class="value loss">${d.decliners??'-'}</div></div>
+<div class="summary-tile"><div class="label">Avg Change</div><div class="value ${cls(d.avg_change_pct)}">${chg(d.avg_change_pct)}</div></div>
+<div class="summary-tile"><div class="label">Cleared Quant Bar</div><div class="value">${d.detected_count??'-'} / ${d.universe_count??'-'}</div></div>
+<div class="summary-tile"><div class="label">Favorable</div><div class="value gain">${d.verdict_breakdown?.Favorable??0}</div></div>
+<div class="summary-tile"><div class="label">Caution / Risk</div><div class="value loss">${(d.verdict_breakdown?.Caution??0)+(d.verdict_breakdown?.Risk??0)}</div></div>`;
+const bu=d.by_universe||{};const names=Object.keys(bu);document.getElementById('byUniverseBody').innerHTML=names.length?names.map(name=>`<div class="summary-tile"><div class="label">${name}</div><div class="value">${bu[name].count} scanned</div><div style="margin-top:6px;font-size:11px;color:var(--dim)">${bu[name].advancers} up &middot; ${bu[name].decliners} down &middot; avg <span class="${cls(bu[name].avg_change_pct)}">${chg(bu[name].avg_change_pct)}</span></div></div>`).join(''):'<div class="empty-hint">No data yet.</div>'}catch(e){console.error('Market summary load failed',e)}}
+loadMarketSummary();loadHeatmap();setInterval(()=>{loadMarketSummary();loadHeatmap()},60000);
+</script>
+"""
+    return render_app_shell("Market", "market", body)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)
