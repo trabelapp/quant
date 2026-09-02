@@ -53,16 +53,15 @@ LEMONSQUEEZY_CHECKOUT_URL = os.getenv("LEMONSQUEEZY_CHECKOUT_URL", "")
 LEMONSQUEEZY_WEBHOOK_SECRET = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
 GUMROAD_CHECKOUT_URL = os.getenv("GUMROAD_CHECKOUT_URL", "")
 GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
+POLYGON_BASE_URL = "https://api.polygon.io"
 SITE_URL = os.getenv("SITE_URL", "https://quantify.trading")
 TRIAL_DAYS = 7
 TRIAL_REMINDER_HOURS_BEFORE = 48
 
-# Constituent refresh is deliberately infrequent. Market data is fetched in
-# small batches with pauses, not as hundreds of simultaneous requests.
+# Constituent refresh is deliberately infrequent.
 UNIVERSE_TTL = 24 * 3600
-# Batch size and pause tuned to avoid the 3-minute delay issue.
-MARKET_BATCH_SIZE = int(os.getenv("MARKET_BATCH_SIZE", "50"))
-MARKET_BATCH_PAUSE = float(os.getenv("MARKET_BATCH_PAUSE", "0.5"))
+POLYGON_CONCURRENCY = int(os.getenv("POLYGON_CONCURRENCY", "20"))
 HISTORICAL_TTL = 600
 HISTORICAL_FALLBACK_RETENTION = 24 * 3600  # how long a stale entry stays servable as a
                                             # last-known-good fallback if a live fetch fails
@@ -840,42 +839,79 @@ def calculate_alpha_score_series(close, high):
     return score.clip(0.0, 100.0).round(1)
 
 
-def _is_rate_limit_error(exc) -> bool:
-    msg = str(exc).lower()
-    return "rate limit" in msg or "too many requests" in msg
+# Index tickers use Yahoo-style symbols (^GSPC/^NDX) throughout the codebase, but
+# Massive/Polygon's Stocks plan doesn't include its Indices product (confirmed: I:SPX
+# 403s as "NOT_AUTHORIZED" on the Stocks Starter key). SPY/QQQ are near-exact tracking
+# proxies and are ordinary equities, so this alias keeps every existing call site working
+# without a separate Indices subscription.
+POLYGON_INDEX_PROXY = {"^GSPC": "SPY", "^NDX": "QQQ"}
+POLYGON_TIMESPAN = {"1h": (1, "hour"), "1d": (1, "day"), "1wk": (1, "week"), "1mo": (1, "month")}
+# Stocks Starter includes 5 years of history -- "1mo" would ask for more under the old
+# yfinance period="max", but 5y of monthly bars is still 60 points, plenty for that chart.
+POLYGON_LOOKBACK_DAYS = {"1h": 730, "1d": 730, "1wk": 1825, "1mo": 1825}
 
 
-def _download_group(tickers, period="2y", interval="1d", raise_on_rate_limit=False):
-    try:
-        return yf.download(
-            tickers=tickers, period=period, interval=interval,
-            auto_adjust=True, progress=False, threads=True, group_by="column"
-        )
-    except Exception as exc:
-        if raise_on_rate_limit and _is_rate_limit_error(exc):
-            raise
-        print(f"[Error: {type(exc).__name__}] yfinance batch download error: {exc}")
+class _PolygonRateLimitError(Exception):
+    pass
+
+
+_SHARE_CLASS_RE = re.compile(r"^([A-Z]+)-([A-Z])$")
+
+
+def _polygon_fetch_sync(ticker: str, interval: str):
+    ticker = POLYGON_INDEX_PROXY.get(ticker, ticker)
+    # Yahoo-style share-class tickers (BRK-B, BF-B) use a hyphen; Polygon uses a dot
+    # (BRK.B, BF.B) -- confirmed by testing both forms against the live API.
+    m = _SHARE_CLASS_RE.match(ticker)
+    if m:
+        ticker = f"{m.group(1)}.{m.group(2)}"
+    multiplier, timespan = POLYGON_TIMESPAN.get(interval, (1, "day"))
+    lookback = POLYGON_LOOKBACK_DAYS.get(interval, 730)
+    to_date = datetime.utcnow().date()
+    from_date = to_date - timedelta(days=lookback)
+    url = (f"{POLYGON_BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/"
+           f"{from_date.isoformat()}/{to_date.isoformat()}")
+    headers = {"Authorization": f"Bearer {POLYGON_API_KEY}"}
+    params = {"adjusted": "true", "sort": "asc", "limit": 50000}
+    rows = []
+    next_url = url
+    use_params = True
+    while next_url:
+        resp = requests.get(next_url, headers=headers, params=params if use_params else None, timeout=15)
+        use_params = False
+        if resp.status_code == 429:
+            raise _PolygonRateLimitError(f"Polygon rate limit for {ticker}")
+        resp.raise_for_status()
+        payload = resp.json()
+        rows.extend(payload.get("results") or [])
+        next_url = payload.get("next_url")
+    if not rows:
         return None
+    df = pd.DataFrame(rows)
+    df.index = pd.to_datetime(df["t"], unit="ms", utc=True).dt.tz_convert("America/New_York")
+    df = df.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"})
+    df = df[["Open", "High", "Low", "Close", "Volume"]].sort_index()
+    return df[~df.index.duplicated(keep="last")]
 
 
 RATE_LIMIT_BACKOFF_SECONDS = 10.0
 
 
-async def _download_single_with_backoff(ticker, period, interval):
+async def _download_single_with_backoff(ticker, interval):
     for attempt in range(2):
         try:
-            return await asyncio.to_thread(_download_group, [ticker], period, interval, True)
-        except Exception as exc:
-            if attempt == 0 and _is_rate_limit_error(exc):
-                print(f"[RateLimit] yfinance rate limit hit on {ticker} — backing off {RATE_LIMIT_BACKOFF_SECONDS:.0f}s")
+            return await asyncio.to_thread(_polygon_fetch_sync, ticker, interval)
+        except _PolygonRateLimitError:
+            if attempt == 0:
+                print(f"[RateLimit] Polygon rate limit hit on {ticker} — backing off {RATE_LIMIT_BACKOFF_SECONDS:.0f}s")
                 await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
                 continue
-            print(f"[Error: {type(exc).__name__}] Single download failed ({ticker}): {exc}")
+            print(f"[RateLimit] Polygon still rate-limited on {ticker} after backoff — giving up")
+            return None
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Polygon download failed ({ticker}): {exc}")
             return None
     return None
-
-
-INTERVAL_PERIODS = {"1h": "730d", "1d": "2y", "1wk": "5y", "1mo": "max"}
 
 # The in-memory historical cache doesn't survive a restart, which left the fallback with
 # nothing to serve during tonight's yfinance outage after a deploy. This mirrors the same
@@ -917,8 +953,7 @@ async def download_stock(ticker: str, interval="1d", cache=True):
     cached = CACHE["historical"].get(key) if cache else None
     if cached and time.time() - cached["ts"] < HISTORICAL_TTL:
         return cached["data"]
-    period = INTERVAL_PERIODS.get(interval, "2y")
-    data = await _download_single_with_backoff(ticker, period, interval)
+    data = await _download_single_with_backoff(ticker, interval)
     if data is None or data.empty:
         if cached is not None:
             age_min = (time.time() - cached["ts"]) / 60
@@ -935,11 +970,6 @@ async def download_stock(ticker: str, interval="1d", cache=True):
                 stale.attrs["stale_as_of"] = persisted["ts"]
                 return stale
         return None
-    if isinstance(data.columns, pd.MultiIndex):
-        try:
-            data = data.xs(ticker, axis=1, level=1)
-        except Exception:
-            data = data.xs(ticker, axis=1, level=-1)
     data = data.dropna(how="all")
     if cache and len(data) >= 30:
         CACHE["historical"][key] = {"data": data, "ts": time.time()}
@@ -963,71 +993,27 @@ async def batch_download_stocks(tickers):
         print(f"[Cache reuse] {len(unique) - len(to_fetch)} tickers served from recent cache, downloading {len(to_fetch)} fresh")
     BATCH_STATUS["processed"] = len(unique) - len(to_fetch)
 
-    for start in range(0, len(to_fetch), MARKET_BATCH_SIZE):
-        chunk = to_fetch[start:start + MARKET_BATCH_SIZE]
-        data = await asyncio.to_thread(_download_group, chunk, "2y", "1d")
-        if data is not None and not data.empty:
-            for ticker in chunk:
-                try:
-                    if isinstance(data.columns, pd.MultiIndex):
-                        if ticker in data.columns.get_level_values(-1):
-                            df = data.xs(ticker, axis=1, level=-1).dropna(how="all")
-                        elif ticker in data.columns.get_level_values(1):
-                            df = data.xs(ticker, axis=1, level=1).dropna(how="all")
-                        else:
-                            continue
-                    else:
-                        df = data.dropna(how="all") if len(chunk) == 1 else None
-                    if df is not None and len(df) >= 30:
-                        CACHE["historical"][f"single:{ticker}:1d"] = {"data": df, "ts": time.time()}
-                        results[ticker] = df
-                except Exception as exc:
-                    print(f"[Error: {type(exc).__name__}] Batch parse error ({ticker}): {exc}")
-        BATCH_STATUS["processed"] = (len(unique) - len(to_fetch)) + min(start + len(chunk), len(to_fetch))
-        if start + MARKET_BATCH_SIZE < len(to_fetch):
-            await asyncio.sleep(MARKET_BATCH_PAUSE)
+    # Massive/Polygon Starter has no multi-ticker aggregates endpoint (unlike yfinance's
+    # batch download), but its unlimited-call quota means per-ticker concurrent fetches
+    # are the right shape here instead of yfinance's old chunk-then-pause-then-retry dance.
+    semaphore = asyncio.Semaphore(POLYGON_CONCURRENCY)
+    failed = []
 
-    missing = [t for t in unique if t not in results]
-    if missing:
-        print(f"[Retry] Retrying {len(missing)} tickers missing from batch download individually: {missing}")
-        consecutive_rate_limits = 0
-        for i_missing, ticker in enumerate(missing):
-            # Circuit breaker: if yfinance is rate-limiting us wholesale (not just this
-            # ticker), grinding through the rest one-by-one with a 10s backoff EACH is
-            # what turned a transient rate limit into an ~90-minute BATCH_LOCK-holding
-            # stall that showed up as a slow, sustained memory climb. A few consecutive
-            # rate-limit hits in a row means the whole batch is blocked, not this ticker
-            # specifically -- bail out and let the next scheduled scan try again fresh.
-            if consecutive_rate_limits >= 5:
-                skipped = len(missing) - i_missing
-                print(f"[RateLimit] {consecutive_rate_limits} consecutive rate-limit failures — "
-                      f"aborting the remaining {skipped} individual retries instead of grinding through them.")
-                break
-            try:
-                data = await asyncio.to_thread(_download_group, [ticker], "2y", "1d", True)
-                consecutive_rate_limits = 0
-            except Exception as exc:
-                if _is_rate_limit_error(exc):
-                    consecutive_rate_limits += 1
-                else:
-                    print(f"[Error: {type(exc).__name__}] Individual retry failed ({ticker}): {exc}")
-                continue
-            try:
-                if data is None or data.empty:
-                    continue
-                if isinstance(data.columns, pd.MultiIndex):
-                    try:
-                        df = data.xs(ticker, axis=1, level=1).dropna(how="all")
-                    except Exception:
-                        df = data.xs(ticker, axis=1, level=-1).dropna(how="all")
-                else:
-                    df = data.dropna(how="all")
-                if df is not None and len(df) >= 30:
-                    CACHE["historical"][f"single:{ticker}:1d"] = {"data": df, "ts": time.time()}
-                    results[ticker] = df
-            except Exception as exc:
-                print(f"[Error: {type(exc).__name__}] Individual retry parse failed ({ticker}): {exc}")
-            await asyncio.sleep(0.2)
+    async def fetch_one(ticker):
+        async with semaphore:
+            df = await _download_single_with_backoff(ticker, "1d")
+            if df is not None and len(df) >= 30:
+                CACHE["historical"][f"single:{ticker}:1d"] = {"data": df, "ts": time.time()}
+                results[ticker] = df
+            else:
+                failed.append(ticker)
+            BATCH_STATUS["processed"] += 1
+
+    await asyncio.gather(*(fetch_one(t) for t in to_fetch))
+    if failed:
+        preview = failed[:20]
+        print(f"[Batch] {len(failed)}/{len(to_fetch)} tickers had no usable data: {preview}"
+              f"{'...' if len(failed) > 20 else ''}")
     return results
 
 # -----------------------------------------------------------------------------
