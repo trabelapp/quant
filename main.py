@@ -88,6 +88,9 @@ BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 MARKET_AI_SUMMARY_FILE = DATA_DIR / "market_ai_summary_cache.json"
 MARKET_AI_SUMMARY_CACHE = {"scan_date": None, "generated_at": None, "headline": None, "summary": None, "error": None}
+HIGH_SCORE_ALERT_THRESHOLD = 90
+HIGH_SCORE_DIGEST_FILE = DATA_DIR / "high_score_digest_state.json"
+HIGH_SCORE_DIGEST_STATE = {"sent_date": None}
 
 SNP500_SOURCE = os.getenv(
     "SNP500_SOURCE",
@@ -376,6 +379,8 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN pref_default_sort TEXT NOT NULL DEFAULT 'overall_score'")
         if "pref_default_view" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN pref_default_view TEXT NOT NULL DEFAULT 'list'")
+        if "pref_high_score_alerts" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN pref_high_score_alerts INTEGER NOT NULL DEFAULT 0")
         if "verify_token_hash" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN verify_token_hash TEXT")
         if "verify_expires" not in user_cols:
@@ -1598,6 +1603,7 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
             conn.commit(); conn.close()
             start_ai_prefetch(mode)
             start_market_summary_ai()
+            send_high_score_digest()
             return results
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] run_eod_batch_process fatal error: {exc}")
@@ -1631,6 +1637,18 @@ def load_market_ai_summary_cache():
         return True
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] Market AI summary cache load error: {exc}")
+        return False
+
+
+def load_high_score_digest_state():
+    if not HIGH_SCORE_DIGEST_FILE.exists():
+        return False
+    try:
+        payload = json.loads(HIGH_SCORE_DIGEST_FILE.read_text(encoding="utf-8"))
+        HIGH_SCORE_DIGEST_STATE.update(payload)
+        return True
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] High score digest state load error: {exc}")
         return False
 
 
@@ -2083,6 +2101,7 @@ async def startup():
     init_db()
     load_universe_cache()
     load_market_ai_summary_cache()
+    load_high_score_digest_state()
     asyncio.create_task(refresh_universe())
     asyncio.create_task(scheduler())
     asyncio.create_task(sector_scheduler())
@@ -2388,6 +2407,66 @@ def start_market_summary_ai():
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Market AI summary task error: {exc}", flush=True)
     task.add_done_callback(done)
+
+
+def send_high_score_digest():
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    if now_et.hour < MARKET_SUMMARY_AFTER_HOUR_ET:
+        return
+    if HIGH_SCORE_DIGEST_STATE.get("sent_date") == today_str():
+        return
+
+    def mark_sent():
+        HIGH_SCORE_DIGEST_STATE["sent_date"] = today_str()
+        try:
+            HIGH_SCORE_DIGEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = HIGH_SCORE_DIGEST_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(HIGH_SCORE_DIGEST_STATE, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(HIGH_SCORE_DIGEST_FILE)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] High score digest state write failed: {exc}")
+
+    try:
+        conn = db()
+        rows = conn.execute(
+            "SELECT ticker,alpha_score,timing_score,timing_verdict,price,change_pct FROM daily_scans "
+            "WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL",
+            (today_str(),),
+        ).fetchall()
+        hits = [dict(r) for r in rows if (r["alpha_score"] + r["timing_score"]) / 2 >= HIGH_SCORE_ALERT_THRESHOLD]
+        if not hits:
+            conn.close()
+            mark_sent()
+            return
+        hits.sort(key=lambda h: (h["alpha_score"] + h["timing_score"]) / 2, reverse=True)
+        recipients = [r["email"] for r in conn.execute(
+            "SELECT email FROM users WHERE pref_high_score_alerts=1"
+        ).fetchall()]
+        conn.close()
+        recipients = [e for e in recipients if has_active_access(e)]
+        if not recipients:
+            mark_sent()
+            return
+        lines = [
+            f"{h['ticker']}: score {round((h['alpha_score'] + h['timing_score']) / 2, 1)}/100, "
+            f"{h['timing_verdict'] or '-'}, ${h['price']:.2f} ({h['change_pct']:+.2f}%)"
+            for h in hits
+        ]
+        plural = "s" if len(hits) != 1 else ""
+        subject = f"[QUANTIFY] {len(hits)} stock{plural} scored {HIGH_SCORE_ALERT_THRESHOLD}+ today"
+        body = (
+            f"{len(hits)} stock{plural} reached a score of {HIGH_SCORE_ALERT_THRESHOLD}+ in today's scan ({display_date()}):\n\n"
+            + "\n".join(lines)
+            + f"\n\nSee the full scan and AI review at {SITE_URL}/terminal\n\n"
+            "QUANTIFY is an informational and educational tool. This is not investment advice, "
+            "a recommendation, or a solicitation to buy or sell any security. Scores reflect a "
+            "model's output on the data available and can be wrong. Do your own research."
+        )
+        for email in recipients:
+            send_email_notification(email, subject, body)
+        mark_sent()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] High score digest error: {exc}", flush=True)
 
 
 # -----------------------------------------------------------------------------
@@ -3110,7 +3189,7 @@ async def get_settings(request: Request):
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
     row = conn.execute(
-        "SELECT email,pref_theme,pref_language,pref_default_sort,pref_default_view,created_at,trial_ends_at,subscription_status FROM users WHERE email=?",
+        "SELECT email,pref_theme,pref_language,pref_default_sort,pref_default_view,pref_high_score_alerts,created_at,trial_ends_at,subscription_status FROM users WHERE email=?",
         (user,)
     ).fetchone()
     conn.close()
@@ -3139,7 +3218,8 @@ async def delete_account(request: Request, password: str = Form(...)):
 
 @app.post("/api/settings")
 async def update_settings(request: Request, theme: str = Form(...), language: str = Form(...),
-                           default_sort: str = Form("overall_score"), default_view: str = Form("list")):
+                           default_sort: str = Form("overall_score"), default_view: str = Form("list"),
+                           high_score_alerts: str = Form("0")):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     if theme not in ("dark", "light"):
@@ -3150,9 +3230,11 @@ async def update_settings(request: Request, theme: str = Form(...), language: st
         return JSONResponse({"error": "Invalid default sort"}, status_code=400)
     if default_view not in ("list", "heatmap"):
         return JSONResponse({"error": "Invalid default view"}, status_code=400)
+    if high_score_alerts not in ("0", "1"):
+        return JSONResponse({"error": "Invalid high score alerts value"}, status_code=400)
     conn = db()
-    conn.execute("UPDATE users SET pref_theme=?,pref_language=?,pref_default_sort=?,pref_default_view=? WHERE email=?",
-                 (theme, language, default_sort, default_view, user))
+    conn.execute("UPDATE users SET pref_theme=?,pref_language=?,pref_default_sort=?,pref_default_view=?,pref_high_score_alerts=? WHERE email=?",
+                 (theme, language, default_sort, default_view, int(high_score_alerts), user))
     conn.commit(); conn.close()
     return {"message": "Settings saved."}
 
@@ -5120,6 +5202,7 @@ button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(
 <label>AI report language</label><select id="language"><option value="en">English</option><option value="ko">Korean (한국어)</option></select><p style="font-size:13px;color:var(--dim);margin-top:6px">Only translates the AI-written quant/risk review text on the Scanner page — the rest of the site stays in English. Depends on a shared daily AI usage limit, so a new language can take a minute to generate the first time.</p>
 <label>Default scanner sort</label><select id="default_sort"><option value="overall_score">Score</option><option value="change_pct">Change %</option><option value="ticker">Ticker A-Z</option></select>
 <label>Default scanner view</label><select id="default_view"><option value="list">List</option><option value="heatmap">Heatmap</option></select>
+<label>Email me when a stock scores 90+</label><select id="high_score_alerts"><option value="0">Off</option><option value="1">On</option></select><p style="font-size:13px;color:var(--dim);margin-top:6px">One email a day, after market close, listing every ticker that reached a 90+ score that day — not one email per ticker.</p>
 <button onclick="saveSettings()">Save Settings</button><div class="msg" id="settings-msg"></div>
 </div>
 <div class="card" id="alerts"><h2>Price Alerts</h2>
@@ -5139,10 +5222,10 @@ button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(
 </div>
 <script>
 function fmtDate(ts){{return ts?new Date(ts*1000).toLocaleDateString():'-'}}
-async function loadSettings(){{const r=await fetch('/api/settings');const d=await r.json();if(d.pref_theme)document.getElementById('theme').value=d.pref_theme;if(d.pref_language)document.getElementById('language').value=d.pref_language;if(d.pref_default_sort)document.getElementById('default_sort').value=d.pref_default_sort;if(d.pref_default_view)document.getElementById('default_view').value=d.pref_default_view;
+async function loadSettings(){{const r=await fetch('/api/settings');const d=await r.json();if(d.pref_theme)document.getElementById('theme').value=d.pref_theme;if(d.pref_language)document.getElementById('language').value=d.pref_language;if(d.pref_default_sort)document.getElementById('default_sort').value=d.pref_default_sort;if(d.pref_default_view)document.getElementById('default_view').value=d.pref_default_view;document.getElementById('high_score_alerts').value=d.pref_high_score_alerts?'1':'0';
 const statusLabel={{active:'Active Subscription',trial:'Free Trial',expired:'Trial Ended',cancelled:'Cancelled',paused:'Paused'}}[d.subscription_status]||d.subscription_status;
 document.getElementById('account-info').innerHTML=`<div class="info-row"><span>Email</span><b>${{d.email||'-'}}</b></div><div class="info-row"><span>Member since</span><b>${{fmtDate(d.created_at)}}</b></div><div class="info-row"><span>Plan status</span><b>${{statusLabel||'-'}}</b></div>`}}
-async function saveSettings(){{const f=new FormData();f.append('theme',document.getElementById('theme').value);f.append('language',document.getElementById('language').value);f.append('default_sort',document.getElementById('default_sort').value);f.append('default_view',document.getElementById('default_view').value);const r=await fetch('/api/settings',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('settings-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error}}
+async function saveSettings(){{const f=new FormData();f.append('theme',document.getElementById('theme').value);f.append('language',document.getElementById('language').value);f.append('default_sort',document.getElementById('default_sort').value);f.append('default_view',document.getElementById('default_view').value);f.append('high_score_alerts',document.getElementById('high_score_alerts').value);const r=await fetch('/api/settings',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('settings-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error}}
 async function changePassword(){{const f=new FormData();f.append('current_password',document.getElementById('current_password').value);f.append('new_password',document.getElementById('new_password').value);const r=await fetch('/api/settings/password',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('password-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error;if(r.ok){{document.getElementById('current_password').value='';document.getElementById('new_password').value=''}}}}
 async function loadAlerts(){{const r=await fetch('/api/alerts/list');const d=await r.json();const el=document.getElementById('alerts-list');if(!d.alerts?.length){{el.innerHTML='<div class="empty-hint">No alerts set. Open a ticker in the terminal and click Set Alert.</div>';return}}el.innerHTML=d.alerts.map(a=>`<div class="alert-row"><span>${{a.ticker}} ${{a.direction==='below'?'&#8595; at/below':'&#8593; at/above'}} $${{a.target_price}}${{a.is_sent?' <span style="color:var(--dim)">(sent)</span>':''}}</span><button class="remove-btn" onclick="removeAlert(${{a.id}})">Remove</button></div>`).join('')}}
 async function removeAlert(id){{const f=new FormData();f.append('id',id);await fetch('/api/alerts/remove',{{method:'POST',body:f}});loadAlerts()}}
