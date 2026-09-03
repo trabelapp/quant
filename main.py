@@ -130,6 +130,42 @@ async def no_store_authenticated_pages(request: Request, call_next):
     return response
 
 
+_PAGE_VIEW_SKIP_PATHS = {"/favicon.ico", "/robots.txt", "/sitemap.xml"}
+_PAGE_VIEW_SKIP_PREFIXES = ("/api/", "/static/")
+
+
+def _log_page_view(path: str, visitor_id: str, referrer: str):
+    try:
+        conn = db()
+        conn.execute(
+            "INSERT INTO page_views(path,visitor_id,referrer,created_at) VALUES(?,?,?,?)",
+            (path, visitor_id, referrer[:300], time.time()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] page view log failed: {e}")
+
+
+@app.middleware("http")
+async def track_page_views(request: Request, call_next):
+    path = request.url.path
+    should_track = (
+        request.method == "GET"
+        and path not in _PAGE_VIEW_SKIP_PATHS
+        and not path.startswith(_PAGE_VIEW_SKIP_PREFIXES)
+    )
+    existing_visitor_id = request.cookies.get("qtfy_vid")
+    visitor_id = existing_visitor_id or secrets.token_hex(16)
+    response = await call_next(request)
+    if should_track:
+        referrer = request.headers.get("referer", "")
+        asyncio.create_task(asyncio.to_thread(_log_page_view, path, visitor_id, referrer))
+    if not existing_visitor_id:
+        response.set_cookie("qtfy_vid", visitor_id, max_age=365 * 86400, httponly=True, samesite="lax")
+    return response
+
+
 ai_client = None
 try:
     ai_client = OpenAI(base_url=AI_BASE_URL, api_key=AI_API_KEY)
@@ -327,6 +363,14 @@ def init_db():
             UNIQUE(email, ticker),
             FOREIGN KEY(email) REFERENCES users(email)
         );
+        CREATE TABLE IF NOT EXISTS page_views (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
+            visitor_id TEXT NOT NULL,
+            referrer TEXT,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views(created_at);
         """)
         user_cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         if "password_hash" not in user_cols:
@@ -2930,11 +2974,40 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         "SELECT email,created_at,subscription_status FROM users WHERE created_at >= ? ORDER BY created_at DESC",
         (now - 14 * 86400,),
     ).fetchall()
-    conn.close()
     daily = {}
     for r in rows:
         day = datetime.fromtimestamp(r["created_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         daily[day] = daily.get(day, 0) + 1
+
+    views_24h = conn.execute("SELECT COUNT(*) c FROM page_views WHERE created_at >= ?", (now - 86400,)).fetchone()["c"]
+    views_7d = conn.execute("SELECT COUNT(*) c FROM page_views WHERE created_at >= ?", (now - 7 * 86400,)).fetchone()["c"]
+    visitors_24h = conn.execute(
+        "SELECT COUNT(DISTINCT visitor_id) c FROM page_views WHERE created_at >= ?", (now - 86400,)
+    ).fetchone()["c"]
+    visitors_7d = conn.execute(
+        "SELECT COUNT(DISTINCT visitor_id) c FROM page_views WHERE created_at >= ?", (now - 7 * 86400,)
+    ).fetchone()["c"]
+    view_rows = conn.execute(
+        "SELECT path,referrer,created_at FROM page_views WHERE created_at >= ? ORDER BY created_at DESC",
+        (now - 7 * 86400,),
+    ).fetchall()
+    conn.close()
+
+    views_by_day = {}
+    top_paths = {}
+    top_referrers = {}
+    for r in view_rows:
+        day = datetime.fromtimestamp(r["created_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        views_by_day[day] = views_by_day.get(day, 0) + 1
+        top_paths[r["path"]] = top_paths.get(r["path"], 0) + 1
+        ref = r["referrer"]
+        if ref:
+            host = urllib.parse.urlparse(ref).netloc or ref
+            if "quantify.trading" not in host:
+                top_referrers[host] = top_referrers.get(host, 0) + 1
+        else:
+            top_referrers["(direct / no referrer)"] = top_referrers.get("(direct / no referrer)", 0) + 1
+
     return {
         "total_users": total_users,
         "signups_last_24h": signups_24h,
@@ -2949,6 +3022,13 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
             }
             for r in rows[:30]
         ],
+        "page_views_last_24h": views_24h,
+        "page_views_last_7d": views_7d,
+        "unique_visitors_last_24h": visitors_24h,
+        "unique_visitors_last_7d": visitors_7d,
+        "page_views_by_day_et": views_by_day,
+        "top_paths_last_7d": dict(sorted(top_paths.items(), key=lambda x: -x[1])[:15]),
+        "top_referrers_last_7d": dict(sorted(top_referrers.items(), key=lambda x: -x[1])[:15]),
     }
 
 
