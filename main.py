@@ -3068,6 +3068,15 @@ footer a{color:var(--dim2)}
 @media(prefers-reduced-motion:reduce){[data-reveal]{transition:none;opacity:1;transform:none}}
 .btn{transition:transform .15s ease,box-shadow .15s ease}
 .btn:hover{transform:translateY(-1px);box-shadow:0 10px 24px -10px rgba(46,204,113,.55)}
+.btn-hero{padding:13px 24px;font-size:14px;animation:heroPulse 2.6s ease-in-out infinite}
+.btn-hero:hover{animation:none}
+@keyframes heroPulse{0%,100%{box-shadow:0 0 0 0 rgba(46,204,113,.35)}50%{box-shadow:0 0 0 10px rgba(46,204,113,0)}}
+@media(prefers-reduced-motion:reduce){.btn-hero{animation:none}}
+.sticky-cta{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--panel);border-top:1px solid var(--border);padding:12px 20px;display:none;align-items:center;justify-content:center;gap:16px;box-shadow:0 -10px 30px -15px rgba(0,0,0,.5)}
+.sticky-cta.show{display:flex}
+.sticky-cta span{color:var(--dim2);font-size:13px}
+.sticky-cta span b{color:var(--head)}
+@media(max-width:560px){.sticky-cta span{display:none}}
 .btn-ghost:hover{box-shadow:none}
 .step,.feature,.proof-card,.diff-col{transition:transform .2s ease,border-color .2s ease}
 .step:hover,.feature:hover,.proof-card:hover{transform:translateY(-3px);border-color:var(--dim2)}
@@ -3121,7 +3130,7 @@ footer a{color:var(--dim2)}
 <h1>Stop scanning <span class="hl">518</span> stocks by hand.<br>See the ones that actually <span class="hl">cleared the bar</span>.</h1>
 <p class="sub">A daily quant scan of the S&amp;P 500 and Nasdaq-100, double-checked by AI for blow-off-top and dead-cat-bounce risk before it reaches your screen.</p>
 <div class="cta-row">
-<a class="btn" href="/signup">Get Started Free</a>
+<a class="btn btn-hero" href="/signup">See Today's Full List — Free for 7 Days</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
 </div>
 <div class="cta-note">No credit card required to start. Same data for every subscriber — never personalized picks.</div>
@@ -3155,6 +3164,10 @@ footer a{color:var(--dim2)}
 </div>
 </div>
 <div style="text-align:center;padding:8px 0 2px;font-size:10.5px;color:var(--dim)" id="mockFooterNote">Illustrative example</div>
+</div>
+<div style="text-align:center;margin-top:28px">
+<p style="color:var(--dim2);font-size:13.5px;margin-bottom:14px">That's a preview of 3. The scan re-runs hourly while markets are open — every hour you're not watching is one you didn't see.</p>
+<a class="btn btn-hero" href="/signup">See the Full List Free for 7 Days</a>
 </div>
 </section>
 
@@ -3245,6 +3258,10 @@ footer a{color:var(--dim2)}
 QUANTIFY. — informational and educational only, not investment advice.<br>
 <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/pricing">Pricing</a> · <a href="/faq">FAQ</a> · <a href="/about">About</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
 </footer>
+<div class="sticky-cta" id="stickyCta">
+<span>7-day free trial · <b>no credit card required</b></span>
+<a class="btn" href="/signup">Get Started Free</a>
+</div>
 <script>
 if('IntersectionObserver' in window){
   const io=new IntersectionObserver((entries)=>{entries.forEach(e=>{if(e.isIntersecting){e.target.classList.add('is-visible');io.unobserve(e.target)}})},{threshold:0.05,rootMargin:'0px 0px 100px 0px'});
@@ -3289,6 +3306,23 @@ async function loadPublicPreview(){
   }catch(e){console.error('Public preview load failed',e)}
 }
 loadPublicPreview();
+
+const stickyCta=document.getElementById('stickyCta');
+const heroSection=document.querySelector('.hero');
+if(stickyCta&&heroSection){
+  // Belt-and-suspenders, deliberately: a scroll listener alone can miss the settled
+  // state after a smooth/programmatic scroll if no further scroll event fires
+  // afterward, and IntersectionObserver alone depends on the browser's own visibility
+  // tracking actually running. Both are standard and either one is normally enough --
+  // running both costs nothing (they converge on the same answer) and removes any
+  // single point of failure for a purely cosmetic UI element.
+  const updateSticky=()=>stickyCta.classList.toggle('show',heroSection.getBoundingClientRect().bottom<0);
+  window.addEventListener('scroll',updateSticky,{passive:true});
+  window.addEventListener('resize',updateSticky,{passive:true});
+  if('IntersectionObserver' in window){
+    new IntersectionObserver((entries)=>{entries.forEach(e=>stickyCta.classList.toggle('show',!e.isIntersecting))}).observe(heroSection);
+  }
+}
 </script>
 </body></html>"""
 
