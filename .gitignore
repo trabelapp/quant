@@ -8,6 +8,8 @@ dist/
 *.csv
 universe_cache.json
 backtest_cache.json
+market_ai_summary_cache.json
+sector_cache.json
 users.db.bak_*
 venv/
 .claude/

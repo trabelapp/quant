@@ -86,6 +86,8 @@ BACKTEST_SAMPLE_SIZE = 200  # Reverted from a brief full-universe (600) experime
                              # honestly, so reverting is copy-safe.
 BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
+MARKET_AI_SUMMARY_FILE = DATA_DIR / "market_ai_summary_cache.json"
+MARKET_AI_SUMMARY_CACHE = {"scan_date": None, "generated_at": None, "headline": None, "summary": None, "error": None}
 
 SNP500_SOURCE = os.getenv(
     "SNP500_SOURCE",
@@ -1334,6 +1336,77 @@ async def generate_ai_report(*args):
     return await asyncio.to_thread(ai_report_sync, *args)
 
 
+def market_summary_ai_sync(stats):
+    if not ai_client:
+        return None
+    global AI_QUOTA_EXHAUSTED_DATE
+    if AI_QUOTA_EXHAUSTED_DATE == today_str():
+        return None
+    fmt_pct = lambda v: f"{v:+.2f}%" if v is not None else "unavailable"
+    top_tickers = stats.get("top_tickers") or []
+    top_lines = "\n".join(
+        f"- {t['ticker']}: {fmt_pct(t['change_pct'])}, quant score {t['alpha_score']:.0f}, AI verdict so far: {t['timing_verdict'] or 'not yet reviewed'}"
+        for t in top_tickers
+    ) or "No tickers cleared the quant bar in this scan."
+    vb = stats.get("verdict_breakdown") or {}
+    prompt = (
+        f"Date: {display_date()}\n"
+        f"Universe scanned: {stats.get('universe_count')} stocks (S&P 500 + Nasdaq-100)\n"
+        f"Advancers: {stats.get('advancers')}  Decliners: {stats.get('decliners')}  "
+        f"Average change across the universe: {fmt_pct(stats.get('avg_change_pct'))}\n"
+        f"S&P 500 index change today: {fmt_pct(stats.get('sp500_change_pct'))}\n"
+        f"Nasdaq-100 index change today: {fmt_pct(stats.get('nasdaq_change_pct'))}\n"
+        f"Cleared the quant bar (pullback-in-uptrend setup): {stats.get('detected_count')} of {stats.get('universe_count')}\n"
+        f"AI risk verdicts issued so far today across all reviewed tickers -- "
+        f"Favorable: {vb.get('Favorable', 0)}, Caution: {vb.get('Caution', 0)}, Risk: {vb.get('Risk', 0)}\n"
+        f"Top tickers that cleared the quant bar today, ranked by quant score:\n{top_lines}\n\n"
+        "Write a short, factual summary of today's market for a retail investor, based only on the numbers above. "
+        "Do not predict what happens next, do not suggest buying or selling anything, and do not editorialize beyond "
+        "what these specific numbers show. Cover: overall breadth (how many stocks rose vs fell), how the two major "
+        "indices moved, and what today's scan actually turned up. This is informational only, never investment advice.\n"
+        "Respond with ONLY the JSON object below, no other text:\n"
+        '{"headline":"one short sentence, under 15 words, stating today\'s overall tone in plain terms",'
+        '"summary":"3-4 sentences covering breadth, index moves, and what the scan found today"}'
+    )
+    max_retries = 5
+    extra_args = {"reasoning_effort": "low"} if "gpt-oss" in AI_MODEL else {}
+    for attempt in range(max_retries):
+        try:
+            response = ai_client.chat.completions.create(
+                model=AI_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0.2,
+                response_format={"type": "json_object"}, **extra_args,
+            )
+            content = response.choices[0].message.content.strip()
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError as exc:
+                print(f"[Error: JSONDecodeError] Failed to parse market AI summary response: {exc} | raw={content[:200]}")
+                return None
+            headline = parsed.get("headline")
+            summary = parsed.get("summary")
+            if not headline or not summary:
+                return None
+            return {"headline": headline, "summary": summary}
+        except RateLimitError as exc:
+            if "tokens per day" in str(exc).lower() or "TPD" in str(exc):
+                AI_QUOTA_EXHAUSTED_DATE = today_str()
+                print(f"[Error: RateLimitError] AI daily token quota exhausted — skipping market summary retries for today: {exc}")
+                return None
+            wait = 3.0 * (attempt + 1)
+            match = re.search(r"try again in ([\d.]+)s", str(exc))
+            if match:
+                wait = float(match.group(1)) + 1.0
+            if attempt < max_retries - 1:
+                print(f"[Retry {attempt + 1}/{max_retries}] Market AI summary rate limited: waiting {wait:.1f}s")
+                time.sleep(wait)
+                continue
+            print(f"[Error: RateLimitError] Market AI summary generation error: exceeded {max_retries} retries: {exc}")
+            return None
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Market AI summary generation error: {exc}")
+            return None
+
+
 def analyze_dataframe(ticker, df):
     if df is None or len(df) < 70:
         return None
@@ -1508,6 +1581,7 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                         conn.execute("UPDATE user_alerts SET is_sent=1 WHERE id=?", (alert["id"],))
             conn.commit(); conn.close()
             start_ai_prefetch(mode)
+            start_market_summary_ai()
             return results
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] run_eod_batch_process fatal error: {exc}")
@@ -1529,6 +1603,18 @@ def load_backtest_cache():
         return True
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] Backtest cache load error: {exc}")
+        return False
+
+
+def load_market_ai_summary_cache():
+    if not MARKET_AI_SUMMARY_FILE.exists():
+        return False
+    try:
+        payload = json.loads(MARKET_AI_SUMMARY_FILE.read_text(encoding="utf-8"))
+        MARKET_AI_SUMMARY_CACHE.update(payload)
+        return True
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Market AI summary cache load error: {exc}")
         return False
 
 
@@ -1980,6 +2066,7 @@ async def gumroad_reconcile_scheduler():
 async def startup():
     init_db()
     load_universe_cache()
+    load_market_ai_summary_cache()
     asyncio.create_task(refresh_universe())
     asyncio.create_task(scheduler())
     asyncio.create_task(sector_scheduler())
@@ -2220,6 +2307,68 @@ def start_ai_prefetch(mode="Long-Term Momentum Pullback"):
     AI_TASK.add_done_callback(done)
     return True
 
+
+def _index_day_change(df):
+    try:
+        close = normalize_series(df, "Close").dropna()
+        return round((float(close.iloc[-1]) / float(close.iloc[-2]) - 1) * 100, 2)
+    except Exception:
+        return None
+
+
+async def generate_market_summary_ai():
+    conn = db()
+    rows = conn.execute("SELECT universe,change_pct,timing_verdict,quant_pass FROM daily_scans WHERE scan_date=?", (today_str(),)).fetchall()
+    top_rows = conn.execute(
+        "SELECT ticker,change_pct,alpha_score,timing_verdict FROM daily_scans "
+        "WHERE scan_date=? AND quant_pass=1 ORDER BY alpha_score DESC LIMIT 5",
+        (today_str(),),
+    ).fetchall()
+    conn.close()
+    total = len(rows)
+    if not total:
+        return
+    advancers = sum(1 for r in rows if (r["change_pct"] or 0) > 0)
+    decliners = sum(1 for r in rows if (r["change_pct"] or 0) < 0)
+    avg_change = round(sum(r["change_pct"] or 0 for r in rows) / total, 2)
+    detected = sum(1 for r in rows if r["quant_pass"])
+    verdict_counts = {"Favorable": 0, "Caution": 0, "Risk": 0}
+    for r in rows:
+        if r["timing_verdict"] in verdict_counts:
+            verdict_counts[r["timing_verdict"]] += 1
+    sp500_df, ndx_df = await asyncio.gather(download_stock("^GSPC", "1d"), download_stock("^NDX", "1d"))
+    stats = {
+        "universe_count": total, "advancers": advancers, "decliners": decliners, "avg_change_pct": avg_change,
+        "detected_count": detected, "verdict_breakdown": verdict_counts,
+        "sp500_change_pct": _index_day_change(sp500_df) if sp500_df is not None else None,
+        "nasdaq_change_pct": _index_day_change(ndx_df) if ndx_df is not None else None,
+        "top_tickers": [dict(r) for r in top_rows],
+    }
+    result = await asyncio.to_thread(market_summary_ai_sync, stats)
+    if result:
+        MARKET_AI_SUMMARY_CACHE.update({"scan_date": today_str(), "generated_at": time.time(),
+                                         "headline": result["headline"], "summary": result["summary"], "error": None})
+    else:
+        MARKET_AI_SUMMARY_CACHE["error"] = "Market AI summary generation failed"
+    try:
+        MARKET_AI_SUMMARY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = MARKET_AI_SUMMARY_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(MARKET_AI_SUMMARY_CACHE, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(MARKET_AI_SUMMARY_FILE)
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Market AI summary cache write failed: {exc}")
+
+
+def start_market_summary_ai():
+    task = asyncio.create_task(generate_market_summary_ai())
+    def done(task):
+        try:
+            task.result()
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Market AI summary task error: {exc}", flush=True)
+    task.add_done_callback(done)
+
+
 # -----------------------------------------------------------------------------
 # API endpoints
 # -----------------------------------------------------------------------------
@@ -2411,19 +2560,16 @@ async def market_summary(request: Request):
             "avg_change_pct": round(sum(r["change_pct"] or 0 for r in urows) / ucount, 2) if ucount else None,
         }
 
-    def day_change(df):
-        try:
-            close = normalize_series(df, "Close").dropna()
-            return round((float(close.iloc[-1]) / float(close.iloc[-2]) - 1) * 100, 2)
-        except Exception:
-            return None
-
     sp500_df, ndx_df = await asyncio.gather(download_stock("^GSPC", "1d"), download_stock("^NDX", "1d"))
+    ai_current = MARKET_AI_SUMMARY_CACHE.get("scan_date") == today_str()
     return {"universe_count": total, "advancers": advancers, "decliners": decliners,
             "avg_change_pct": avg_change, "detected_count": detected, "verdict_breakdown": verdict_counts,
             "by_universe": by_universe,
-            "sp500_change_pct": day_change(sp500_df) if sp500_df is not None else None,
-            "nasdaq_change_pct": day_change(ndx_df) if ndx_df is not None else None}
+            "sp500_change_pct": _index_day_change(sp500_df) if sp500_df is not None else None,
+            "nasdaq_change_pct": _index_day_change(ndx_df) if ndx_df is not None else None,
+            "ai_headline": MARKET_AI_SUMMARY_CACHE.get("headline") if ai_current else None,
+            "ai_summary": MARKET_AI_SUMMARY_CACHE.get("summary") if ai_current else None,
+            "ai_generated_at": MARKET_AI_SUMMARY_CACHE.get("generated_at") if ai_current else None}
 
 
 @app.get("/api/backtest-summary")
@@ -3797,6 +3943,10 @@ h1.page-title{color:var(--head);font-size:19px;margin:2px 0 14px}
 .summary-tile .value{color:var(--head);font-weight:700;font-size:16px;margin-top:4px}
 .summary-tile .value.gain{color:var(--green)}
 .summary-tile .value.loss{color:var(--red)}
+.ai-market-summary{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:14px 16px}
+.ai-market-summary .headline{color:var(--head);font-weight:700;font-size:15px;margin-bottom:8px;line-height:1.4}
+.ai-market-summary .body{font-size:12.5px;line-height:1.7;color:var(--text)}
+.ai-market-summary .meta{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);color:var(--dim);font-size:10.5px}
 .heat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(52px,1fr));gap:2px}
 .heat-tile{padding:7px 2px;text-align:center;font-size:9.5px;font-weight:700;cursor:pointer;color:#04150c;border-radius:3px}
 .heat-tile.badge-favorable{box-shadow:0 0 0 2px #26a69a inset}
@@ -4515,6 +4665,7 @@ async def market_page(request: Request):
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
     body = """
+<section class="panel"><h3>AI Market Summary <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiMarketSummaryBody"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>By Universe</h3><div id="byUniverseBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart — bigger tiles are larger-cap</small></h3><div class="groupby-row"><span style="font-size:11.5px;color:var(--dim)">Group by</span><select id="heatGroupKey" onchange="renderHeatmap()"><option value="universe">Index</option><option value="sector">Sector</option></select></div><div id="heatmapBody"><div class="empty-hint">Loading...</div></div></section>
@@ -4525,7 +4676,11 @@ function badgeClass(v){return v==='Favorable'?'badge-favorable':v==='Caution'?'b
 function groupTiles(items,key){const groups={};items.forEach(t=>{const g=t[key]||'Other';(groups[g]=groups[g]||[]).push(t)});return groups}
 function renderHeatmap(){const el=document.getElementById('heatmapBody');if(!lastHeatTiles.length){el.innerHTML='<div class="notice">No scan data yet — check back after the next scan.</div>';return}const key=document.getElementById('heatGroupKey').value;const groups=groupTiles(lastHeatTiles,key);const sortedGroups=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);el.innerHTML=sortedGroups.map(([g,items])=>`<div class="heat-group-header">${g} (${items.length})</div><div class="heat-grid">`+[...items].sort((a,b)=>(a.cap_tier??3)-(b.cap_tier??3)).map(t=>`<div class="heat-tile cap-${t.cap_tier??3} ${badgeClass(t.timing_verdict)}" style="background:${heatColor(t.change_pct)}" title="${t.ticker} · ${t.change_pct??'-'}% · Score ${t.alpha_score??'-'} · ${t.timing_verdict||'Not yet reviewed'}${t.sector?' · '+t.sector:''}" onclick="location.href='/terminal?ticker=${t.ticker}'">${t.ticker}</div>`).join('')+'</div>').join('')}
 async function loadHeatmap(){try{const r=await fetch('/api/heatmap');if(r.status===402){location.href='/subscription';return}const d=await r.json();lastHeatTiles=d.tiles||[];renderHeatmap()}catch(e){document.getElementById('heatmapBody').innerHTML='<div class="notice">Could not load the heatmap.</div>';console.error('Heatmap load failed',e)}}
-async function loadMarketSummary(){try{const r=await fetch('/api/market-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const chg=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');document.getElementById('marketSummaryBody').innerHTML=`
+async function loadMarketSummary(){try{const r=await fetch('/api/market-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const chg=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');
+const aiEl=document.getElementById('aiMarketSummaryBody');
+if(d.ai_headline&&d.ai_summary){const genTime=d.ai_generated_at?new Date(d.ai_generated_at*1000).toLocaleString([],{hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'}):null;aiEl.innerHTML=`<div class="ai-market-summary"><div class="headline">${d.ai_headline}</div><div class="body">${d.ai_summary}</div>${genTime?`<div class="meta">Generated from this scan cycle's data · ${genTime}</div>`:''}</div>`}
+else{aiEl.innerHTML='<div class="empty-hint">AI summary is being prepared for today\'s scan — check back after the next cycle.</div>'}
+document.getElementById('marketSummaryBody').innerHTML=`
 <div class="summary-tile"><div class="label">S&amp;P 500</div><div class="value ${cls(d.sp500_change_pct)}">${chg(d.sp500_change_pct)}</div></div>
 <div class="summary-tile"><div class="label">Nasdaq-100</div><div class="value ${cls(d.nasdaq_change_pct)}">${chg(d.nasdaq_change_pct)}</div></div>
 <div class="summary-tile"><div class="label">Advancers</div><div class="value gain">${d.advancers??'-'}</div></div>
