@@ -3047,6 +3047,24 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
     }
 
 
+@app.post("/api/admin/delete-user")
+async def api_admin_delete_user(request: Request, token: Optional[str] = None, email: str = Form(...)):
+    if not _require_admin_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    email = email.strip().lower()
+    conn = db()
+    row = conn.execute("SELECT email FROM users WHERE email=?", (email,)).fetchone()
+    if not row:
+        conn.close()
+        return JSONResponse({"error": "User not found"}, status_code=404)
+    for table in ("sessions", "portfolio_items", "watchlist_items", "user_alerts"):
+        conn.execute(f"DELETE FROM {table} WHERE email=?", (email,))
+    conn.execute("DELETE FROM users WHERE email=?", (email,))
+    conn.commit()
+    conn.close()
+    return {"message": f"Deleted {email}."}
+
+
 @app.post("/api/auto-scan")
 async def api_auto_scan(request: Request):
     if not get_logged_in_user(request):
