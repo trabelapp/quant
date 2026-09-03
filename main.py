@@ -1234,6 +1234,194 @@ async def get_earnings(ticker):
 
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean"}
 
+# Lightweight UI translation for the logged-in app only (terminal, market, watchlist,
+# backtest, portfolio, subscription, contact, settings) -- the marketing/landing pages
+# and legal pages deliberately stay English-only (see this session's own scoping
+# decision: legal text needs a real translation, not a casual one, and the landing
+# page's copy is hand-tuned marketing that doesn't map 1:1). Keyed by short string IDs
+# rather than the English text itself so a later English copy edit doesn't silently
+# orphan its Korean counterpart.
+UI_STRINGS = {
+    "nav_scanner": {"en": "Scanner", "ko": "스캐너"},
+    "nav_market": {"en": "Market", "ko": "마켓"},
+    "nav_watchlist": {"en": "Watchlist", "ko": "관심종목"},
+    "nav_backtest": {"en": "Backtest", "ko": "백테스트"},
+    "nav_portfolio": {"en": "Portfolio", "ko": "포트폴리오"},
+    "nav_settings": {"en": "Settings", "ko": "설정"},
+    "nav_subscription": {"en": "Subscription", "ko": "구독"},
+    "nav_contact": {"en": "Contact", "ko": "문의"},
+    "nav_logout": {"en": "Log out", "ko": "로그아웃"},
+    "loading": {"en": "Loading...", "ko": "불러오는 중..."},
+    "informational_only": {"en": "informational only, not investment advice", "ko": "정보 제공 목적일 뿐, 투자 조언이 아닙니다"},
+    "ai_market_summary": {"en": "AI Market Summary", "ko": "AI 마켓 서머리"},
+    "market_summary": {"en": "Market Summary", "ko": "마켓 서머리"},
+    "by_universe": {"en": "By Universe", "ko": "지수별 현황"},
+    "heatmap": {"en": "Heatmap", "ko": "히트맵"},
+    "heatmap_hint": {"en": "click any tile to open its chart — bigger tiles are larger-cap", "ko": "타일을 클릭하면 차트가 열립니다 — 큰 타일일수록 시가총액이 큰 종목입니다"},
+    "group_by": {"en": "Group by", "ko": "그룹 기준"},
+    "opt_index": {"en": "Index", "ko": "지수"},
+    "opt_sector": {"en": "Sector", "ko": "섹터"},
+    "watchlist_title": {"en": "Watchlist", "ko": "관심종목"},
+    "add_ticker_placeholder": {"en": "Add ticker (e.g. NVDA)", "ko": "종목 추가 (예: NVDA)"},
+    "add_btn": {"en": "Add", "ko": "추가"},
+    "strategy_performance": {"en": "Strategy Performance", "ko": "전략 성과"},
+    "strategy_performance_hint": {"en": "(real historical replay, not a guarantee of future results)", "ko": "(실제 과거 데이터 재현, 미래 수익을 보장하지 않습니다)"},
+    "methodology": {"en": "Methodology", "ko": "방법론"},
+    "nothing_watched": {"en": "Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.", "ko": "아직 관심종목이 없습니다 — 위에서 종목을 추가하세요, 퀀트 기준 통과 여부와 상관없이 추가 가능합니다."},
+    "remove_btn": {"en": "Remove", "ko": "삭제"},
+    "backtest_computing": {"en": "Backtest is still computing on the server — check back soon.", "ko": "백테스트를 서버에서 계산하는 중입니다 — 잠시 후 다시 확인해주세요."},
+    "day_forward_return": {"en": "-Day Forward Return", "ko": "일 후 수익률"},
+    "strategy_avg": {"en": "Strategy avg", "ko": "전략 평균"},
+    "strategy_win_rate": {"en": "Strategy win rate", "ko": "전략 승률"},
+    "when_right_wrong": {"en": "When right / wrong", "ko": "적중 / 실패 시"},
+    "worst_case": {"en": "Worst case", "ko": "최악의 경우"},
+    "sp500_avg": {"en": "S&amp;P 500 avg (same period)", "ko": "S&amp;P 500 평균 (동일 기간)"},
+    "page_portfolio": {"en": "Portfolio", "ko": "포트폴리오"},
+    "page_subscription": {"en": "Subscription", "ko": "구독"},
+    "page_contact": {"en": "Contact", "ko": "문의"},
+    "page_settings": {"en": "Settings", "ko": "설정"},
+    "back_to_terminal": {"en": "&larr; Back to Terminal", "ko": "&larr; 터미널로 돌아가기"},
+    "sector_concentration": {"en": "Sector Concentration", "ko": "섹터 집중도"},
+    "position_sizing": {"en": "Position Sizing Calculator", "ko": "포지션 사이즈 계산기"},
+    "account_size": {"en": "Account size $", "ko": "계좌 자금 $"},
+    "risk_per_trade": {"en": "Risk per trade %", "ko": "거래당 리스크 %"},
+    "entry_price": {"en": "Entry price $", "ko": "진입 가격 $"},
+    "stop_distance": {"en": "Stop distance %", "ko": "손절 거리 %"},
+    "calculate_btn": {"en": "Calculate", "ko": "계산"},
+    "sizing_disclaimer": {"en": "Sizing arithmetic only — not a recommendation, and it doesn't account for correlation between your positions.", "ko": "단순 계산일 뿐 추천이 아니며, 보유 종목 간 상관관계는 반영하지 않습니다."},
+    "portfolio_disclaimer": {"en": "QUANTIFY is informational and educational only, not investment advice. Nothing here is a recommendation to buy or sell any security. All investment decisions are solely your own responsibility.", "ko": "QUANTIFY는 정보 제공 및 교육 목적으로만 제공되며, 투자 조언이 아닙니다. 여기 있는 어떤 내용도 특정 증권의 매수·매도 추천이 아닙니다. 모든 투자 결정의 책임은 전적으로 본인에게 있습니다."},
+    "add_share_count_hint": {"en": "Add a share count to your holdings (edit when saving from the terminal) to see sector concentration here.", "ko": "보유 종목에 수량을 입력하면(터미널에서 저장할 때 입력 가능) 여기서 섹터 집중도를 볼 수 있습니다."},
+    "sector_rule_of_thumb": {"en": "Rule of thumb only, not a risk model — flags over 30% in one sector.", "ko": "단순 참고용 기준일 뿐 리스크 모델이 아닙니다 — 한 섹터가 30%를 넘으면 표시합니다."},
+    "fill_four_fields": {"en": "Fill in all four fields with positive numbers.", "ko": "네 개 항목 모두 양수로 입력해주세요."},
+    "nothing_saved_open_ticker": {"en": "Nothing saved yet. Open a ticker in the terminal and click ☆ Save to Portfolio.", "ko": "아직 저장된 종목이 없습니다. 터미널에서 종목을 열고 ☆ 포트폴리오에 저장을 클릭하세요."},
+    "nothing_saved": {"en": "Nothing saved yet.", "ko": "아직 저장된 게 없습니다."},
+    "current_plan": {"en": "Current Plan", "ko": "현재 플랜"},
+    "active_subscription": {"en": "Active Subscription", "ko": "구독 중"},
+    "active_sub_thanks": {"en": "Your subscription is active. Thanks for supporting QUANTIFY.", "ko": "구독이 활성화되어 있습니다. QUANTIFY를 이용해주셔서 감사합니다."},
+    "trial_ended_badge": {"en": "Trial Ended", "ko": "체험 기간 종료"},
+    "subscribe_btn": {"en": "Subscribe", "ko": "구독하기"},
+    "paid_plans_soon": {"en": "Paid plans coming soon", "ko": "유료 플랜 준비 중"},
+    "contact_us": {"en": "Contact Us", "ko": "문의하기"},
+    "your_message": {"en": "Your message", "ko": "메시지"},
+    "message_placeholder": {"en": "Bug report, feedback, question — anything.", "ko": "버그 제보, 피드백, 질문 등 무엇이든 남겨주세요."},
+    "send_message_btn": {"en": "Send Message", "ko": "보내기"},
+    "write_message_first": {"en": "Write a message first.", "ko": "먼저 메시지를 입력해주세요."},
+    "account": {"en": "Account", "ko": "계정"},
+    "email_label": {"en": "Email", "ko": "이메일"},
+    "member_since": {"en": "Member since", "ko": "가입일"},
+    "plan_status": {"en": "Plan status", "ko": "플랜 상태"},
+    "manage_subscription": {"en": "Manage Subscription &rarr;", "ko": "구독 관리 &rarr;"},
+    "display": {"en": "Display", "ko": "화면"},
+    "theme_label": {"en": "Theme", "ko": "테마"},
+    "opt_light": {"en": "Light", "ko": "라이트"},
+    "opt_dark": {"en": "Dark", "ko": "다크"},
+    "ai_report_language": {"en": "AI report language", "ko": "AI 리뷰 언어"},
+    "default_scanner_sort": {"en": "Default scanner sort", "ko": "기본 정렬 기준"},
+    "opt_score": {"en": "Score", "ko": "점수"},
+    "opt_change_pct": {"en": "Change %", "ko": "변동률 %"},
+    "opt_ticker_az": {"en": "Ticker A-Z", "ko": "티커 A-Z"},
+    "default_scanner_view": {"en": "Default scanner view", "ko": "기본 보기 방식"},
+    "opt_list": {"en": "List", "ko": "목록"},
+    "opt_heatmap": {"en": "Heatmap", "ko": "히트맵"},
+    "email_high_score": {"en": "Email me when a stock scores 90+", "ko": "90점 이상 종목 발견 시 이메일 알림"},
+    "opt_off": {"en": "Off", "ko": "끄기"},
+    "opt_on": {"en": "On", "ko": "켜기"},
+    "save_settings_btn": {"en": "Save Settings", "ko": "설정 저장"},
+    "price_alerts": {"en": "Price Alerts", "ko": "가격 알림"},
+    "change_password": {"en": "Change Password", "ko": "비밀번호 변경"},
+    "current_password": {"en": "Current password", "ko": "현재 비밀번호"},
+    "new_password": {"en": "New password", "ko": "새 비밀번호"},
+    "password_hint": {"en": "10+ characters, with at least 1 letter and 1 number", "ko": "10자 이상, 영문 1자와 숫자 1자 이상 포함"},
+    "change_password_btn": {"en": "Change Password", "ko": "비밀번호 변경"},
+    "danger_zone": {"en": "Danger Zone", "ko": "위험 구역"},
+    "delete_account_warning": {"en": "Permanently delete your account and all associated data (portfolio, watchlist, alerts). This cannot be undone.", "ko": "계정과 관련된 모든 데이터(포트폴리오, 관심종목, 알림)를 영구적으로 삭제합니다. 되돌릴 수 없습니다."},
+    "confirm_password": {"en": "Confirm password", "ko": "비밀번호 확인"},
+    "delete_account_btn": {"en": "Delete My Account", "ko": "계정 삭제"},
+    "manage_alerts_link": {"en": "Manage alerts", "ko": "알림 관리"},
+    "loading_empty_hint": {"en": "No alerts set. Open a ticker in the terminal and click Set Alert.", "ko": "설정된 알림이 없습니다. 터미널에서 종목을 열고 알림 설정을 클릭하세요."},
+    "language_toggle_hint": {"en": "Only translates the AI-written quant/risk review text on the Scanner page — the rest of the site stays in English. Depends on a shared daily AI usage limit, so a new language can take a minute to generate the first time.", "ko": "스캐너 페이지의 AI 퀀트/리스크 리뷰 텍스트만 번역됩니다. 하루 AI 사용량 한도를 공유하기 때문에, 언어를 새로 바꾸면 처음 생성될 때 약간 시간이 걸릴 수 있습니다."},
+    "high_score_alert_hint": {"en": "One email a day, after market close, listing every ticker that reached a 90+ score that day — not one email per ticker.", "ko": "종목당 이메일이 아니라, 하루 한 번 장 마감 후 그날 90점 이상을 기록한 모든 종목을 모아 이메일로 보내드립니다."},
+    "password_char_hint": {"en": "10+ characters, with at least 1 letter and 1 number", "ko": "10자 이상, 영문 1자와 숫자 1자 이상 포함"},
+    "status_active": {"en": "Active Subscription", "ko": "구독 중"},
+    "status_trial": {"en": "Free Trial", "ko": "무료 체험"},
+    "status_expired": {"en": "Trial Ended", "ko": "체험 종료"},
+    "status_cancelled": {"en": "Cancelled", "ko": "해지됨"},
+    "status_paused": {"en": "Paused", "ko": "일시 정지"},
+    "sent_suffix": {"en": "(sent)", "ko": "(발송됨)"},
+    "dir_below": {"en": "&#8595; at/below", "ko": "&#8595; 이하"},
+    "dir_above": {"en": "&#8593; at/above", "ko": "&#8593; 이상"},
+    "confirm_delete_account": {"en": "Are you sure? This permanently deletes your account and cannot be undone.", "ko": "정말 삭제하시겠습니까? 계정이 영구적으로 삭제되며 되돌릴 수 없습니다."},
+    "my_subscription": {"en": "My Subscription", "ko": "내 구독"},
+    "onboarding_title": {"en": "Quick guide to QUANTIFY", "ko": "QUANTIFY 빠른 안내"},
+    "onboarding_badges_p": {"en": "<b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.", "ko": "<b>배지</b>는 AI가 판단한 진입 타이밍입니다: <b>Favorable</b>(깨끗한 셋업), <b>Caution</b>(알아둘 리스크 있음), <b>Risk</b>(건너뛰거나 기다리는 게 나음). 매수/매도 지시가 아닙니다."},
+    "onboarding_score_p": {"en": "<b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.", "ko": "<b>점수(0-100)</b>는 퀀트 스캔(장기 상승 추세 중 좋은 진입 구간까지 눌림목이 왔는가)과 AI 리스크 체크를 결합한 값입니다. 기준을 통과한 종목만 목록에 나타납니다."},
+    "onboarding_scanner_p": {"en": "<b>The scanner list</b> on the left updates a few times a day — click any ticker to load its chart, technicals, and full AI report on the right.", "ko": "왼쪽 <b>스캐너 목록</b>은 하루 몇 차례 갱신됩니다 — 종목을 클릭하면 오른쪽에 차트, 기술적 지표, AI 리포트 전체가 표시됩니다."},
+    "onboarding_help_p": {"en": "Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.", "ko": "낯선 용어(RSI, MACD, 추세 등) 옆의 작은 <b>?</b> 아이콘을 누르거나 마우스를 올리면 뜻을 볼 수 있습니다."},
+    "got_it": {"en": "Got it", "ko": "확인"},
+    "market_scanner": {"en": "Market Scanner", "ko": "마켓 스캐너"},
+    "jump_to_ticker": {"en": "Jump to ticker (e.g. TSLA)", "ko": "종목으로 이동 (예: TSLA)"},
+    "sort_score": {"en": "Sort: Score", "ko": "정렬: 점수"},
+    "sort_change": {"en": "Sort: Change %", "ko": "정렬: 변동률 %"},
+    "sort_ticker": {"en": "Sort: Ticker A-Z", "ko": "정렬: 티커 A-Z"},
+    "all_badges": {"en": "All Badges", "ko": "전체 배지"},
+    "all_markets": {"en": "All Markets", "ko": "전체 시장"},
+    "all_sectors": {"en": "All Sectors", "ko": "전체 섹터"},
+    "preparing_list": {"en": "Preparing constituent list...", "ko": "종목 목록 준비 중..."},
+    "target_price_placeholder": {"en": "Target price $", "ko": "목표가 $"},
+    "set_alert_btn": {"en": "Set Alert", "ko": "알림 설정"},
+    "save_to_portfolio_btn": {"en": "Save to Portfolio", "ko": "포트폴리오에 저장"},
+    "earnings_label": {"en": "Earnings:", "ko": "실적:"},
+    "trend_label": {"en": "Trend", "ko": "추세"},
+    "score_trend_label": {"en": "Score Trend (Today)", "ko": "점수 추세 (오늘)"},
+    "high52_label": {"en": "52W High", "ko": "52주 최고"},
+    "low52_label": {"en": "52W Low", "ko": "52주 최저"},
+    "rsi_macd_tip": {"en": "RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.", "ko": "RSI: 30 이하는 보통 과매도, 70 이상은 보통 과매수를 의미합니다. MACD: 양수는 상승 모멘텀, 음수는 하락 모멘텀을 의미합니다."},
+    "high52_tip": {"en": "How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.", "ko": "최근 52주 최고가 대비 현재가가 얼마나 낮은지를 나타냅니다. 0%에 가까울수록 최고가에 근접한 것입니다."},
+    "low52_tip": {"en": "How far the price is above its lowest point in the last 52 weeks.", "ko": "최근 52주 최저가 대비 현재가가 얼마나 높은지를 나타냅니다."},
+    "trend_tip": {"en": "Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.", "ko": "현재가가 200일 이동평균선 위(상승 추세)인지 아래(하락 추세)인지를 나타내며, 장기 방향성을 가늠하는 일반적인 지표입니다."},
+    "score_trend_tip": {"en": "How this ticker's quant score has moved since today's first scan — rising or falling.", "ko": "오늘 첫 스캔 이후 이 종목의 퀀트 점수가 오르고 있는지 내리고 있는지를 나타냅니다."},
+    "ai_quant_report": {"en": "AI Quant Report", "ko": "AI 퀀트 리포트"},
+    "loading_ai_analysis": {"en": "Loading AI analysis based on real data...", "ko": "실제 데이터를 기반으로 AI 분석을 불러오는 중..."},
+    "usage_tip": {"en": "This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.", "ko": "이 도구는 개별 종목의 진입 타이밍을 알려줄 뿐, 전체 투자 계획이 아닙니다. 많은 투자자는 종목 하나에 전체 자금의 일부만 배분하고 여러 신호에 분산합니다 — 비중과 분산은 이 도구가 아니라 본인의 판단입니다."},
+    "news_label": {"en": "News", "ko": "뉴스"},
+    "waiting_for_news": {"en": "Waiting for news...", "ko": "뉴스를 불러오는 중..."},
+    "sma20": {"en": "SMA 20", "ko": "SMA 20"},
+    "sma50": {"en": "SMA 50", "ko": "SMA 50"},
+    "sma200": {"en": "SMA 200", "ko": "SMA 200"},
+    "bollinger": {"en": "Bollinger Bands", "ko": "볼린저 밴드"},
+    "volume_label": {"en": "Volume", "ko": "거래량"},
+}
+
+
+def t(key: str, lang: str) -> str:
+    entry = UI_STRINGS.get(key)
+    if not entry:
+        return key
+    return entry.get(lang) or entry.get("en") or key
+
+
+def get_user_lang(email: str) -> str:
+    conn = db()
+    row = conn.execute("SELECT pref_language FROM users WHERE email=?", (email,)).fetchone()
+    conn.close()
+    lang = row["pref_language"] if row else "en"
+    return lang if lang in LANGUAGE_NAMES else "en"
+
+
+def translate_body(body: str, lang: str, replacements: list) -> str:
+    # Plain find-and-replace on the already-built English HTML/JS string rather than
+    # making the template itself an f-string -- these page bodies are dense with JS
+    # template literals (`${...}`), and turning the whole block into an f-string would
+    # mean every one of those braces needs doubling to survive, which is exactly the
+    # kind of mechanical, error-prone edit that already caused a real bug this session
+    # (an unescaped apostrophe breaking a page's script). Each needle should be scoped
+    # tightly enough (tag-bounded, not a bare word) that it can't match unintended text.
+    if lang == "en":
+        return body
+    for needle, key in replacements:
+        body = body.replace(needle, t(key, lang))
+    return body
+
 
 STRATEGY_MODE = "Long-Term Momentum Pullback"
 
@@ -4130,33 +4318,33 @@ _SIDEBAR_ICONS = {
 }
 
 _APP_SHELL_NAV_LINKS = [
-    ("scanner", "/terminal", "Scanner"),
-    ("market", "/market", "Market"),
-    ("watchlist", "/watchlist", "Watchlist"),
-    ("backtest", "/backtest", "Backtest"),
-    ("portfolio", "/portfolio", "Portfolio"),
+    ("scanner", "/terminal", "nav_scanner"),
+    ("market", "/market", "nav_market"),
+    ("watchlist", "/watchlist", "nav_watchlist"),
+    ("backtest", "/backtest", "nav_backtest"),
+    ("portfolio", "/portfolio", "nav_portfolio"),
 ]
 _SIDEBAR_BOTTOM_LINKS = [
-    ("settings", "/settings", "Settings", ""),
-    ("subscription", "/subscription", "Subscription", ""),
-    ("contact", "/contact", "Contact", ""),
-    ("logout", "/logout", "Log out", ' style="color:var(--sb-danger)"'),
+    ("settings", "/settings", "nav_settings", ""),
+    ("subscription", "/subscription", "nav_subscription", ""),
+    ("contact", "/contact", "nav_contact", ""),
+    ("logout", "/logout", "nav_logout", ' style="color:var(--sb-danger)"'),
 ]
 
 
-def _render_sidebar(active_nav: str) -> str:
-    def link(key, href, label, extra=""):
+def _render_sidebar(active_nav: str, lang: str = "en") -> str:
+    def link(key, href, label_key, extra=""):
         cls = "side-link active" if key == active_nav else "side-link"
-        return f'<a class="{cls}" href="{href}"{extra}>{_SIDEBAR_ICONS[key]}<span>{label}</span></a>'
-    top = "".join(link(key, href, label) for key, href, label in _APP_SHELL_NAV_LINKS)
-    bottom = "".join(link(key, href, label, extra) for key, href, label, extra in _SIDEBAR_BOTTOM_LINKS)
+        return f'<a class="{cls}" href="{href}"{extra}>{_SIDEBAR_ICONS[key]}<span>{t(label_key, lang)}</span></a>'
+    top = "".join(link(key, href, label_key) for key, href, label_key in _APP_SHELL_NAV_LINKS)
+    bottom = "".join(link(key, href, label_key, extra) for key, href, label_key, extra in _SIDEBAR_BOTTOM_LINKS)
     return (f'<nav class="sidebar"><a class="side-brand" href="/terminal">QUANTIFY<span>.</span></a>'
             f'{top}<div class="side-spacer"></div>{bottom}</nav>')
 
 
-def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "") -> HTMLResponse:
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}</style></head><body>
-{_render_sidebar(active_nav)}
+def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "", lang: str = "en") -> HTMLResponse:
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}</style></head><body>
+{_render_sidebar(active_nav, lang)}
 <header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a></header>
 <div class="wrap"><h1 class="page-title">{title}</h1>{body_html}</div>
 </body></html>''')
@@ -4607,7 +4795,8 @@ async def dashboard(request: Request):
     trial_ends_str = datetime.fromtimestamp(trial_ends_at).strftime("%B %d, %Y") if trial_ends_at else ""
     avatar_letter = html_lib.escape(user[0].upper()) if user else "?"
     user=html_lib.escape(user)
-    return HTMLResponse(f'''<!doctype html><html lang="en" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY.</title><script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
+    lang = pref_language
+    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY.</title><script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--border2:#ececec;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a;--grid-line:#eef1ef;
 --sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327;--sb-danger:#e57373}}
 html[data-theme="dark"]{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--border2:#181818;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--red:#ef5350;--orange:#ff9800;--grid-line:#161616}}
@@ -4790,7 +4979,55 @@ async function setAlert(){{const p=Number(document.getElementById('target').valu
 async function savePortfolio(){{const input=prompt('How many shares? (optional — leave blank to just track the ticker)');if(input===null)return;let shares='';if(input.trim()!==''){{const n=parseFloat(input);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 function changeTF(x){{tf=x;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tf===x));chart.timeScale().applyOptions({{timeVisible:x==='1h'}});loadTicker(ticker)}}
 window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}const qTicker=qp.get('ticker');if(qTicker){{history.replaceState(null,'','/terminal')}}let seenOnboarding=false;try{{seenOnboarding=localStorage.getItem('onboarded')==='1'}}catch(e){{}}if(!seenOnboarding)openOnboarding();document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();if(qTicker)setTimeout(()=>loadTicker(qTicker),300);setInterval(pollForUpdates,20000)}};
-</script></body></html>''')
+</script></body></html>'''
+    html = translate_body(html, lang, [
+        (">My Subscription<", f">{t('my_subscription', lang)}<"),
+        (">Contact Us<", f">{t('contact_us', lang)}<"),
+        (">Log out<", f">{t('nav_logout', lang)}<"),
+        (">Quick guide to QUANTIFY<", f">{t('onboarding_title', lang)}<"),
+        ("<b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.", t("onboarding_badges_p", lang)),
+        ("<b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.", t("onboarding_score_p", lang)),
+        ("<b>The scanner list</b> on the left updates a few times a day — click any ticker to load its chart, technicals, and full AI report on the right.", t("onboarding_scanner_p", lang)),
+        ("Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.", t("onboarding_help_p", lang)),
+        (">Got it<", f">{t('got_it', lang)}<"),
+        (">Market Scanner <", f">{t('market_scanner', lang)} <"),
+        (">List</button>", f">{t('opt_list', lang)}</button>"),
+        (">Heatmap</button>", f">{t('heatmap', lang)}</button>"),
+        ('placeholder="Jump to ticker (e.g. TSLA)"', f'placeholder="{t("jump_to_ticker", lang)}"'),
+        (">Sort: Score<", f">{t('sort_score', lang)}<"),
+        (">Sort: Change %<", f">{t('sort_change', lang)}<"),
+        (">Sort: Ticker A-Z<", f">{t('sort_ticker', lang)}<"),
+        (">All Badges<", f">{t('all_badges', lang)}<"),
+        (">All Markets<", f">{t('all_markets', lang)}<"),
+        (">All Sectors<", f">{t('all_sectors', lang)}<"),
+        (">Preparing constituent list...<", f">{t('preparing_list', lang)}<"),
+        ('placeholder="Target price $"', f'placeholder="{t("target_price_placeholder", lang)}"'),
+        (">Set Alert</button>", f">{t('set_alert_btn', lang)}</button>"),
+        (">Save to Portfolio</button>", f">{t('save_to_portfolio_btn', lang)}</button>"),
+        (">Manage alerts<", f">{t('manage_alerts_link', lang)}<"),
+        (">SMA 20<", f">{t('sma20', lang)}<"),
+        (">SMA 50<", f">{t('sma50', lang)}<"),
+        (">SMA 200<", f">{t('sma200', lang)}<"),
+        (">Bollinger Bands<", f">{t('bollinger', lang)}<"),
+        (">Volume<", f">{t('volume_label', lang)}<"),
+        (">Earnings: -<", f">{t('earnings_label', lang)} -<"),
+        (">52W High<", f">{t('high52_label', lang)}<"),
+        ("How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.", t("high52_tip", lang)),
+        (">52W Low<", f">{t('low52_label', lang)}<"),
+        ("How far the price is above its lowest point in the last 52 weeks.", t("low52_tip", lang)),
+        (">Trend<", f">{t('trend_label', lang)}<"),
+        ("Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.", t("trend_tip", lang)),
+        (">Score Trend (Today)<", f">{t('score_trend_label', lang)}<"),
+        ("How this ticker's quant score has moved since today's first scan — rising or falling.", t("score_trend_tip", lang)),
+        ("RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.", t("rsi_macd_tip", lang)),
+        (">AI Quant Report <", f">{t('ai_quant_report', lang)} <"),
+        ("(informational only, not investment advice)", t("informational_only", lang)),
+        (">Loading AI analysis based on real data...<", f">{t('loading_ai_analysis', lang)}<"),
+        ("This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.", t("usage_tip", lang)),
+        ('<h3 style="margin-top:12px">News</h3>', f'<h3 style="margin-top:12px">{t("news_label", lang)}</h3>'),
+        (">Waiting for news...<", f">{t('waiting_for_news', lang)}<"),
+    ])
+    return HTMLResponse(html)
 
 
 @app.get("/market", response_class=HTMLResponse)
@@ -4799,6 +5036,7 @@ async def market_page(request: Request):
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
+    lang = get_user_lang(user)
     body = """
 <section class="panel"><h3>AI Market Summary <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiMarketSummaryBody"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
@@ -4828,7 +5066,19 @@ const bu=d.by_universe||{};const names=Object.keys(bu);document.getElementById('
 loadMarketSummary();loadHeatmap();setInterval(()=>{loadMarketSummary();loadHeatmap()},60000);
 </script>
 """
-    return render_app_shell("Market", "market", body)
+    body = translate_body(body, lang, [
+        (">AI Market Summary <", f">{t('ai_market_summary', lang)} <"),
+        ("(informational only, not investment advice)", t("informational_only", lang)),
+        (">Market Summary<", f">{t('market_summary', lang)}<"),
+        (">By Universe<", f">{t('by_universe', lang)}<"),
+        (">Heatmap <", f">{t('heatmap', lang)} <"),
+        ("click any tile to open its chart — bigger tiles are larger-cap", t("heatmap_hint", lang)),
+        (">Group by<", f">{t('group_by', lang)}<"),
+        ('value="universe">Index<', f'value="universe">{t("opt_index", lang)}<'),
+        ('value="sector">Sector<', f'value="sector">{t("opt_sector", lang)}<'),
+        (">Loading...<", f">{t('loading', lang)}<"),
+    ])
+    return render_app_shell(t("nav_market", lang), "market", body, lang=lang)
 
 
 @app.get("/watchlist", response_class=HTMLResponse)
@@ -4837,6 +5087,7 @@ async def watchlist_page(request: Request):
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
+    lang = get_user_lang(user)
     body = """
 <section class="panel"><h3>Watchlist</h3><div class="add-row"><input id="watchInput" type="text" placeholder="Add ticker (e.g. NVDA)" onkeydown="if(event.key==='Enter')addWatch()"><button onclick="addWatch()">Add</button></div><div id="watchlistBody"><div class="empty-hint">Loading...</div></div></section>
 <script>
@@ -4848,7 +5099,15 @@ async function load(){try{const r=await fetch('/api/watchlist');if(r.status===40
 load();
 </script>
 """
-    return render_app_shell("Watchlist", "watchlist", body)
+    body = translate_body(body, lang, [
+        (">Watchlist<", f">{t('watchlist_title', lang)}<"),
+        ('placeholder="Add ticker (e.g. NVDA)"', f'placeholder="{t("add_ticker_placeholder", lang)}"'),
+        (">Add</button>", f">{t('add_btn', lang)}</button>"),
+        (">Loading...<", f">{t('loading', lang)}<"),
+        ("Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.", t("nothing_watched", lang)),
+        (">Remove</button>", f">{t('remove_btn', lang)}</button>"),
+    ])
+    return render_app_shell(t("nav_watchlist", lang), "watchlist", body, lang=lang)
 
 
 @app.get("/backtest", response_class=HTMLResponse)
@@ -4857,6 +5116,7 @@ async def backtest_page(request: Request):
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
+    lang = get_user_lang(user)
     body = """
 <section class="panel"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have pulled back 10-25% from their own recent 20-day high. This exact rule was chosen by backtesting thousands of alternative entry rules against two years of real price history, ranking them on the first 70% of that window only, then validating the leaders on the untouched final 30% — the out-of-sample numbers below are that validation, not the numbers used to pick the rule. See the <a href="/faq" style="color:var(--head);text-decoration:underline">FAQ</a> for more.</p></section>
@@ -4871,7 +5131,20 @@ async function load(){try{const r=await fetch('/api/backtest-summary');if(r.stat
 load();
 </script>
 """
-    return render_app_shell("Backtest", "backtest", body)
+    body = translate_body(body, lang, [
+        (">Strategy Performance <", f">{t('strategy_performance', lang)} <"),
+        ("(real historical replay, not a guarantee of future results)", t("strategy_performance_hint", lang)),
+        (">Loading...<", f">{t('loading', lang)}<"),
+        (">Methodology<", f">{t('methodology', lang)}<"),
+        ("Backtest is still computing on the server — check back soon.", t("backtest_computing", lang)),
+        ("-Day Forward Return", t("day_forward_return", lang)),
+        (">Strategy avg<", f">{t('strategy_avg', lang)}<"),
+        (">Strategy win rate<", f">{t('strategy_win_rate', lang)}<"),
+        (">When right / wrong<", f">{t('when_right_wrong', lang)}<"),
+        (">Worst case<", f">{t('worst_case', lang)}<"),
+        (">S&amp;P 500 avg (same period)<", f">{t('sp500_avg', lang)}<"),
+    ])
+    return render_app_shell(t("nav_backtest", lang), "backtest", body, lang=lang)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)
@@ -4879,8 +5152,9 @@ async def portfolio_page(request: Request):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
+    lang = get_user_lang(user)
     user = html_lib.escape(user)
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Portfolio</title><style>
+    html = f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Portfolio</title><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
@@ -4928,13 +5202,38 @@ function calcSize(){{const acct=parseFloat(document.getElementById('szAccount').
 async function load(){{const r=await fetch('/api/portfolio');const d=await r.json();const el=document.getElementById('list');if(!d.items?.length){{el.innerHTML='<div class="empty">Nothing saved yet. Open a ticker in the terminal and click ☆ Save to Portfolio.</div>';document.getElementById('concentrationBody').innerHTML='<div class="meta">Nothing saved yet.</div>';return}}el.innerHTML=d.items.map(it=>{{const sec=it.ai_report&&typeof it.ai_report==='object'?it.ai_report:null;const summary=sec?.quant_review||(typeof it.ai_report==='string'?it.ai_report:'');const date=new Date(it.saved_at*1000).toLocaleString();const plClass=it.return_pct==null?'':(it.return_pct>=0?'gain':'loss');const posLine=it.shares?`<div class="meta">${{it.shares}} sh @ $${{it.price}} → $${{it.current_price??'-'}}${{it.return_pct!=null?` · <span class="${{plClass}}">${{it.return_pct>=0?'+':''}}${{it.return_pct}}%${{it.pl_dollar!=null?` (${{it.pl_dollar>=0?'+':''}}$${{it.pl_dollar}})`:''}}</span>`:''}}</div>`:(it.return_pct!=null?`<div class="meta">$${{it.price}} → $${{it.current_price}} · <span class="${{plClass}}">${{it.return_pct>=0?'+':''}}${{it.return_pct}}%</span></div>`:'');return `<div class="item"><div class="item-head"><b>${{it.ticker}}</b><div>${{it.timing_verdict?`<span class="badge ${{badgeClass(it.timing_verdict)}}">${{it.timing_verdict}}</span> `:''}}<button class="remove" onclick="remove(${{it.id}})">Remove</button></div></div>${{posLine}}<div class="meta">Saved ${{date}} · Scan date ${{it.scan_date}} · RSI ${{it.rsi}}${{it.overall_score!=null?' · Score '+it.overall_score+'/100':''}}${{it.sector?' · '+it.sector:''}}</div>${{summary?`<div class="note">${{summary}}</div>`:''}}</div>`}}).join('');renderConcentration(d.items)}}
 async function remove(id){{const f=new FormData();f.append('id',id);await fetch('/api/portfolio/remove',{{method:'POST',body:f}});load()}}
 load();
-</script></body></html>''')
+</script></body></html>'''
+    html = translate_body(html, lang, [
+        (">Portfolio ·", f">{t('page_portfolio', lang)} ·"),
+        (">Settings<", f">{t('nav_settings', lang)}<"),
+        (">Subscription<", f">{t('nav_subscription', lang)}<"),
+        (">Contact<", f">{t('nav_contact', lang)}<"),
+        ("&larr; Back to Terminal", t("back_to_terminal", lang)),
+        (">Loading...<", f">{t('loading', lang)}<"),
+        (">Sector Concentration<", f">{t('sector_concentration', lang)}<"),
+        (">Position Sizing Calculator<", f">{t('position_sizing', lang)}<"),
+        ("Account size $<br>", f"{t('account_size', lang)}<br>"),
+        ("Risk per trade %<br>", f"{t('risk_per_trade', lang)}<br>"),
+        ("Entry price $<br>", f"{t('entry_price', lang)}<br>"),
+        ("Stop distance %<br>", f"{t('stop_distance', lang)}<br>"),
+        (">Calculate<", f">{t('calculate_btn', lang)}<"),
+        ("Sizing arithmetic only — not a recommendation, and it doesn't account for correlation between your positions.", t("sizing_disclaimer", lang)),
+        ("QUANTIFY is informational and educational only, not investment advice. Nothing here is a recommendation to buy or sell any security. All investment decisions are solely your own responsibility.", t("portfolio_disclaimer", lang)),
+        ("Add a share count to your holdings (edit when saving from the terminal) to see sector concentration here.", t("add_share_count_hint", lang)),
+        ("Rule of thumb only, not a risk model — flags over 30% in one sector.", t("sector_rule_of_thumb", lang)),
+        ("Fill in all four fields with positive numbers.", t("fill_four_fields", lang)),
+        ("Nothing saved yet. Open a ticker in the terminal and click ☆ Save to Portfolio.", t("nothing_saved_open_ticker", lang)),
+        (">Nothing saved yet.<", f">{t('nothing_saved', lang)}<"),
+        (">Remove</button>", f">{t('remove_btn', lang)}</button>"),
+    ])
+    return HTMLResponse(html)
 
 
 @app.get("/subscription", response_class=HTMLResponse)
 async def subscription_page(request: Request, reason: Optional[str] = None):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
+    lang = get_user_lang(user)
     conn = db()
     row = conn.execute(
         "SELECT trial_ends_at,subscription_status,gumroad_subscription_id,ls_subscription_id FROM users WHERE email=?",
@@ -4945,16 +5244,21 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
     sub_status = (row["subscription_status"] if row else "trial") or "trial"
     days_left = max(0, int((trial_ends_at - time.time()) / 86400) + 1) if trial_ends_at else 0
     user_esc = html_lib.escape(user)
+    ko = lang == "ko"
 
     trial_active = bool(trial_ends_at and time.time() < trial_ends_at)
     if sub_status == "active":
-        plan_html = '<span class="badge">Active Subscription</span><p>Your subscription is active. Thanks for supporting QUANTIFY.</p>'
+        plan_html = f'<span class="badge">{t("active_subscription", lang)}</span><p>{t("active_sub_thanks", lang)}</p>'
     elif trial_active:
-        plan_html = (f'<span class="badge">Free Trial &middot; {days_left} day{"s" if days_left != 1 else ""} left</span>'
-                     f'<p>Every account gets a {TRIAL_DAYS}-day free trial with full access. Subscribe below anytime to keep it going after your trial ends.</p>')
+        days_label = f'{days_left}일 남음' if ko else f'{days_left} day{"s" if days_left != 1 else ""} left'
+        trial_desc = (f'모든 계정은 {TRIAL_DAYS}일 무료 체험 기간 동안 전체 기능을 이용할 수 있습니다. 체험 종료 후에도 계속 이용하려면 아래에서 구독하세요.' if ko
+                      else f'Every account gets a {TRIAL_DAYS}-day free trial with full access. Subscribe below anytime to keep it going after your trial ends.')
+        plan_html = (f'<span class="badge">{"무료 체험" if ko else "Free Trial"} &middot; {days_label}</span>'
+                     f'<p>{trial_desc}</p>')
     else:
-        plan_html = (f'<span class="badge warn">Trial Ended</span>'
-                     f'<p>Your {TRIAL_DAYS}-day free trial has ended. Subscribe below to keep using the scanner and AI reports.</p>')
+        trial_ended_desc = (f'{TRIAL_DAYS}일 무료 체험이 종료되었습니다. 스캐너와 AI 리뷰를 계속 이용하려면 아래에서 구독하세요.' if ko
+                            else f'Your {TRIAL_DAYS}-day free trial has ended. Subscribe below to keep using the scanner and AI reports.')
+        plan_html = f'<span class="badge warn">{t("trial_ended_badge", lang)}</span><p>{trial_ended_desc}</p>'
 
     if sub_status == "active":
         # Billing itself lives with the payment processor, not us -- we only ever
@@ -4962,27 +5266,27 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
         # Point people at the right place instead of re-showing a "Subscribe" button,
         # which risked someone paying twice while already subscribed.
         if row and row["gumroad_subscription_id"]:
-            checkout_html = ('<p>To cancel or manage billing, use the link in your Gumroad purchase receipt email, '
-                              'or go to <a href="https://app.gumroad.com/library" target="_blank" rel="noopener">'
-                              'app.gumroad.com/library</a> while logged into the account you paid with.</p>')
+            checkout_html = (f'<p>{"결제 취소나 관리는 Gumroad 구매 영수증 이메일의 링크를 이용하거나, 결제할 때 사용한 계정으로 " if ko else "To cancel or manage billing, use the link in your Gumroad purchase receipt email, or go to "}'
+                              '<a href="https://app.gumroad.com/library" target="_blank" rel="noopener">'
+                              f'app.gumroad.com/library</a>{"에 로그인해서 확인하세요." if ko else " while logged into the account you paid with."}</p>')
         elif row and row["ls_subscription_id"]:
-            checkout_html = ('<p>To cancel or manage billing, use the "Manage Subscription" link in your Lemon Squeezy '
-                              'purchase receipt email.</p>')
+            checkout_html = (f'<p>{"결제 취소나 관리는 Lemon Squeezy 구매 영수증 이메일의 \'Manage Subscription\' 링크를 이용하세요." if ko else "To cancel or manage billing, use the \"Manage Subscription\" link in your Lemon Squeezy purchase receipt email."}</p>')
         else:
-            checkout_html = f'<p>To cancel or manage billing, <a href="/contact">contact us</a>.</p>'
+            checkout_html = f'<p>{"결제 취소나 관리는" if ko else "To cancel or manage billing,"} <a href="/contact">{"문의하기" if ko else "contact us"}</a>.</p>'
     else:
         checkout_url = GUMROAD_CHECKOUT_URL or LEMONSQUEEZY_CHECKOUT_URL
         if checkout_url:
-            checkout_html = f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">Subscribe</a>'
+            checkout_html = f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">{t("subscribe_btn", lang)}</a>'
         else:
-            checkout_html = '<div class="subscribe-btn disabled">Paid plans coming soon</div>'
+            checkout_html = f'<div class="subscribe-btn disabled">{t("paid_plans_soon", lang)}</div>'
 
     reason_banner = ""
     if reason == "trial_ended" and sub_status != "active":
-        reason_banner = ('<div class="reason-banner">Your free trial has ended — that\'s why you were sent here. '
-                          'Subscribe below to get back into the scanner and AI reports.</div>')
+        banner_text = ('무료 체험이 종료되어 이 페이지로 이동되었습니다. 스캐너와 AI 리뷰를 다시 이용하려면 아래에서 구독하세요.' if ko
+                       else 'Your free trial has ended — that\'s why you were sent here. Subscribe below to get back into the scanner and AI reports.')
+        reason_banner = f'<div class="reason-banner">{banner_text}</div>'
 
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Subscription</title><style>
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Subscription</title><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--orange:#a8660a}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
@@ -4998,9 +5302,9 @@ p{{color:var(--text);font-size:15.5px;line-height:1.75;margin-top:16px}}
 .subscribe-btn{{display:block;text-align:center;margin-top:20px;background:var(--green);color:#ffffff;padding:14px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px}}
 .subscribe-btn.disabled{{background:var(--panel2);color:var(--dim);border:1px solid var(--border);cursor:default}}
 .reason-banner{{max-width:560px;margin:0 auto 14px;background:#fbf1e0;border:1px solid #ecdcb8;color:var(--orange);padding:14px 18px;border-radius:10px;font-size:14.5px;font-weight:600;line-height:1.6}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">Subscription · {user_esc}</span><a class="back" href="/portfolio">Portfolio</a><a class="back" href="/settings">Settings</a><a class="back" href="/contact">Contact</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">{t("page_subscription", lang)} · {user_esc}</span><a class="back" href="/portfolio">{t("nav_portfolio", lang)}</a><a class="back" href="/settings">{t("nav_settings", lang)}</a><a class="back" href="/contact">{t("nav_contact", lang)}</a><a class="back" href="/terminal">{t("back_to_terminal", lang)}</a></div></header>
 <div class="wrap">{reason_banner}<div class="card">
-<h2>Current Plan</h2>
+<h2>{t("current_plan", lang)}</h2>
 {plan_html}
 {checkout_html}
 </div></div>
@@ -5011,10 +5315,11 @@ p{{color:var(--text);font-size:15.5px;line-height:1.75;margin-top:16px}}
 async def contact_page(request: Request, msg: Optional[str] = None, error: Optional[str] = None):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
+    lang = get_user_lang(user)
     user = html_lib.escape(user)
     msg = html_lib.escape(msg) if msg else ''
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Contact</title><style>
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Contact</title><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
@@ -5028,16 +5333,16 @@ label{{display:block;font-size:13.5px;font-weight:600;color:var(--dim);margin:16
 textarea{{width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:12px;font:15px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;border-radius:7px;resize:vertical;min-height:150px}}
 button{{margin-top:18px;background:var(--green);border:1px solid var(--green);color:#ffffff;padding:12px 16px;font:14.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-weight:700;cursor:pointer;width:100%;border-radius:7px}}
 .msg{{font-size:14px;min-height:18px;margin-top:10px}}.ok{{color:var(--green)}}.err{{color:var(--red)}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">Contact · {user}</span><a class="back" href="/portfolio">Portfolio</a><a class="back" href="/settings">Settings</a><a class="back" href="/subscription">Subscription</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">{t("page_contact", lang)} · {user}</span><a class="back" href="/portfolio">{t("nav_portfolio", lang)}</a><a class="back" href="/settings">{t("nav_settings", lang)}</a><a class="back" href="/subscription">{t("nav_subscription", lang)}</a><a class="back" href="/terminal">{t("back_to_terminal", lang)}</a></div></header>
 <div class="wrap"><div class="card">
-<h2>Contact Us</h2>
+<h2>{t("contact_us", lang)}</h2>
 <div class="msg {'ok' if msg else 'err' if error else ''}">{msg or error}</div>
-<label>Your message</label>
-<textarea id="message" placeholder="Bug report, feedback, question — anything."></textarea>
-<button onclick="sendContact()">Send Message</button>
+<label>{t("your_message", lang)}</label>
+<textarea id="message" placeholder="{t("message_placeholder", lang)}"></textarea>
+<button onclick="sendContact()">{t("send_message_btn", lang)}</button>
 </div></div>
 <script>
-async function sendContact(){{const message=document.getElementById('message').value.trim();if(!message)return alert('Write a message first.');const f=new FormData();f.append('message',message);const r=await fetch('/api/contact',{{method:'POST',body:f}});const d=await r.json();if(r.ok){{document.getElementById('message').value='';}}location.href='/contact?'+(r.ok?'msg=':'error=')+encodeURIComponent(d.message||d.error)}}
+async function sendContact(){{const message=document.getElementById('message').value.trim();if(!message)return alert({json.dumps(t("write_message_first", lang))});const f=new FormData();f.append('message',message);const r=await fetch('/api/contact',{{method:'POST',body:f}});const d=await r.json();if(r.ok){{document.getElementById('message').value='';}}location.href='/contact?'+(r.ok?'msg=':'error=')+encodeURIComponent(d.message||d.error)}}
 </script>
 </body></html>''')
 
@@ -5166,8 +5471,9 @@ async def settings_page(request: Request):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
+    lang = get_user_lang(user)
     user = html_lib.escape(user)
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Settings</title><style>
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Settings</title><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
@@ -5192,45 +5498,45 @@ button:hover{{opacity:.9}}
 .card.danger{{border-color:var(--red)}}
 .card.danger h2{{color:var(--red)}}
 button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(--red)}}
-</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">Settings · {user}</span><a class="back" href="/portfolio">Portfolio</a><a class="back" href="/subscription">Subscription</a><a class="back" href="/contact">Contact</a><a class="back" href="/terminal">&larr; Back to Terminal</a></div></header>
+</style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">{t("page_settings", lang)} · {user}</span><a class="back" href="/portfolio">{t("nav_portfolio", lang)}</a><a class="back" href="/subscription">{t("nav_subscription", lang)}</a><a class="back" href="/contact">{t("nav_contact", lang)}</a><a class="back" href="/terminal">{t("back_to_terminal", lang)}</a></div></header>
 <div class="wrap">
-<div class="card"><h2>Account</h2>
-<div id="account-info"><div class="empty-hint">Loading...</div></div>
-<a href="/subscription" style="display:block;text-align:center;margin-top:16px;color:var(--green);text-decoration:underline;font-size:14.5px;font-weight:600">Manage Subscription &rarr;</a>
+<div class="card"><h2>{t("account", lang)}</h2>
+<div id="account-info"><div class="empty-hint">{t("loading", lang)}</div></div>
+<a href="/subscription" style="display:block;text-align:center;margin-top:16px;color:var(--green);text-decoration:underline;font-size:14.5px;font-weight:600">{t("manage_subscription", lang)}</a>
 </div>
-<div class="card"><h2>Display</h2>
-<label>Theme</label><select id="theme"><option value="light">Light</option><option value="dark">Dark</option></select>
-<label>AI report language</label><select id="language"><option value="en">English</option><option value="ko">Korean (한국어)</option></select><p style="font-size:13px;color:var(--dim);margin-top:6px">Only translates the AI-written quant/risk review text on the Scanner page — the rest of the site stays in English. Depends on a shared daily AI usage limit, so a new language can take a minute to generate the first time.</p>
-<label>Default scanner sort</label><select id="default_sort"><option value="overall_score">Score</option><option value="change_pct">Change %</option><option value="ticker">Ticker A-Z</option></select>
-<label>Default scanner view</label><select id="default_view"><option value="list">List</option><option value="heatmap">Heatmap</option></select>
-<label>Email me when a stock scores 90+</label><select id="high_score_alerts"><option value="0">Off</option><option value="1">On</option></select><p style="font-size:13px;color:var(--dim);margin-top:6px">One email a day, after market close, listing every ticker that reached a 90+ score that day — not one email per ticker.</p>
-<button onclick="saveSettings()">Save Settings</button><div class="msg" id="settings-msg"></div>
+<div class="card"><h2>{t("display", lang)}</h2>
+<label>{t("theme_label", lang)}</label><select id="theme"><option value="light">{t("opt_light", lang)}</option><option value="dark">{t("opt_dark", lang)}</option></select>
+<label>{t("ai_report_language", lang)}</label><select id="language"><option value="en">English</option><option value="ko">Korean (한국어)</option></select><p style="font-size:13px;color:var(--dim);margin-top:6px">{t("language_toggle_hint", lang)}</p>
+<label>{t("default_scanner_sort", lang)}</label><select id="default_sort"><option value="overall_score">{t("opt_score", lang)}</option><option value="change_pct">{t("opt_change_pct", lang)}</option><option value="ticker">{t("opt_ticker_az", lang)}</option></select>
+<label>{t("default_scanner_view", lang)}</label><select id="default_view"><option value="list">{t("opt_list", lang)}</option><option value="heatmap">{t("opt_heatmap", lang)}</option></select>
+<label>{t("email_high_score", lang)}</label><select id="high_score_alerts"><option value="0">{t("opt_off", lang)}</option><option value="1">{t("opt_on", lang)}</option></select><p style="font-size:13px;color:var(--dim);margin-top:6px">{t("high_score_alert_hint", lang)}</p>
+<button onclick="saveSettings()">{t("save_settings_btn", lang)}</button><div class="msg" id="settings-msg"></div>
 </div>
-<div class="card" id="alerts"><h2>Price Alerts</h2>
-<div id="alerts-list"><div class="empty-hint">Loading...</div></div>
+<div class="card" id="alerts"><h2>{t("price_alerts", lang)}</h2>
+<div id="alerts-list"><div class="empty-hint">{t("loading", lang)}</div></div>
 </div>
-<div class="card"><h2>Change Password</h2>
-<label>Current password</label><input type="password" id="current_password">
-<label>New password</label><input type="password" id="new_password">
-<p style="font-size:13px;color:var(--dim);margin-top:8px">10+ characters, with at least 1 letter and 1 number</p>
-<button onclick="changePassword()">Change Password</button><div class="msg" id="password-msg"></div>
+<div class="card"><h2>{t("change_password", lang)}</h2>
+<label>{t("current_password", lang)}</label><input type="password" id="current_password">
+<label>{t("new_password", lang)}</label><input type="password" id="new_password">
+<p style="font-size:13px;color:var(--dim);margin-top:8px">{t("password_char_hint", lang)}</p>
+<button onclick="changePassword()">{t("change_password_btn", lang)}</button><div class="msg" id="password-msg"></div>
 </div>
-<div class="card danger"><h2>Danger Zone</h2>
-<p style="font-size:14.5px;color:var(--text);margin:0 0 12px">Permanently delete your account and all associated data (portfolio, watchlist, alerts). This cannot be undone.</p>
-<label>Confirm password</label><input type="password" id="delete_password">
-<button class="danger-btn" onclick="deleteAccount()">Delete My Account</button><div class="msg" id="delete-msg"></div>
+<div class="card danger"><h2>{t("danger_zone", lang)}</h2>
+<p style="font-size:14.5px;color:var(--text);margin:0 0 12px">{t("delete_account_warning", lang)}</p>
+<label>{t("confirm_password", lang)}</label><input type="password" id="delete_password">
+<button class="danger-btn" onclick="deleteAccount()">{t("delete_account_btn", lang)}</button><div class="msg" id="delete-msg"></div>
 </div>
 </div>
 <script>
 function fmtDate(ts){{return ts?new Date(ts*1000).toLocaleDateString():'-'}}
 async function loadSettings(){{const r=await fetch('/api/settings');const d=await r.json();if(d.pref_theme)document.getElementById('theme').value=d.pref_theme;if(d.pref_language)document.getElementById('language').value=d.pref_language;if(d.pref_default_sort)document.getElementById('default_sort').value=d.pref_default_sort;if(d.pref_default_view)document.getElementById('default_view').value=d.pref_default_view;document.getElementById('high_score_alerts').value=d.pref_high_score_alerts?'1':'0';
-const statusLabel={{active:'Active Subscription',trial:'Free Trial',expired:'Trial Ended',cancelled:'Cancelled',paused:'Paused'}}[d.subscription_status]||d.subscription_status;
-document.getElementById('account-info').innerHTML=`<div class="info-row"><span>Email</span><b>${{d.email||'-'}}</b></div><div class="info-row"><span>Member since</span><b>${{fmtDate(d.created_at)}}</b></div><div class="info-row"><span>Plan status</span><b>${{statusLabel||'-'}}</b></div>`}}
+const statusLabel={{active:{json.dumps(t("status_active", lang))},trial:{json.dumps(t("status_trial", lang))},expired:{json.dumps(t("status_expired", lang))},cancelled:{json.dumps(t("status_cancelled", lang))},paused:{json.dumps(t("status_paused", lang))}}}[d.subscription_status]||d.subscription_status;
+document.getElementById('account-info').innerHTML=`<div class="info-row"><span>{t("email_label", lang)}</span><b>${{d.email||'-'}}</b></div><div class="info-row"><span>{t("member_since", lang)}</span><b>${{fmtDate(d.created_at)}}</b></div><div class="info-row"><span>{t("plan_status", lang)}</span><b>${{statusLabel||'-'}}</b></div>`}}
 async function saveSettings(){{const f=new FormData();f.append('theme',document.getElementById('theme').value);f.append('language',document.getElementById('language').value);f.append('default_sort',document.getElementById('default_sort').value);f.append('default_view',document.getElementById('default_view').value);f.append('high_score_alerts',document.getElementById('high_score_alerts').value);const r=await fetch('/api/settings',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('settings-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error}}
 async function changePassword(){{const f=new FormData();f.append('current_password',document.getElementById('current_password').value);f.append('new_password',document.getElementById('new_password').value);const r=await fetch('/api/settings/password',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('password-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error;if(r.ok){{document.getElementById('current_password').value='';document.getElementById('new_password').value=''}}}}
-async function loadAlerts(){{const r=await fetch('/api/alerts/list');const d=await r.json();const el=document.getElementById('alerts-list');if(!d.alerts?.length){{el.innerHTML='<div class="empty-hint">No alerts set. Open a ticker in the terminal and click Set Alert.</div>';return}}el.innerHTML=d.alerts.map(a=>`<div class="alert-row"><span>${{a.ticker}} ${{a.direction==='below'?'&#8595; at/below':'&#8593; at/above'}} $${{a.target_price}}${{a.is_sent?' <span style="color:var(--dim)">(sent)</span>':''}}</span><button class="remove-btn" onclick="removeAlert(${{a.id}})">Remove</button></div>`).join('')}}
+async function loadAlerts(){{const r=await fetch('/api/alerts/list');const d=await r.json();const el=document.getElementById('alerts-list');if(!d.alerts?.length){{el.innerHTML='<div class="empty-hint">'+{json.dumps(t("loading_empty_hint", lang))}+'</div>';return}}el.innerHTML=d.alerts.map(a=>`<div class="alert-row"><span>${{a.ticker}} ${{a.direction==='below'?{json.dumps(t("dir_below", lang))}:{json.dumps(t("dir_above", lang))}}} $${{a.target_price}}${{a.is_sent?' <span style="color:var(--dim)">'+{json.dumps(t("sent_suffix", lang))}+'</span>':''}}</span><button class="remove-btn" onclick="removeAlert(${{a.id}})">{t("remove_btn", lang)}</button></div>`).join('')}}
 async function removeAlert(id){{const f=new FormData();f.append('id',id);await fetch('/api/alerts/remove',{{method:'POST',body:f}});loadAlerts()}}
-async function deleteAccount(){{const pw=document.getElementById('delete_password').value;if(!pw)return;if(!confirm('Are you sure? This permanently deletes your account and cannot be undone.'))return;const f=new FormData();f.append('password',pw);const r=await fetch('/api/account/delete',{{method:'POST',body:f}});const d=await r.json();if(r.ok){{location.href='/'}}else{{const el=document.getElementById('delete-msg');el.className='msg err';el.innerText=d.error}}}}
+async function deleteAccount(){{const pw=document.getElementById('delete_password').value;if(!pw)return;if(!confirm({json.dumps(t("confirm_delete_account", lang))}))return;const f=new FormData();f.append('password',pw);const r=await fetch('/api/account/delete',{{method:'POST',body:f}});const d=await r.json();if(r.ok){{location.href='/'}}else{{const el=document.getElementById('delete-msg');el.className='msg err';el.innerText=d.error}}}}
 loadSettings();loadAlerts();
 </script></body></html>''')
 
