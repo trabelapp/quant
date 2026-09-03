@@ -2186,6 +2186,59 @@ def start_ai_prefetch(mode="Long-Term Momentum Pullback"):
 # -----------------------------------------------------------------------------
 # API endpoints
 # -----------------------------------------------------------------------------
+@app.get("/api/public-preview")
+async def public_preview():
+    # Unauthenticated, intentionally limited (top 3 only) -- the landing page's
+    # terminal mockup used to be static/fake copy. Real, live proof of what the
+    # product actually outputs is a stronger trust signal than any amount of
+    # marketing copy, and it's honest since it's the same data a subscriber sees.
+    conn = db()
+    latest_date = conn.execute(
+        "SELECT MAX(scan_date) FROM daily_scans WHERE quant_pass=1 AND timing_score IS NOT NULL"
+    ).fetchone()[0]
+    if not latest_date:
+        conn.close()
+        return {"tickers": [], "scan_date": None, "detected_count": 0, "universe_count": len(UNIVERSE)}
+    detected_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL",
+        (latest_date,),
+    ).fetchone()[0]
+    rows = conn.execute("""
+        SELECT ticker,price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,timing_verdict,ai_report,
+               ROUND((alpha_score+timing_score)/2.0,1) AS overall_score
+        FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL
+        ORDER BY overall_score DESC LIMIT 3
+    """, (latest_date,)).fetchall()
+    conn.close()
+    tickers = []
+    for r in rows:
+        d = dict(r)
+        ai = {}
+        if d.get("ai_report"):
+            try:
+                ai = json.loads(d["ai_report"])
+            except (json.JSONDecodeError, TypeError):
+                ai = {}
+        cached = CACHE["historical"].get(f"single:{d['ticker']}:1d")
+        sparkline = []
+        if cached is not None:
+            try:
+                closes = normalize_series(cached["data"], "Close").dropna().tail(20)
+                sparkline = [round(float(v), 2) for v in closes]
+            except Exception:
+                sparkline = []
+        tickers.append({
+            "ticker": d["ticker"], "price": d["price"], "change_pct": d["change_pct"],
+            "rsi": d["rsi"], "macd": d["macd"],
+            "pct_from_52w_high": d["pct_from_52w_high"], "pct_from_52w_low": d["pct_from_52w_low"],
+            "timing_verdict": d["timing_verdict"], "overall_score": d["overall_score"],
+            "quant_review": ai.get("quant_review"), "risk_review": ai.get("risk_review"),
+            "sparkline": sparkline,
+        })
+    return {"tickers": tickers, "scan_date": latest_date, "detected_count": detected_count,
+            "universe_count": len(UNIVERSE)}
+
+
 @app.get("/api/scan")
 async def api_scan(request: Request):
     user = get_logged_in_user(request)
@@ -2961,6 +3014,7 @@ h1 .hl{color:var(--green)}
 .badge{padding:2px 7px;border-radius:2px;font-weight:bold;font-size:10px;display:inline-block}
 .badge-ok{background:#0e241b;color:var(--green);border:1px solid var(--green)}
 .badge-warn{background:#2a2008;color:var(--orange);border:1px solid var(--orange)}
+.badge-danger{background:#2a0e0e;color:var(--red);border:1px solid var(--red)}
 .mock-chartline{height:70px;border:1px solid var(--border);background:linear-gradient(180deg,transparent,rgba(46,204,113,.06));position:relative;margin:10px 0}
 .mock-chartline svg{width:100%;height:100%;display:block}
 .mock-ai{font-size:11px;color:var(--text);line-height:1.7}
@@ -3076,28 +3130,31 @@ footer a{color:var(--dim2)}
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
 <div class="mock-grid">
 <div class="mock-col">
-<div class="mock-h"><span class="live-dot"></span>MARKET SCANNER · 13 detected / 518</div>
+<div class="mock-h" id="mockH"><span class="live-dot"></span>MARKET SCANNER · 13 detected / 518</div>
+<div id="mockList">
 <div class="mock-row"><b>MRK</b><span>151.12 <span class="badge badge-ok">Favorable</span></span></div>
 <div class="mock-row"><b>HOOD</b><span>110.71 <span class="badge badge-ok">Favorable</span></span></div>
 <div class="mock-row"><b>DASH</b><span>232.00 <span class="badge badge-warn">Caution</span></span></div>
 <div class="mock-row"><b>ADSK</b><span>270.54 <span class="badge badge-warn">Caution</span></span></div>
 </div>
-<div class="mock-col">
-<div class="mock-h">MRK · TECHNICAL CHART</div>
-<div class="mock-chartline"><svg viewBox="0 0 300 70" preserveAspectRatio="none"><polyline points="0,50 20,45 40,48 60,40 80,42 100,30 120,34 140,22 160,26 180,18 200,20 220,14 240,17 260,10 280,13 300,8" fill="none" stroke="#2ecc71" stroke-width="1.5"/></svg></div>
-<div class="mock-row"><span>RSI / MACD</span><b>64.58 / 1.4261</b></div>
-<div class="mock-row"><span>52W HIGH / LOW</span><b>-4.42% / 97.2%</b></div>
 </div>
 <div class="mock-col">
-<div class="mock-h">AI QUANT REPORT <span class="badge badge-ok" style="margin-left:4px">Favorable</span></div>
+<div class="mock-h" id="mockChartTicker">MRK · TECHNICAL CHART</div>
+<div class="mock-chartline"><svg viewBox="0 0 300 70" preserveAspectRatio="none" id="mockChartSvg"><polyline points="0,50 20,45 40,48 60,40 80,42 100,30 120,34 140,22 160,26 180,18 200,20 220,14 240,17 260,10 280,13 300,8" fill="none" stroke="#2ecc71" stroke-width="1.5"/></svg></div>
+<div class="mock-row"><span>RSI / MACD</span><b id="mockRsiMacd">64.58 / 1.4261</b></div>
+<div class="mock-row"><span>52W HIGH / LOW</span><b id="mock52w">-4.42% / 97.2%</b></div>
+</div>
+<div class="mock-col">
+<div class="mock-h">AI QUANT REPORT <span class="badge badge-ok" id="mockAiBadge" style="margin-left:4px">Favorable</span></div>
 <div class="mock-ai">
 <b>QUANT REVIEW</b>
-RSI near 65, positive MACD, price 4.4% below its 52-week high.
+<span id="mockQuantReview">RSI near 65, positive MACD, price 4.4% below its 52-week high.</span>
 <b>RISK REVIEW</b>
-Not extended near the high, well above its 52-week low — low blow-off-top and dead-cat-bounce risk.
+<span id="mockRiskReview">Not extended near the high, well above its 52-week low — low blow-off-top and dead-cat-bounce risk.</span>
 </div>
 </div>
 </div>
+<div style="text-align:center;padding:8px 0 2px;font-size:10.5px;color:var(--dim)" id="mockFooterNote">Illustrative example</div>
 </div>
 </section>
 
@@ -3199,6 +3256,39 @@ if('IntersectionObserver' in window){
 // opacity:0 -- this is a marketing page, a permanently blank section is worse than no
 // animation at all. Belt-and-suspenders: force-reveal anything still hidden shortly after load.
 setTimeout(()=>document.querySelectorAll('[data-reveal]:not(.is-visible)').forEach(el=>el.classList.add('is-visible')),2500);
+
+function mockSparkPoints(arr){
+  if(!arr||arr.length<2)return null;
+  const w=300,h=70;
+  const min=Math.min(...arr),max=Math.max(...arr),range=(max-min)||1;
+  return arr.map((v,i)=>`${(i/(arr.length-1)*w).toFixed(1)},${(h-((v-min)/range*(h-10))-5).toFixed(1)}`).join(' ');
+}
+function mockBadgeClass(v){return v==='Favorable'?'badge-ok':v==='Risk'?'badge-danger':'badge-warn'}
+async function loadPublicPreview(){
+  try{
+    const r=await fetch('/api/public-preview');
+    const d=await r.json();
+    if(!d.tickers||!d.tickers.length)return; // keep the illustrative fallback as-is
+    document.getElementById('mockH').innerHTML=`<span class="live-dot"></span>MARKET SCANNER · ${d.detected_count} detected / ${d.universe_count}`;
+    document.getElementById('mockList').innerHTML=d.tickers.map(t=>`<div class="mock-row"><b>${t.ticker}</b><span>${t.price} <span class="badge ${mockBadgeClass(t.timing_verdict)}">${t.timing_verdict}</span></span></div>`).join('');
+    const top=d.tickers[0];
+    document.getElementById('mockChartTicker').textContent=`${top.ticker} · TECHNICAL CHART`;
+    const pts=mockSparkPoints(top.sparkline);
+    if(pts){
+      const color=top.change_pct>=0?'#2ecc71':'#e74c3c';
+      document.getElementById('mockChartSvg').innerHTML=`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
+    }
+    document.getElementById('mockRsiMacd').textContent=`${top.rsi} / ${top.macd}`;
+    if(top.pct_from_52w_high!=null&&top.pct_from_52w_low!=null)document.getElementById('mock52w').textContent=`${top.pct_from_52w_high}% / ${top.pct_from_52w_low}%`;
+    const badgeEl=document.getElementById('mockAiBadge');
+    badgeEl.textContent=top.timing_verdict;badgeEl.className='badge '+mockBadgeClass(top.timing_verdict);
+    if(top.quant_review)document.getElementById('mockQuantReview').textContent=top.quant_review;
+    if(top.risk_review)document.getElementById('mockRiskReview').textContent=top.risk_review;
+    const noteEl=document.getElementById('mockFooterNote');
+    if(noteEl)noteEl.textContent=`Live — today's actual scan, as of ${d.scan_date}`;
+  }catch(e){console.error('Public preview load failed',e)}
+}
+loadPublicPreview();
 </script>
 </body></html>"""
 
