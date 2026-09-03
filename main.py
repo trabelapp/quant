@@ -2916,6 +2916,42 @@ async def api_run_backtest(request: Request, token: Optional[str] = None):
     return {"message": "Backtest started."}
 
 
+@app.get("/api/admin/stats")
+async def api_admin_stats(request: Request, token: Optional[str] = None):
+    if not _require_admin_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    conn = db()
+    now = time.time()
+    total_users = conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
+    signups_24h = conn.execute("SELECT COUNT(*) c FROM users WHERE created_at >= ?", (now - 86400,)).fetchone()["c"]
+    signups_7d = conn.execute("SELECT COUNT(*) c FROM users WHERE created_at >= ?", (now - 7 * 86400,)).fetchone()["c"]
+    active_subs = conn.execute("SELECT COUNT(*) c FROM users WHERE subscription_status='active'").fetchone()["c"]
+    rows = conn.execute(
+        "SELECT email,created_at,subscription_status FROM users WHERE created_at >= ? ORDER BY created_at DESC",
+        (now - 14 * 86400,),
+    ).fetchall()
+    conn.close()
+    daily = {}
+    for r in rows:
+        day = datetime.fromtimestamp(r["created_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        daily[day] = daily.get(day, 0) + 1
+    return {
+        "total_users": total_users,
+        "signups_last_24h": signups_24h,
+        "signups_last_7d": signups_7d,
+        "active_subscriptions": active_subs,
+        "signups_by_day_et": daily,
+        "recent_signups": [
+            {
+                "email": r["email"],
+                "signed_up_at_et": datetime.fromtimestamp(r["created_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M"),
+                "subscription_status": r["subscription_status"],
+            }
+            for r in rows[:30]
+        ],
+    }
+
+
 @app.post("/api/auto-scan")
 async def api_auto_scan(request: Request):
     if not get_logged_in_user(request):
