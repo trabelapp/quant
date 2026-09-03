@@ -44,6 +44,7 @@ SESSION_TTL = 30 * 24 * 3600
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
+SENDER_NAME = os.getenv("SENDER_NAME", "QUANTIFY")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
@@ -1997,7 +1998,7 @@ async def startup():
 
 def _send_via_brevo(to_email, subject, body, max_retries=3):
     payload = {
-        "sender": {"email": SENDER_EMAIL},
+        "sender": {"email": SENDER_EMAIL, "name": SENDER_NAME},
         "to": [{"email": to_email}],
         "subject": subject,
         "textContent": body,
@@ -2023,7 +2024,7 @@ def _send_via_brevo(to_email, subject, body, max_retries=3):
 def _send_via_sendgrid(to_email, subject, body, max_retries=3):
     payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
-        "from": {"email": SENDER_EMAIL},
+        "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
         "subject": subject,
         "content": [{"type": "text/plain", "value": body}],
     }
@@ -2046,7 +2047,7 @@ def _send_via_sendgrid(to_email, subject, body, max_retries=3):
 
 
 def _send_via_smtp(to_email, subject, body, max_retries=3):
-    msg = MIMEMultipart(); msg["From"] = SENDER_EMAIL; msg["To"] = to_email; msg["Subject"] = subject
+    msg = MIMEMultipart(); msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"; msg["To"] = to_email; msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain", "utf-8"))
     for attempt in range(max_retries):
         try:
@@ -3164,8 +3165,8 @@ footer a{color:var(--dim2)}
 
 <section class="hero" style="border-top:none">
 <div class="eyebrow">7-DAY FREE TRIAL · THEN $9.99/MONTH</div>
-<h1>Stop scanning <span class="hl">518</span> stocks by hand.<br>See the ones that actually <span class="hl">cleared the bar</span>.</h1>
-<p class="sub">A daily quant scan of the S&amp;P 500 and Nasdaq-100, double-checked by AI for blow-off-top and dead-cat-bounce risk before it reaches your screen.</p>
+<h1>Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?</h1>
+<p class="sub">QUANTIFY scans the S&amp;P 500 and Nasdaq-100 every day for stocks pulling back inside a real uptrend, then has AI double-check for blow-off-top and dead-cat-bounce risk — before it ever reaches your screen.</p>
 <div class="cta-row">
 <a class="btn btn-hero" href="/signup">See Today's Full List — Free for 7 Days</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
@@ -3281,8 +3282,8 @@ footer a{color:var(--dim2)}
 
 <section>
 <div class="final-wrap">
-<h2>See today's detected tickers.</h2>
-<p>7-day free trial, then $9.99/month. Takes under a minute to sign up.</p>
+<h2>Know which one it is — before you buy, not after.</h2>
+<p>See today's list, free for 7 days. Then $9.99/month. Takes under a minute to sign up.</p>
 <a class="btn" href="/signup">Get Started Free</a>
 </div>
 <div class="disclaimer">
