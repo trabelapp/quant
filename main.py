@@ -132,6 +132,20 @@ async def no_store_authenticated_pages(request: Request, call_next):
 
 _PAGE_VIEW_SKIP_PATHS = {"/favicon.ico", "/robots.txt", "/sitemap.xml"}
 _PAGE_VIEW_SKIP_PREFIXES = ("/api/", "/static/")
+# Health checks (Render's own + our own deploy-verification curls) hit "/" on every
+# request just like a real visitor, and would otherwise permanently inflate traffic
+# counts -- filter anything that doesn't look like an actual browser.
+_PAGE_VIEW_BOT_UA_MARKERS = (
+    "curl", "wget", "python-requests", "python-httpx", "bot", "spider", "crawl",
+    "render", "uptimerobot", "pingdom", "monitor", "headlesschrome", "go-http-client",
+)
+
+
+def _looks_like_bot(user_agent: str) -> bool:
+    ua = user_agent.lower()
+    if not ua:
+        return True
+    return any(marker in ua for marker in _PAGE_VIEW_BOT_UA_MARKERS)
 
 
 def _log_page_view(path: str, visitor_id: str, referrer: str):
@@ -154,6 +168,7 @@ async def track_page_views(request: Request, call_next):
         request.method == "GET"
         and path not in _PAGE_VIEW_SKIP_PATHS
         and not path.startswith(_PAGE_VIEW_SKIP_PREFIXES)
+        and not _looks_like_bot(request.headers.get("user-agent", ""))
     )
     existing_visitor_id = request.cookies.get("qtfy_vid")
     visitor_id = existing_visitor_id or secrets.token_hex(16)
