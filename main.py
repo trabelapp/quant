@@ -180,6 +180,13 @@ SCAN_WINDOW_START_HOUR_ET = 8
 SCAN_WINDOW_END_HOUR_ET = 18
 SCAN_RETRY_INTERVAL_SECONDS = 15 * 60
 SCAN_MAX_ATTEMPTS_PER_SLOT = 3
+# The AI market summary used to regenerate on every hourly scan (up to 11x/day), which
+# was a meaningful slice of the shared daily AI token quota for a feature that doesn't
+# need to be that fresh. Decided against paying for a bigger quota -- instead this only
+# runs once, on the first scan at or after the regular market close, and the same-day
+# cache guard in generate_market_summary_ai() keeps it from re-running on the 5pm/6pm
+# scans that follow.
+MARKET_SUMMARY_AFTER_HOUR_ET = 16
 
 LOGIN_ATTEMPTS = {}
 LOGIN_MAX_ATTEMPTS = 5
@@ -2326,6 +2333,11 @@ def _index_day_change(df):
 
 
 async def generate_market_summary_ai():
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    if now_et.hour < MARKET_SUMMARY_AFTER_HOUR_ET:
+        return
+    if MARKET_AI_SUMMARY_CACHE.get("scan_date") == today_str():
+        return
     conn = db()
     rows = conn.execute("SELECT universe,change_pct,timing_verdict,quant_pass FROM daily_scans WHERE scan_date=?", (today_str(),)).fetchall()
     top_rows = conn.execute(
