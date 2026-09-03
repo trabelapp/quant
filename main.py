@@ -48,6 +48,7 @@ SENDER_NAME = os.getenv("SENDER_NAME", "QUANTIFY")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+CONTACT_NOTIFY_EMAIL = os.getenv("CONTACT_NOTIFY_EMAIL", "quantify.app.official@gmail.com")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 LEMONSQUEEZY_CHECKOUT_URL = os.getenv("LEMONSQUEEZY_CHECKOUT_URL", "")
@@ -2307,13 +2308,15 @@ async def startup():
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
 
-def _send_via_brevo(to_email, subject, body, max_retries=3):
+def _send_via_brevo(to_email, subject, body, max_retries=3, reply_to=None):
     payload = {
         "sender": {"email": SENDER_EMAIL, "name": SENDER_NAME},
         "to": [{"email": to_email}],
         "subject": subject,
         "textContent": body,
     }
+    if reply_to:
+        payload["replyTo"] = {"email": reply_to}
     headers = {"api-key": BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json"}
     for attempt in range(max_retries):
         try:
@@ -2332,13 +2335,15 @@ def _send_via_brevo(to_email, subject, body, max_retries=3):
     return False
 
 
-def _send_via_sendgrid(to_email, subject, body, max_retries=3):
+def _send_via_sendgrid(to_email, subject, body, max_retries=3, reply_to=None):
     payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
         "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
         "subject": subject,
         "content": [{"type": "text/plain", "value": body}],
     }
+    if reply_to:
+        payload["reply_to"] = {"email": reply_to}
     headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
     for attempt in range(max_retries):
         try:
@@ -2357,8 +2362,10 @@ def _send_via_sendgrid(to_email, subject, body, max_retries=3):
     return False
 
 
-def _send_via_smtp(to_email, subject, body, max_retries=3):
+def _send_via_smtp(to_email, subject, body, max_retries=3, reply_to=None):
     msg = MIMEMultipart(); msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"; msg["To"] = to_email; msg["Subject"] = subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.attach(MIMEText(body, "plain", "utf-8"))
     for attempt in range(max_retries):
         try:
@@ -2379,15 +2386,15 @@ def _send_via_smtp(to_email, subject, body, max_retries=3):
     return False
 
 
-def send_email_notification(to_email, subject, body, max_retries=3):
+def send_email_notification(to_email, subject, body, max_retries=3, reply_to=None):
     if BREVO_API_KEY and SENDER_EMAIL:
-        return _send_via_brevo(to_email, subject, body, max_retries)
+        return _send_via_brevo(to_email, subject, body, max_retries, reply_to=reply_to)
     if SENDGRID_API_KEY and SENDER_EMAIL:
-        return _send_via_sendgrid(to_email, subject, body, max_retries)
+        return _send_via_sendgrid(to_email, subject, body, max_retries, reply_to=reply_to)
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         print(f"[Error: EmailNotConfigured] No email backend configured — could not send '{subject}' to {to_email}")
         return False
-    return _send_via_smtp(to_email, subject, body, max_retries)
+    return _send_via_smtp(to_email, subject, body, max_retries, reply_to=reply_to)
 
 
 def check_email_config():
@@ -5361,8 +5368,8 @@ async def submit_contact(request: Request, message: str = Form(...)):
     _register_failed_attempt(CONTACT_ATTEMPTS, user)
     if not SENDER_EMAIL:
         return JSONResponse({"error": "Contact form is not configured yet. Please try again later."}, status_code=503)
-    ok = await asyncio.to_thread(send_email_notification, SENDER_EMAIL, f"[QUANTIFY Contact] Message from {user}",
-                                  f"From: {user}\n\n{message}")
+    ok = await asyncio.to_thread(send_email_notification, CONTACT_NOTIFY_EMAIL, f"[QUANTIFY Contact] Message from {user}",
+                                  f"From: {user}\n\n{message}", 3, user)
     if not ok:
         return JSONResponse({"error": "Could not send your message. Please try again later."}, status_code=500)
     return {"message": "Your message has been sent. We'll get back to you soon."}
