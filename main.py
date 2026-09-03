@@ -3277,9 +3277,24 @@ section{padding:80px 24px;border-top:1px solid var(--border)}
 footer{border-top:1px solid var(--border);padding:38px 24px;text-align:center;color:var(--dim);font-size:14px}
 footer a{color:var(--dim2);text-decoration:underline}
 .btn{white-space:nowrap}
-[data-reveal]{opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s ease}
-[data-reveal].is-visible{opacity:1;transform:translateY(0)}
-@media(prefers-reduced-motion:reduce){[data-reveal]{transition:none;opacity:1;transform:none}}
+[data-reveal]{opacity:0}
+[data-reveal].is-visible{opacity:1}
+[data-reveal].is-visible>*{opacity:0;transform:translateY(26px);animation:revealChild .7s cubic-bezier(.16,1,.3,1) forwards}
+[data-reveal].is-visible>*:nth-child(1){animation-delay:.05s}
+[data-reveal].is-visible>*:nth-child(2){animation-delay:.13s}
+[data-reveal].is-visible>*:nth-child(3){animation-delay:.21s}
+[data-reveal].is-visible>*:nth-child(4){animation-delay:.29s}
+[data-reveal].is-visible>*:nth-child(5){animation-delay:.37s}
+[data-reveal].is-visible>*:nth-child(n+6){animation-delay:.45s}
+@keyframes revealChild{to{opacity:1;transform:translateY(0)}}
+.hero-in{opacity:0;transform:translateY(20px);animation:heroIn .75s cubic-bezier(.16,1,.3,1) forwards}
+.hero-in-1{animation-delay:.05s}
+.hero-in-2{animation-delay:.15s}
+.hero-in-3{animation-delay:.32s}
+.hero-in-4{animation-delay:.48s}
+.hero-in-5{animation-delay:.6s}
+@keyframes heroIn{to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){[data-reveal],[data-reveal].is-visible>*,.hero-in{animation:none;transition:none;opacity:1;transform:none}}
 .btn{transition:transform .15s ease,box-shadow .15s ease}
 .btn:hover{transform:translateY(-1px);box-shadow:0 10px 24px -10px rgba(14,138,95,.45)}
 .btn-hero{padding:16px 28px;font-size:17px;animation:heroPulse 2.6s ease-in-out infinite}
@@ -3341,14 +3356,14 @@ footer a{color:var(--dim2);text-decoration:underline}
 </div></header>
 
 <section class="hero" style="border-top:none">
-<div class="eyebrow">7-DAY FREE TRIAL · THEN $9.99/MONTH</div>
-<h1>Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?</h1>
-<p class="sub">QUANTIFY scans the S&amp;P 500 and Nasdaq-100 every day for stocks pulling back inside a real uptrend, then has AI double-check for blow-off-top and dead-cat-bounce risk — before it ever reaches your screen.</p>
-<div class="cta-row">
+<div class="eyebrow hero-in hero-in-1">7-DAY FREE TRIAL · THEN $9.99/MONTH</div>
+<h1 class="hero-in hero-in-2">Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?</h1>
+<p class="sub hero-in hero-in-3">QUANTIFY scans the S&amp;P 500 and Nasdaq-100 every day for stocks pulling back inside a real uptrend, then has AI double-check for blow-off-top and dead-cat-bounce risk — before it ever reaches your screen.</p>
+<div class="cta-row hero-in hero-in-4">
 <a class="btn btn-hero" href="/signup">See Today's Full List — Free for 7 Days</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
 </div>
-<div class="cta-note">No credit card required to start. Same data for every subscriber — never personalized picks.</div>
+<div class="cta-note hero-in hero-in-5">No credit card required to start. Same data for every subscriber — never personalized picks.</div>
 
 <div class="mock" data-reveal>
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
@@ -3930,18 +3945,18 @@ def render_legal_page(title: str, updated: str, body_html: str) -> HTMLResponse:
 # CSS. Not retrofitted onto the existing five pages.
 APP_SHELL_CSS = """
 :root{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a;
---sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327}
+--sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327;--sb-danger:#e57373}
 *{box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px 20px 20px 88px}
+body{background:var(--bg);color:var(--text);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px 20px 20px 220px}
 header,.panel{background:var(--panel);border:1px solid var(--border)}
-.sidebar{position:fixed;left:0;top:0;bottom:0;width:72px;background:var(--sb-bg);border-right:1px solid var(--sb-border);display:flex;flex-direction:column;align-items:center;padding:16px 0;gap:6px;z-index:40}
-.sidebar .side-brand{color:var(--sb-text-active);font-weight:800;font-size:17px;margin-bottom:16px;text-decoration:none}
-.side-link{width:52px;height:48px;display:flex;align-items:center;justify-content:center;border-radius:9px;color:var(--sb-text);text-decoration:none;font-size:11px;font-weight:700;letter-spacing:.2px;cursor:pointer;background:transparent;border:1px solid transparent;position:relative}
+.sidebar{position:fixed;left:0;top:0;bottom:0;width:196px;background:var(--sb-bg);border-right:1px solid var(--sb-border);display:flex;flex-direction:column;align-items:stretch;padding:18px 12px;gap:3px;z-index:40;overflow-y:auto}
+.sidebar .side-brand{color:var(--sb-text-active);font-weight:800;font-size:17px;letter-spacing:-.2px;margin:2px 6px 18px;text-decoration:none}
+.sidebar .side-brand span{color:var(--green)}
+.side-link{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:9px;color:var(--sb-text);text-decoration:none;font-size:14.5px;font-weight:600;cursor:pointer;background:transparent;border:1px solid transparent}
+.side-link svg{flex-shrink:0}
 .side-link:hover{background:var(--sb-hover);color:var(--sb-text-active)}
 .side-link.active{background:var(--green);color:#ffffff;border-color:var(--green)}
-.side-link .side-tip{position:absolute;left:66px;top:50%;transform:translateY(-50%);background:var(--sb-hover);border:1px solid var(--sb-border);color:var(--sb-text-active);padding:5px 11px;border-radius:5px;font-size:13px;font-weight:600;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .1s;z-index:41}
-.side-link:hover .side-tip{opacity:1}
-.side-spacer{flex:1}
+.side-spacer{flex:1;min-height:8px}
 header{padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px}
 .brand{font-weight:700;font-size:19px;color:var(--head);text-decoration:none;letter-spacing:.2px}
 .brand span{color:var(--dim)}
@@ -3998,37 +4013,52 @@ input[type=text],input[type=number]{background:var(--panel);border:1px solid var
 .backtest-meta{font-size:13px;color:var(--dim);margin-top:12px;line-height:1.7}
 @media(max-width:900px){
   body{padding-left:14px;padding-bottom:70px}
-  .sidebar{left:0;right:0;top:auto;bottom:0;width:auto;height:60px;flex-direction:row;justify-content:space-around;border-right:none;border-top:1px solid var(--sb-border);padding:0}
+  .sidebar{left:0;right:0;top:auto;bottom:0;width:auto;height:60px;flex-direction:row;justify-content:space-around;align-items:center;border-right:none;border-top:1px solid var(--sb-border);padding:0;overflow-y:visible;overflow-x:auto}
   .sidebar .side-brand,.side-spacer{display:none}
-  .side-link .side-tip{display:none}
+  .side-link{flex-direction:column;gap:3px;padding:6px 8px;font-size:9.5px}
 }
 """
 
+_SIDEBAR_ICONS = {
+    "scanner": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M16.5 16.5l-4-4"/></svg>',
+    "market": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 17V9M9.5 17V4M16 17v-6"/></svg>',
+    "watchlist": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M10 2.5l2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4-3.9-3.8 5.4-.8z"/></svg>',
+    "backtest": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 6.2v4l3 2"/></svg>',
+    "portfolio": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="7" width="14" height="9" rx="1.5"/><path d="M7.2 7V5.5A1.5 1.5 0 018.7 4h2.6a1.5 1.5 0 011.5 1.5V7"/></svg>',
+    "settings": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="10" cy="10" r="2.6"/><path d="M10 3v2.2M10 14.8V17M17 10h-2.2M5.2 10H3M14.7 5.3l-1.5 1.5M6.8 13.2l-1.5 1.5M14.7 14.7l-1.5-1.5M6.8 6.8L5.3 5.3"/></svg>',
+    "subscription": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2.5" y="5" width="15" height="10" rx="1.5"/><path d="M2.5 8.3h15"/></svg>',
+    "contact": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2.5" y="4.5" width="15" height="11" rx="1.5"/><path d="M3 5.5l7 5.5 7-5.5"/></svg>',
+    "logout": '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3.3H4.7A1.7 1.7 0 003 5v10a1.7 1.7 0 001.7 1.7H8M13.2 6.2l4 3.8-4 3.8M17 10H8"/></svg>',
+}
+
 _APP_SHELL_NAV_LINKS = [
-    ("scanner", "/terminal", "SCN", "Scanner"),
-    ("market", "/market", "SUM", "Market"),
-    ("watchlist", "/watchlist", "WL", "Watchlist"),
-    ("backtest", "/backtest", "BT", "Backtest"),
-    ("portfolio", "/portfolio", "PF", "Portfolio"),
+    ("scanner", "/terminal", "Scanner"),
+    ("market", "/market", "Market"),
+    ("watchlist", "/watchlist", "Watchlist"),
+    ("backtest", "/backtest", "Backtest"),
+    ("portfolio", "/portfolio", "Portfolio"),
+]
+_SIDEBAR_BOTTOM_LINKS = [
+    ("settings", "/settings", "Settings", ""),
+    ("subscription", "/subscription", "Subscription", ""),
+    ("contact", "/contact", "Contact", ""),
+    ("logout", "/logout", "Log out", ' style="color:var(--sb-danger)"'),
 ]
 
 
+def _render_sidebar(active_nav: str) -> str:
+    def link(key, href, label, extra=""):
+        cls = "side-link active" if key == active_nav else "side-link"
+        return f'<a class="{cls}" href="{href}"{extra}>{_SIDEBAR_ICONS[key]}<span>{label}</span></a>'
+    top = "".join(link(key, href, label) for key, href, label in _APP_SHELL_NAV_LINKS)
+    bottom = "".join(link(key, href, label, extra) for key, href, label, extra in _SIDEBAR_BOTTOM_LINKS)
+    return (f'<nav class="sidebar"><a class="side-brand" href="/terminal">QUANTIFY<span>.</span></a>'
+            f'{top}<div class="side-spacer"></div>{bottom}</nav>')
+
+
 def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "") -> HTMLResponse:
-    nav_html = "".join(
-        f'<a class="side-link{" active" if key == active_nav else ""}" href="{href}">{label}'
-        f'<span class="side-tip">{tip}</span></a>'
-        for key, href, label, tip in _APP_SHELL_NAV_LINKS
-    )
     return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}</style></head><body>
-<nav class="sidebar">
-<a class="side-brand" href="/terminal" title="QUANTIFY.">Q</a>
-{nav_html}
-<div class="side-spacer"></div>
-<a class="side-link" href="/settings">SET<span class="side-tip">Settings</span></a>
-<a class="side-link" href="/subscription">SUB<span class="side-tip">Subscription</span></a>
-<a class="side-link" href="/contact">CT<span class="side-tip">Contact Us</span></a>
-<a class="side-link" href="/logout" style="color:var(--red)">OUT<span class="side-tip">Log out</span></a>
-</nav>
+{_render_sidebar(active_nav)}
 <header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a></header>
 <div class="wrap"><h1 class="page-title">{title}</h1>{body_html}</div>
 </body></html>''')
@@ -4481,23 +4511,23 @@ async def dashboard(request: Request):
     user=html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="en" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY.</title><script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--border2:#ececec;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a;--grid-line:#eef1ef;
---sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327}}
+--sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327;--sb-danger:#e57373}}
 html[data-theme="dark"]{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--border2:#181818;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--red:#ef5350;--orange:#ff9800;--grid-line:#161616}}
-*{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:12px 12px 12px 88px}}
+*{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:12px 12px 12px 216px}}
 header,.panel{{background:var(--panel);border:1px solid var(--border)}}
-.sidebar{{position:fixed;left:0;top:0;bottom:0;width:72px;background:var(--sb-bg);border-right:1px solid var(--sb-border);display:flex;flex-direction:column;align-items:center;padding:16px 0;gap:6px;z-index:40}}
-.sidebar .side-brand{{color:var(--sb-text-active);font-weight:800;font-size:17px;margin-bottom:16px;text-decoration:none}}
-.side-link{{width:52px;height:48px;display:flex;align-items:center;justify-content:center;border-radius:9px;color:var(--sb-text);text-decoration:none;font-size:11px;font-weight:700;letter-spacing:.2px;cursor:pointer;background:transparent;border:1px solid transparent;position:relative}}
+.sidebar{{position:fixed;left:0;top:0;bottom:0;width:196px;background:var(--sb-bg);border-right:1px solid var(--sb-border);display:flex;flex-direction:column;align-items:stretch;padding:18px 12px;gap:3px;z-index:40;overflow-y:auto}}
+.sidebar .side-brand{{color:var(--sb-text-active);font-weight:800;font-size:17px;letter-spacing:-.2px;margin:2px 6px 18px;text-decoration:none}}
+.sidebar .side-brand span{{color:var(--green)}}
+.side-link{{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:9px;color:var(--sb-text);text-decoration:none;font-size:14.5px;font-weight:600;cursor:pointer;background:transparent;border:1px solid transparent}}
+.side-link svg{{flex-shrink:0}}
 .side-link:hover{{background:var(--sb-hover);color:var(--sb-text-active)}}
 .side-link.active{{background:var(--green);color:#ffffff;border-color:var(--green)}}
-.side-link .side-tip{{position:absolute;left:66px;top:50%;transform:translateY(-50%);background:var(--sb-hover);border:1px solid var(--sb-border);color:var(--sb-text-active);padding:5px 11px;border-radius:5px;font-size:13px;font-weight:600;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .1s;z-index:41}}
-.side-link:hover .side-tip{{opacity:1}}
-.side-spacer{{flex:1}}
+.side-spacer{{flex:1;min-height:8px}}
 @media(max-width:900px){{
   body{{padding-left:12px;padding-bottom:70px}}
-  .sidebar{{left:0;right:0;top:auto;bottom:0;width:auto;height:60px;flex-direction:row;justify-content:space-around;border-right:none;border-top:1px solid var(--sb-border);padding:0}}
+  .sidebar{{left:0;right:0;top:auto;bottom:0;width:auto;height:60px;flex-direction:row;justify-content:space-around;align-items:center;border-right:none;border-top:1px solid var(--sb-border);padding:0;overflow-y:visible;overflow-x:auto}}
   .sidebar .side-brand,.side-spacer{{display:none}}
-  .side-link .side-tip{{display:none}}
+  .side-link{{flex-direction:column;gap:3px;padding:6px 8px;font-size:9.5px}}
 }}
 header{{padding:12px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap;border-radius:10px}}
 .brand{{font-weight:700;font-size:19px;color:var(--head);text-decoration:none;letter-spacing:.2px}}
@@ -4624,19 +4654,7 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
   .headerRight select{{flex:1;min-width:150px}}
 }}
 </style></head><body>
-<nav class="sidebar">
-<a class="side-brand" href="/terminal" title="QUANTIFY.">Q</a>
-<a class="side-link active" href="/terminal">SCN<span class="side-tip">Scanner</span></a>
-<a class="side-link" href="/market">SUM<span class="side-tip">Market</span></a>
-<a class="side-link" href="/watchlist">WL<span class="side-tip">Watchlist</span></a>
-<a class="side-link" href="/backtest">BT<span class="side-tip">Backtest</span></a>
-<a class="side-link" href="/portfolio">PF<span class="side-tip">Portfolio</span></a>
-<div class="side-spacer"></div>
-<a class="side-link" href="/settings">SET<span class="side-tip">Settings</span></a>
-<a class="side-link" href="/subscription">SUB<span class="side-tip">Subscription</span></a>
-<a class="side-link" href="/contact">CT<span class="side-tip">Contact Us</span></a>
-<a class="side-link" href="/logout" style="color:var(--red)">OUT<span class="side-tip">Log out</span></a>
-</nav>
+{_render_sidebar("scanner")}
 <header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> on the left updates a few times a day — click any ticker to load its chart, technicals, and full AI report on the right.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><div class="action-bar" title="Track this ticker without deciding anything right now"><select id="targetDir" title="Alert when price rises to/above, or falls to/below, the target" style="padding:0 4px"><option value="above">&#8593; at/above</option><option value="below">&#8595; at/below</option></select><input id="target" type="number" placeholder="Target price $" style="width:100px" title="Get an email when the price reaches this value"><button class="action-btn" onclick="setAlert()" title="Email me when the price hits my target">Set Alert</button><button class="action-btn" onclick="savePortfolio()" title="Add this ticker to My Portfolio">Save to Portfolio</button><a href="/settings#alerts" class="manage-alerts-link" title="View or cancel your existing price alerts">Manage alerts</a></div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div><div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
 <div class="toast" id="toast"></div><script>
 const USER_LANGUAGE='{pref_language}';
