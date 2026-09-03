@@ -3772,7 +3772,7 @@ async def terms_page():
 <h2>4. Acceptable Use</h2>
 <p>You agree not to: scrape, reverse-engineer, or systematically extract data from the Service; interfere with or overload our infrastructure; resell or redistribute Service content as your own product; or use the Service for any unlawful purpose.</p>
 <h2>5. Third-Party Data</h2>
-<p>Market data, news, and other information displayed on the Service are sourced from third parties, including Yahoo Finance, and may be delayed, incomplete, or inaccurate. QUANTIFY is not affiliated with, endorsed by, or sponsored by Yahoo, Inc. We do not guarantee the accuracy, completeness, or timeliness of any data shown.</p>
+<p>Market data displayed on the Service is sourced from third-party licensed data providers. News headlines and earnings dates are sourced from Yahoo Finance. This data may be delayed, incomplete, or inaccurate, and QUANTIFY is not affiliated with, endorsed by, or sponsored by any of these providers. We do not guarantee the accuracy, completeness, or timeliness of any data shown.</p>
 <h2>6. Disclaimers and Limitation of Liability</h2>
 <p>The Service is provided "as is" and "as available," without warranties of any kind, express or implied. To the fullest extent permitted by law, QUANTIFY and its operator will not be liable for any direct, indirect, incidental, or consequential damages arising from your use of, or inability to use, the Service, including any investment losses.</p>
 <h2>7. Termination</h2>
@@ -3802,7 +3802,7 @@ async def privacy_page():
 <li><b>Groq</b> — processes ticker/price/technical data to generate AI commentary. We do not send your name, email, or account details to Groq.</li>
 <li><b>Brevo</b> — sends transactional emails (verification, password reset, alerts) on our behalf.</li>
 <li><b>Google Sign-In</b> — if you choose to log in with Google, Google shares your verified email address with us to create your session.</li>
-<li><b>Market and news data providers (e.g. Yahoo Finance, Google News)</b> — we query these for public market data and headlines; no personal data about you is sent to them.</li>
+<li><b>Market and news data providers (Polygon/Massive for market data, Yahoo Finance for news and earnings)</b> — we query these for public market data and headlines; no personal data about you is sent to them.</li>
 </ul>
 <h2>4. Cookies</h2>
 <p>We use a single functional session cookie to keep you logged in. We do not use advertising or cross-site tracking cookies.</p>
