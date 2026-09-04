@@ -130,8 +130,6 @@ async def no_store_authenticated_pages(request: Request, call_next):
     return response
 
 
-_PAGE_VIEW_SKIP_PATHS = {"/favicon.ico", "/robots.txt", "/sitemap.xml"}
-_PAGE_VIEW_SKIP_PREFIXES = ("/api/", "/static/")
 # Health checks (Render's own + our own deploy-verification curls) hit "/" on every
 # request just like a real visitor, and would otherwise permanently inflate traffic
 # counts -- filter anything that doesn't look like an actual browser.
@@ -146,6 +144,18 @@ def _looks_like_bot(user_agent: str) -> bool:
     if not ua:
         return True
     return any(marker in ua for marker in _PAGE_VIEW_BOT_UA_MARKERS)
+
+
+# Vulnerability scanners (probing for /wp-admin, /.git/config, etc.) fake a real
+# browser User-Agent, so the UA check above doesn't catch them -- an allowlist of the
+# site's actual page routes is the only reliable filter, since a scanner's made-up path
+# can never be one of these.
+_PAGE_VIEW_ALLOWED_PATHS = {
+    "/", "/pricing", "/faq", "/about", "/terms", "/privacy", "/accept-disclaimer",
+    "/login", "/signup", "/check-email", "/verify-email", "/forgot-password",
+    "/reset-password", "/terminal", "/market", "/watchlist", "/backtest",
+    "/portfolio", "/subscription", "/contact", "/settings",
+}
 
 
 def _log_page_view(path: str, visitor_id: str, referrer: str):
@@ -166,8 +176,7 @@ async def track_page_views(request: Request, call_next):
     path = request.url.path
     should_track = (
         request.method == "GET"
-        and path not in _PAGE_VIEW_SKIP_PATHS
-        and not path.startswith(_PAGE_VIEW_SKIP_PREFIXES)
+        and path in _PAGE_VIEW_ALLOWED_PATHS
         and not _looks_like_bot(request.headers.get("user-agent", ""))
     )
     existing_visitor_id = request.cookies.get("qtfy_vid")
