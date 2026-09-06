@@ -118,7 +118,7 @@ app = FastAPI(title="QUANTIFY.")
 # server, so the session being deleted server-side doesn't matter until the user
 # actually clicks something). Cache-Control: no-store is what disables bfcache for a
 # page in every major browser, not just disk/memory caching.
-_NO_STORE_PREFIXES = ("/terminal", "/market", "/portfolio", "/settings", "/subscription", "/contact", "/api/")
+_NO_STORE_PREFIXES = ("/terminal", "/market", "/watchlist", "/backtest", "/portfolio", "/settings", "/subscription", "/contact", "/api/")
 
 
 @app.middleware("http")
@@ -475,7 +475,7 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN trial_ended_email_sent_at REAL")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
-        conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + 7 * 86400,))
+        conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + TRIAL_DAYS * 86400,))
 
         scan_info = conn.execute("PRAGMA table_info(daily_scans)").fetchall()
         scan_cols = {r[1] for r in scan_info}
@@ -1856,14 +1856,14 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                 hit = price >= alert["target_price"] if direction == "above" else price <= alert["target_price"]
                 if hit:
                     verb = "risen to" if direction == "above" else "fallen to"
-                    if send_email_notification(alert["email"],
+                    if await asyncio.to_thread(send_email_notification, alert["email"],
                         f"[QUANTIFY Alert] {alert['ticker']} hit your target price",
                         f"{alert['ticker']} has {verb} ${price:.2f}.\nYour target: ${alert['target_price']:.2f} or {direction}."):
                         conn.execute("UPDATE user_alerts SET is_sent=1 WHERE id=?", (alert["id"],))
             conn.commit(); conn.close()
             start_ai_prefetch(mode)
             start_market_summary_ai()
-            send_high_score_digest()
+            await asyncio.to_thread(send_high_score_digest)
             return results
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] run_eod_batch_process fatal error: {exc}")
@@ -2284,7 +2284,7 @@ async def trial_lifecycle_scheduler():
             for row in soon:
                 days_left = max(1, round((row["trial_ends_at"] - now) / 86400))
                 try:
-                    if send_trial_reminder_email(row["email"], days_left):
+                    if await asyncio.to_thread(send_trial_reminder_email, row["email"], days_left):
                         conn.execute("UPDATE users SET trial_reminder_sent_at=? WHERE email=?", (now, row["email"]))
                         conn.commit()
                 except Exception as exc:
@@ -2297,7 +2297,7 @@ async def trial_lifecycle_scheduler():
             ).fetchall()
             for row in ended:
                 try:
-                    if send_trial_ended_email(row["email"]):
+                    if await asyncio.to_thread(send_trial_ended_email, row["email"]):
                         conn.execute("UPDATE users SET trial_ended_email_sent_at=? WHERE email=?", (now, row["email"]))
                         conn.commit()
                 except Exception as exc:
@@ -2796,6 +2796,8 @@ async def api_scan(request: Request):
     user = get_logged_in_user(request)
     if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not disclaimer_accepted(user):
+        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
     conn = db()
@@ -2836,8 +2838,11 @@ async def api_scan(request: Request):
 
 @app.get("/api/heatmap")
 async def api_heatmap(request: Request):
-    if not get_logged_in_user(request):
+    user = get_logged_in_user(request)
+    if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
     conn = db()
     rows = conn.execute("""
         SELECT ticker,universe,change_pct,alpha_score,quant_pass,timing_verdict FROM daily_scans
@@ -2859,9 +2864,14 @@ async def api_heatmap(request: Request):
 
 @app.get("/api/score-history")
 async def api_score_history(request: Request, ticker: str = "AAPL"):
-    if not get_logged_in_user(request):
+    user = get_logged_in_user(request)
+    if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
     ticker = normalize_ticker(ticker)
+    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+        return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     conn = db()
     rows = conn.execute("""
         SELECT captured_at,price,alpha_score FROM scan_history
@@ -2901,6 +2911,8 @@ async def api_market_indices(request: Request):
 async def market_summary(request: Request):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not disclaimer_accepted(user):
+        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     conn = db()
@@ -2942,6 +2954,8 @@ async def market_summary(request: Request):
 async def backtest_summary(request: Request):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not disclaimer_accepted(user):
+        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     return {"computed_at": BACKTEST_CACHE.get("computed_at"), "results": BACKTEST_CACHE.get("results"),
@@ -3141,6 +3155,8 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
     user = get_logged_in_user(request)
     if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not disclaimer_accepted(user):
+        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     ticker = normalize_ticker(ticker)
@@ -3148,7 +3164,7 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     if timeframe not in ("1h", "1d", "1wk", "1mo"):
         return JSONResponse({"error": "Invalid timeframe"}, status_code=400)
-    df = await download_stock(ticker, timeframe)
+    df, earnings = await asyncio.gather(download_stock(ticker, timeframe), get_earnings(ticker))
     if df is None or df.empty:
         # The in-memory historical cache doesn't survive a restart, so if yfinance has
         # been down across a deploy there may be nothing left to fall back to there.
@@ -3192,7 +3208,6 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         bb_std = close.rolling(20).std()
         bb_upper = sma20 + 2 * bb_std
         bb_lower = sma20 - 2 * bb_std
-        earnings = await get_earnings(ticker)
         chart = []
         for idx, row in df.tail(500).iterrows():
             try:
@@ -3230,6 +3245,8 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     user = get_logged_in_user(request)
     if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not disclaimer_accepted(user):
+        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     ticker=normalize_ticker(ticker)
@@ -3347,6 +3364,8 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
 async def set_alert(request: Request, ticker: str = Form(...), target_price: float = Form(...), direction: str = Form("above")):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using price alerts."}, status_code=402)
     ticker = normalize_ticker(ticker)
     direction = direction if direction in ("above", "below") else "above"
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker) or target_price <= 0:
@@ -3363,6 +3382,8 @@ async def set_alert(request: Request, ticker: str = Form(...), target_price: flo
 async def alerts_list(request: Request):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using price alerts."}, status_code=402)
     conn = db()
     rows = conn.execute("SELECT id,ticker,target_price,direction,is_sent,created_at FROM user_alerts WHERE email=? ORDER BY created_at DESC", (user,)).fetchall()
     conn.close()
@@ -3383,6 +3404,8 @@ async def alerts_remove(request: Request, id: int = Form(...)):
 async def portfolio_save(request: Request, ticker: str = Form(...), note: str = Form(""), shares: str = Form(""), price: str = Form("")):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your portfolio."}, status_code=402)
     ticker = normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
@@ -3443,6 +3466,8 @@ async def get_current_price(ticker: str):
 async def portfolio_list(request: Request):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your portfolio."}, status_code=402)
     conn = db()
     rows = conn.execute("""
         SELECT id,ticker,scan_date,price,change_pct,alpha_score,rsi,macd,timing_score,timing_verdict,ai_report,note,saved_at,shares
@@ -3490,6 +3515,8 @@ async def portfolio_remove(request: Request, id: int = Form(...)):
 async def watchlist_add(request: Request, ticker: str = Form(...)):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your watchlist."}, status_code=402)
     ticker = normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
@@ -3507,6 +3534,8 @@ async def watchlist_add(request: Request, ticker: str = Form(...)):
 async def watchlist_list(request: Request):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your watchlist."}, status_code=402)
     conn = db()
     rows = conn.execute("SELECT id,ticker,added_at FROM watchlist_items WHERE email=? ORDER BY added_at DESC", (user,)).fetchall()
     tickers = [r["ticker"] for r in rows]
@@ -4623,7 +4652,7 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
         return RedirectResponse("/login?error=Google+sign-in+failed.+Please+try+again.", status_code=303)
     redirect_uri = f"{str(request.base_url).rstrip('/')}/auth/google/callback"
     try:
-        token_resp = requests.post("https://oauth2.googleapis.com/token", data={
+        token_resp = await asyncio.to_thread(requests.post, "https://oauth2.googleapis.com/token", data={
             "code": code,
             "client_id": GOOGLE_CLIENT_ID,
             "client_secret": GOOGLE_CLIENT_SECRET,
@@ -4632,8 +4661,10 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
         }, timeout=10)
         token_resp.raise_for_status()
         access_token = token_resp.json()["access_token"]
-        info_resp = requests.get("https://www.googleapis.com/oauth2/v3/userinfo",
-                                  headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        info_resp = await asyncio.to_thread(
+            requests.get, "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}, timeout=10,
+        )
         info_resp.raise_for_status()
         info = info_resp.json()
     except Exception as exc:
@@ -4648,11 +4679,17 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
     row = conn.execute("SELECT email FROM users WHERE email=?", (email,)).fetchone()
     if not row:
         password_hash, salt = await asyncio.to_thread(make_password_hash, secrets.token_urlsafe(32))
-        conn.execute(
-            "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at,pref_theme) VALUES(?,?,?,1,?,?,'light')",
-            (email, password_hash, salt, time.time(), time.time() + 7 * 86400),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at,pref_theme) VALUES(?,?,?,1,?,?,'light')",
+                (email, password_hash, salt, time.time(), time.time() + TRIAL_DAYS * 86400),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # Two near-simultaneous callbacks for the same brand-new email (double-click,
+            # redirected retry) can both pass the SELECT above before either INSERTs --
+            # the account now exists (from the other request), so just proceed to log in.
+            pass
     conn.close()
 
     token = create_session(email)
@@ -4810,7 +4847,7 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
         conn=db()
         conn.execute(
             "INSERT INTO users(email,password_hash,salt,is_active,verify_token_hash,verify_expires,created_at,trial_ends_at,pref_theme) VALUES(?,?,?,0,?,?,?,?,'light')",
-            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL,time.time(),time.time()+7*86400),
+            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL,time.time(),time.time()+TRIAL_DAYS*86400),
         )
         conn.commit()
         conn.close()
@@ -5539,6 +5576,7 @@ async def portfolio_page(request: Request):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
+    if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
     lang = get_user_lang(user)
     user = html_lib.escape(user)
     html = f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Portfolio</title><style>
