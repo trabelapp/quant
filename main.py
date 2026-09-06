@@ -151,7 +151,7 @@ def _looks_like_bot(user_agent: str) -> bool:
 # site's actual page routes is the only reliable filter, since a scanner's made-up path
 # can never be one of these.
 _PAGE_VIEW_ALLOWED_PATHS = {
-    "/", "/pricing", "/faq", "/about", "/terms", "/privacy", "/accept-disclaimer",
+    "/", "/pricing", "/faq", "/about", "/demo", "/terms", "/privacy", "/accept-disclaimer",
     "/login", "/signup", "/check-email", "/verify-email", "/forgot-password",
     "/reset-password", "/terminal", "/market", "/watchlist", "/backtest",
     "/portfolio", "/subscription", "/contact", "/settings",
@@ -3813,6 +3813,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div class="cta-row hero-in hero-in-4">
 <a class="btn btn-hero" href="/signup">See Today's Full List — Free for 7 Days</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
+<a class="btn btn-ghost" href="/demo">See a live example — no signup</a>
 </div>
 <div class="cta-note hero-in hero-in-5">No credit card required to start. Same data for every subscriber — never personalized picks.</div>
 
@@ -4236,7 +4237,7 @@ async def llms_txt():
 @app.get("/sitemap.xml")
 async def sitemap_xml(request: Request):
     base = str(request.base_url).rstrip("/")
-    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/terms", "/privacy"]
+    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/terms", "/privacy"]
     items = "".join(f"<url><loc>{base}{u}</loc></url>" for u in urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
     return Response(content=xml, media_type="application/xml")
@@ -4941,6 +4942,208 @@ async def verify_reset(email: str = Form(...), code: str = Form(...), new_passwo
         print(f"[Error: {type(e).__name__}] Password reset processing error: {e}")
         return RedirectResponse("/reset-password?email="+urllib.parse.quote(email)+"&error=Database+error",status_code=303)
     return RedirectResponse("/login?msg=Password+reset+successfully",status_code=303)
+
+# -----------------------------------------------------------------------------
+# Public demo (no login) -- lets a skeptical visitor verify the product is real
+# before being asked to create an account, instead of hitting the signup wall blind.
+# -----------------------------------------------------------------------------
+DEMO_AI_SECTION_LABELS = {
+    "quant_review": "Quant Review",
+    "supply_demand": "Supply/Demand",
+    "risk_review": "Risk Review",
+    "news_analysis": "News Analysis",
+    "timing_reason": "Timing Rationale",
+}
+
+DEMO_CSS = """
+:root{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--border2:#181818;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--red:#ef5350;--orange:#ff9800}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:0 16px 40px;max-width:1280px;margin-left:auto;margin-right:auto}
+a{color:var(--green)}
+.topbar{display:flex;justify-content:space-between;align-items:center;padding:18px 4px;flex-wrap:wrap;gap:10px}
+.brand{font-weight:700;font-size:19px;color:var(--head);text-decoration:none;letter-spacing:.2px}
+.brand span{color:var(--dim)}
+.signup-btn{background:var(--green);color:#fff;padding:9px 16px;border-radius:7px;font-weight:700;text-decoration:none;font-size:14px}
+.panel{background:var(--panel);border:1px solid var(--border);padding:16px;border-radius:10px;overflow:hidden}
+h3{font-size:14px;color:var(--dim);border-bottom:1px solid var(--border);padding-bottom:10px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.4px;font-weight:700}
+h3 small{color:var(--dim);font-weight:normal;text-transform:none;font-size:12px}
+.intro-bar{margin-bottom:12px;line-height:1.6}
+.intro-bar b{color:var(--head)}
+.demo-grid{display:grid;grid-template-columns:330px 1fr;gap:12px;align-items:start}
+.list{max-height:640px;overflow:auto}
+.item{padding:12px;border-bottom:1px solid var(--border2);cursor:pointer;display:flex;justify-content:space-between;border-left:3px solid transparent}
+.item:hover,.item.active-item{background:var(--panel2)}
+.item.sig-favorable{border-left-color:var(--green)}
+.item.sig-caution{border-left-color:var(--orange)}
+.item.sig-risk{border-left-color:var(--red)}
+.badge{padding:4px 11px;border-radius:12px;font-weight:700;display:inline-block;font-size:13px}
+.badge-ok{background:rgba(38,166,154,.15);color:var(--green)}
+.badge-warn{background:rgba(255,152,0,.15);color:var(--orange)}
+.badge-danger{background:rgba(239,83,80,.15);color:var(--red)}
+.badge-pending{background:var(--panel2);color:var(--dim)}
+.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px}
+.metric{background:var(--panel2);border:1px solid var(--border);padding:10px;text-align:center;border-radius:7px}
+.metric>div:first-child{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.2px}
+.val{color:var(--head);font-weight:700;margin-top:5px;font-size:15px}
+.ai-tldr{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:12px 0;font-size:15px;line-height:1.65}
+.ai-tldr b{color:var(--head)}
+.section{margin-bottom:14px}
+.section b{color:var(--head);display:block;margin-bottom:5px;font-size:12.5px;text-transform:uppercase;letter-spacing:.3px}
+.notice{padding:14px;background:var(--panel2);border:1px solid var(--border);margin-bottom:10px;line-height:1.6;border-radius:8px}
+.action-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.action-btn{color:#fff;background:var(--green);border:1px solid var(--green);padding:9px 14px;border-radius:7px;font-weight:600;font-size:13.5px;text-decoration:none;display:inline-block}
+.action-btn.locked-btn{background:var(--panel2);color:var(--dim);border-color:var(--border)}
+.action-btn.locked-btn:hover{color:var(--head);border-color:var(--green)}
+.demo-cta{background:var(--panel2);border:1px solid var(--green);border-radius:10px;padding:26px;text-align:center;margin-top:16px}
+.demo-cta h2{color:var(--head);margin:0 0 8px;font-size:21px}
+.demo-cta p{color:var(--dim);margin:0 0 16px;font-size:14px}
+.demo-cta .action-btn{padding:12px 26px;font-size:15px}
+.demo-cta .cta-note{color:var(--dim);font-size:12.5px;margin-top:10px}
+@media(max-width:900px){.demo-grid{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}
+"""
+
+DEMO_JS = """
+function showDemoTicker(t){
+  document.querySelectorAll('.demo-detail').forEach(function(el){el.style.display='none'});
+  var d=document.getElementById('demo-detail-'+t);
+  if(d)d.style.display='block';
+  document.querySelectorAll('.item').forEach(function(el){el.classList.remove('active-item')});
+  var it=document.getElementById('demo-item-'+t);
+  if(it)it.classList.add('active-item');
+}
+"""
+
+
+def _demo_badge_class(verdict):
+    return {"Favorable": "badge-ok", "Caution": "badge-warn", "Risk": "badge-danger"}.get(verdict, "badge-pending")
+
+
+def _demo_sig_class(verdict):
+    return {"Favorable": "sig-favorable", "Caution": "sig-caution", "Risk": "sig-risk"}.get(verdict, "")
+
+
+def _demo_sparkline_svg(arr):
+    if not arr or len(arr) < 2:
+        return ""
+    w, h = 48, 18
+    mn, mx = min(arr), max(arr)
+    rng = (mx - mn) or 1
+    pts = " ".join(f"{(i / (len(arr) - 1) * w):.1f},{(h - ((v - mn) / rng * h)):.1f}" for i, v in enumerate(arr))
+    color = "#26a69a" if arr[-1] >= arr[0] else "#ef5350"
+    return f'<svg width="{w}" height="{h}" style="vertical-align:middle;flex-shrink:0"><polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5"/></svg>'
+
+
+def _demo_row_html(t):
+    ticker = html_lib.escape(t["ticker"])
+    change_pct = t["change_pct"]
+    change_str = f"{'+' if change_pct is not None and change_pct >= 0 else ''}{change_pct}"
+    return (
+        f'<div class="item {_demo_sig_class(t["timing_verdict"])}" id="demo-item-{ticker}" onclick="showDemoTicker(\'{ticker}\')">'
+        f'<b>{ticker}</b>'
+        f'<span style="display:flex;align-items:center;gap:6px">{_demo_sparkline_svg(t["sparkline"])}'
+        f'<span style="text-align:right">{t["price"]} · {change_str}%<br>'
+        f'<small>Score {t["overall_score"]} · <span class="badge {_demo_badge_class(t["timing_verdict"])}">{html_lib.escape(t["timing_verdict"] or "Analyzing")}</span></small></span></span>'
+        f'</div>'
+    )
+
+
+def _demo_detail_html(t, is_first):
+    ticker = html_lib.escape(t["ticker"])
+    high52 = f'{t["pct_from_52w_high"]}%' if t["pct_from_52w_high"] is not None else "N/A"
+    low52 = f'{t["pct_from_52w_low"]}%' if t["pct_from_52w_low"] is not None else "N/A"
+    trend = "N/A" if t["above_200d_sma"] is None else ("Uptrend" if t["above_200d_sma"] else "Downtrend")
+    volume = f'{t["volume_ratio"]}x avg' if t["volume_ratio"] is not None else "N/A"
+    sections = t["sections"] or {}
+    sections_html = "".join(
+        f'<div class="section"><b>{label}</b>{sections[key]}</div>'
+        for key, label in DEMO_AI_SECTION_LABELS.items() if sections.get(key)
+    ) or '<div class="notice">AI analysis unavailable for this ticker today.</div>'
+    verdict = t["timing_verdict"] or "Analyzing"
+    display = "block" if is_first else "none"
+    return f'''<div class="demo-detail" id="demo-detail-{ticker}" style="display:{display}">
+<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+<h3 style="border:0;margin:0;padding:0">{ticker}</h3>
+<span class="badge {_demo_badge_class(t["timing_verdict"])}">{html_lib.escape(verdict)}</span>
+</div>
+<div class="action-bar">
+<a class="action-btn locked-btn" href="/signup" title="Sign up to use this">🔒 Set Alert</a>
+<a class="action-btn locked-btn" href="/signup" title="Sign up to use this">🔒 Add to Watchlist</a>
+<a class="action-btn locked-btn" href="/signup" title="Sign up to use this">🔒 Save to Portfolio</a>
+</div>
+<div class="metrics">
+<div class="metric"><div>RSI / MACD</div><div class="val">{t["rsi"]} / {t["macd"]}</div></div>
+<div class="metric"><div>52W High</div><div class="val">{high52}</div></div>
+<div class="metric"><div>52W Low</div><div class="val">{low52}</div></div>
+<div class="metric"><div>Trend</div><div class="val">{trend}</div></div>
+<div class="metric"><div>Volume</div><div class="val">{volume}</div></div>
+</div>
+<h3 style="margin-top:16px">AI Quant Report <small>(informational only, not investment advice)</small></h3>
+<div class="scroll">{sections_html}</div>
+</div>'''
+
+
+@app.get("/demo", response_class=HTMLResponse)
+async def demo_page():
+    conn = db()
+    latest_date = conn.execute(
+        "SELECT MAX(scan_date) FROM daily_scans WHERE quant_pass=1 AND timing_score IS NOT NULL"
+    ).fetchone()[0]
+    rows = []
+    if latest_date:
+        rows = conn.execute("""
+            SELECT ticker,universe,price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,
+                   above_200d_sma,volume_ratio,timing_verdict,ai_report,
+                   ROUND((alpha_score+timing_score)/2.0,1) AS overall_score
+            FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL
+            ORDER BY overall_score DESC LIMIT 6
+        """, (latest_date,)).fetchall()
+    conn.close()
+
+    tickers = []
+    for r in rows:
+        d = dict(r)
+        sections = {}
+        if d.get("ai_report"):
+            try:
+                sections = json.loads(d["ai_report"])
+            except (json.JSONDecodeError, TypeError):
+                sections = {}
+        cached = CACHE["historical"].get(f"single:{d['ticker']}:1d")
+        sparkline = []
+        if cached is not None:
+            try:
+                sparkline = [round(float(v), 2) for v in normalize_series(cached["data"], "Close").dropna().tail(20)]
+            except Exception:
+                sparkline = []
+        tickers.append({**d, "sections": sections, "sparkline": sparkline})
+
+    if not tickers:
+        list_html = '<div class="notice">Demo is warming up — check back shortly.</div>'
+        detail_html = ""
+    else:
+        rows_html = [_demo_row_html(t) for t in tickers]
+        mid = len(tickers) // 2
+        rows_html.insert(mid, '<div class="notice">Like what you see? Get the full daily scan — 7-day free trial. <a href="/signup">Sign up</a></div>')
+        list_html = "".join(rows_html)
+        detail_html = "".join(_demo_detail_html(t, i == 0) for i, t in enumerate(tickers))
+
+    body = f'''<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Live Demo</title><meta name="description" content="See QUANTIFY's real, current scan results — score, indicators, and AI risk review — no signup required."><style>{DEMO_CSS}</style></head><body>
+<div class="topbar"><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="signup-btn" href="/signup">Sign up free</a></div>
+<div class="panel intro-bar"><b>Live Demo</b> — real results from today's scan (informational only, not investment advice). <a href="/signup">Create a free account</a> to unlock alerts, watchlist, and portfolio tracking.</div>
+<div class="demo-grid">
+<section class="panel"><h3>Market Scanner <small>({len(tickers)} real signals today)</small></h3><div class="list">{list_html}</div></section>
+<section class="panel">{detail_html or '<div class="notice">No demo data yet — check back after the next scan.</div>'}</section>
+</div>
+<section class="panel demo-cta">
+<h2>Like what you see?</h2>
+<p>Get the full daily scan, real-time alerts, and portfolio tracking.</p>
+<a class="action-btn" href="/signup">Start Free Trial — 7 Days Free</a>
+<div class="cta-note">No credit card required.</div>
+</section>
+<script>{DEMO_JS}</script>
+</body></html>'''
+    return HTMLResponse(body)
+
 
 # -----------------------------------------------------------------------------
 # Dashboard
