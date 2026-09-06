@@ -3706,6 +3706,8 @@ header{border-bottom:1px solid var(--border);position:sticky;top:0;background:rg
 .btn:hover{background:var(--green-bright);border-color:var(--green-bright);color:#fff}
 .btn-ghost{border-color:var(--border);color:var(--head);background:#ffffff}
 .btn-ghost:hover{border-color:var(--dim2);background:var(--panel2)}
+.btn-demo{border:2px solid var(--green);color:var(--green);background:#ffffff;font-weight:800}
+.btn-demo:hover{background:var(--green);color:#ffffff}
 .hero{padding:96px 24px 76px;text-align:center;background:radial-gradient(ellipse 900px 500px at 50% -10%,rgba(14,138,95,.07),transparent 65%)}
 section:nth-of-type(even){background:var(--panel2)}
 .eyebrow{display:inline-block;font-size:14px;font-weight:700;color:var(--orange);border:1px solid #ecdcb8;background:#fbf3e4;padding:7px 16px;border-radius:20px;letter-spacing:.3px;margin-bottom:26px}
@@ -3859,7 +3861,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div class="cta-row hero-in hero-in-4">
 <a class="btn btn-hero" href="/signup">See Today's Full List — Free for 7 Days</a>
 <a class="btn btn-ghost" href="#how">See how it works</a>
-<a class="btn btn-ghost" href="/demo">See a live example — no signup</a>
+<a class="btn btn-demo" href="/demo">▶ Try the live demo — no signup</a>
 </div>
 <div class="cta-note hero-in hero-in-5">No credit card required to start. Same data for every subscriber — never personalized picks.</div>
 
