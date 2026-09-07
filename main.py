@@ -151,7 +151,7 @@ def _looks_like_bot(user_agent: str) -> bool:
 # site's actual page routes is the only reliable filter, since a scanner's made-up path
 # can never be one of these.
 _PAGE_VIEW_ALLOWED_PATHS = {
-    "/", "/pricing", "/faq", "/about", "/demo", "/terms", "/privacy", "/accept-disclaimer",
+    "/", "/pricing", "/faq", "/about", "/demo", "/stocks", "/terms", "/privacy", "/accept-disclaimer",
     "/login", "/signup", "/check-email", "/verify-email", "/forgot-password",
     "/reset-password", "/terminal", "/market", "/watchlist", "/backtest",
     "/portfolio", "/subscription", "/contact", "/settings",
@@ -181,7 +181,9 @@ async def track_page_views(request: Request, call_next):
     opted_out = request.cookies.get("qtfy_notrack") == "1" or request.query_params.get("notrack") == "1"
     should_track = (
         request.method == "GET"
-        and path in _PAGE_VIEW_ALLOWED_PATHS
+        # /stock/<TICKER> is one real page per ticker, so it can't be an exact-match
+        # entry -- without the prefix check every visit from search would go uncounted.
+        and (path in _PAGE_VIEW_ALLOWED_PATHS or path.startswith("/stock/"))
         and not opted_out
         and not _looks_like_bot(request.headers.get("user-agent", ""))
     )
@@ -4398,7 +4400,17 @@ async def llms_txt():
 @app.get("/sitemap.xml")
 async def sitemap_xml(request: Request):
     base = str(request.base_url).rstrip("/")
-    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/terms", "/privacy"]
+    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/stocks", "/terms", "/privacy"]
+    try:
+        conn = db()
+        latest = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
+        if latest:
+            urls += [f"/stock/{r[0]}" for r in conn.execute(
+                "SELECT DISTINCT ticker FROM daily_scans WHERE scan_date=? ORDER BY ticker", (latest,)
+            ).fetchall()]
+        conn.close()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] sitemap ticker list failed: {exc}")
     items = "".join(f"<url><loc>{base}{u}</loc></url>" for u in urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
     return Response(content=xml, media_type="application/xml")
@@ -5249,6 +5261,256 @@ def _demo_detail_html(t, is_first):
 <h3 style="margin-top:16px">AI Quant Report <small>(informational only, not investment advice)</small></h3>
 <div class="scroll">{sections_html}</div>
 </div>'''
+
+
+# -----------------------------------------------------------------------------
+# Public per-ticker pages (/stock/<TICKER>, /stocks) -- search-visible surface built
+# from the scan snapshot that's already stored. Read-only from daily_scans: no
+# external API call ever runs on one of these requests.
+# -----------------------------------------------------------------------------
+STOCK_PAGE_CSS = """
+.stock-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.stock-badge{padding:5px 14px;border-radius:14px;font-weight:700;font-size:14px;display:inline-block}
+.badge-ok{background:#e6f5ee;color:#0e8a5f}
+.badge-warn{background:#fbf1e0;color:#a8660a}
+.badge-danger{background:#fbe6e2;color:#c8402c}
+.badge-pending{background:#f0f2f1;color:#6b7873}
+.stock-score{font-size:40px;font-weight:800;color:#12201a;line-height:1}
+.stock-score span{font-size:16px;color:#6b7873;font-weight:600}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:26px 0 8px}
+.metric-box{border:1px solid var(--border);background:var(--panel2);border-radius:10px;padding:14px 16px}
+.metric-box .k{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px;font-weight:700}
+.metric-box .v{color:var(--head);font-weight:700;font-size:19px;margin-top:5px}
+.locked-report{border:1px solid var(--border);background:var(--panel2);border-radius:12px;padding:22px;margin:10px 0 8px;text-align:center}
+.locked-report p{color:var(--dim2);font-size:15px;margin-bottom:16px}
+.updated{color:var(--dim);font-size:14px;margin-top:8px}
+.stock-index{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin:18px 0 34px}
+.stock-index a{display:flex;justify-content:space-between;align-items:center;gap:8px;border:1px solid var(--border);border-radius:9px;padding:11px 13px;text-decoration:none;color:var(--head);font-weight:600}
+.stock-index a:hover{border-color:var(--green);background:var(--panel2)}
+.stock-index .sc{font-size:13px;color:var(--dim);font-weight:600}
+"""
+
+
+def _rsi_word(rsi):
+    if rsi is None:
+        return None
+    return "oversold" if rsi < 30 else ("overbought" if rsi > 70 else "neutral")
+
+
+def _stock_plain_english(d):
+    """Deterministic, per-ticker English built from that row's own numbers.
+
+    Every covered ticker gets a page, but only the handful that clear the quant filter
+    ever get an AI write-up -- without this, the several hundred others would be
+    identical number dumps (thin content, and useless to a reader).
+    """
+    t = d["ticker"]
+    price, chg = d["price"], d["change_pct"]
+    high, low = d["pct_from_52w_high"], d["pct_from_52w_low"]
+    above = d["above_200d_sma"]
+    rsi, vol = d["rsi"], d["volume_ratio"]
+    alpha = d["alpha_score"]
+    bits = []
+
+    move = f"up {chg}%" if (chg or 0) > 0 else (f"down {abs(chg)}%" if (chg or 0) < 0 else "flat")
+    bits.append(f"{t} last traded at ${price} ({move} on the day).")
+
+    trend_txt = []
+    if high is not None:
+        trend_txt.append(f"{abs(high)}% below its 52-week high")
+    if low is not None:
+        trend_txt.append(f"{round(low)}% above its 52-week low")
+    if trend_txt:
+        sentence = f"It is {' and '.join(trend_txt)}"
+        if above is not None:
+            sentence += f", and trading {'above' if above else 'below'} its 200-day moving average"
+        bits.append(sentence + ".")
+
+    detail = []
+    if rsi is not None:
+        detail.append(f"RSI is {rsi} ({_rsi_word(rsi)})")
+    if vol is not None:
+        detail.append(f"volume is running at {vol}x its recent average")
+    if detail:
+        # No .capitalize() here -- it would lowercase the rest and turn "RSI" into "Rsi".
+        sentence = " and ".join(detail)
+        bits.append(sentence[0].upper() + sentence[1:] + ".")
+
+    if d["quant_pass"]:
+        verdict = d["timing_verdict"]
+        score = d["overall_score"]
+        if verdict and score is not None:
+            bits.append(
+                f"{t} cleared QUANTIFY's daily scan with a combined score of {score}/100 "
+                f"and an AI timing read of {verdict}."
+            )
+        else:
+            bits.append(
+                f"{t} cleared QUANTIFY's quant filter in the latest scan; its AI timing "
+                f"review has not finished running yet."
+            )
+    else:
+        # Say *why* it didn't qualify -- that's the genuinely useful part for a reader
+        # who searched this ticker, and it differs by ticker because it reads the data.
+        # SQLite hands this back as 0/1, and `0 is False` is False in Python -- compare
+        # by truthiness so a below-trend ticker actually gets the trend explanation.
+        if above is not None and not above:
+            why = (f"it is trading below its 200-day moving average, so it fails the "
+                   f"long-term uptrend requirement outright")
+        elif high is not None and abs(high) < 3:
+            why = (f"it is only {abs(high)}% off its 52-week high, so there is no "
+                   f"meaningful pullback to buy into")
+        else:
+            why = (f"its pullback setup scored {alpha}/100, short of the "
+                   f"{round(QUANT_PASS_THRESHOLD)} the strategy requires")
+        bits.append(
+            f"{t} did not make QUANTIFY's list in the latest scan — {why}. The strategy "
+            f"only flags stocks pulling back inside a confirmed long-term uptrend."
+        )
+    return " ".join(bits)
+
+
+def _stock_metrics_html(d):
+    def box(k, v):
+        return f'<div class="metric-box"><div class="k">{k}</div><div class="v">{v}</div></div>'
+    high = f'{d["pct_from_52w_high"]}%' if d["pct_from_52w_high"] is not None else "N/A"
+    low = f'{d["pct_from_52w_low"]}%' if d["pct_from_52w_low"] is not None else "N/A"
+    trend = "N/A" if d["above_200d_sma"] is None else ("Uptrend" if d["above_200d_sma"] else "Downtrend")
+    vol = f'{d["volume_ratio"]}x avg' if d["volume_ratio"] is not None else "N/A"
+    chg = d["change_pct"]
+    chg_txt = f'{"+" if (chg or 0) >= 0 else ""}{chg}%' if chg is not None else "N/A"
+    return (
+        '<div class="metric-grid">'
+        + box("Price", f'${d["price"]}')
+        + box("Change", chg_txt)
+        + box("RSI / MACD", f'{d["rsi"]} / {d["macd"]}')
+        + box("52W High", high)
+        + box("52W Low", low)
+        + box("Trend", trend)
+        + box("Volume", vol)
+        + box("Quant score", f'{d["alpha_score"]}/100')
+        + "</div>"
+    )
+
+
+def _latest_scan_row(ticker):
+    conn = db()
+    row = conn.execute("""
+        SELECT ticker,universe,scan_date,price,change_pct,alpha_score,rsi,macd,
+               pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,
+               timing_score,timing_verdict,ai_report,ai_updated_at,quant_pass,created_at
+        FROM daily_scans WHERE ticker=? ORDER BY scan_date DESC, id DESC LIMIT 1
+    """, (ticker,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    d["overall_score"] = (
+        round((d["alpha_score"] + d["timing_score"]) / 2, 1)
+        if d["alpha_score"] is not None and d["timing_score"] is not None else None
+    )
+    return d
+
+
+@app.get("/stock/{ticker}", response_class=HTMLResponse)
+async def stock_page(ticker: str):
+    ticker = normalize_ticker(ticker)
+    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+        return HTMLResponse("Not found", status_code=404)
+    d = _latest_scan_row(ticker)
+    if not d:
+        return HTMLResponse("Not found", status_code=404)
+
+    verdict = d["timing_verdict"]
+    score = d["overall_score"] if d["overall_score"] is not None else d["alpha_score"]
+    badge = (f'<span class="stock-badge {_demo_badge_class(verdict)}">{html_lib.escape(verdict)}</span>'
+             if verdict else '<span class="stock-badge badge-pending">Not on today\'s list</span>')
+    updated_ts = d["ai_updated_at"] or d["created_at"]
+    updated = (datetime.fromtimestamp(updated_ts, ZoneInfo("America/New_York")).strftime("%b %d, %Y at %I:%M %p ET")
+               if updated_ts else d["scan_date"])
+
+    sections = {}
+    if d["ai_report"]:
+        try:
+            sections = json.loads(d["ai_report"])
+        except (json.JSONDecodeError, TypeError):
+            sections = {}
+    teaser = ""
+    if sections.get("quant_review"):
+        teaser = (f'<h2>AI quant review</h2><p>{sections["quant_review"]}</p>'
+                  '<div class="locked-report"><p><b>Supply/Demand, Risk Review, News Analysis and Timing '
+                  'Rationale</b> for this ticker are part of the full report.</p>'
+                  '<a class="btn" href="/signup">Read the full report — 7 days free</a></div>')
+
+    body = f'''<div class="eyebrow">{html_lib.escape(d["universe"] or "Scanned universe")} &middot; scan of {d["scan_date"]}</div>
+<h1>Is {ticker} a buy right now?</h1>
+<div class="stock-head"><div class="stock-score">{score if score is not None else "—"}<span>/100</span></div>{badge}</div>
+<p class="sublead">QUANTIFY's quant scan and plain-English read on {ticker}, from the latest run.</p>
+<p>{_stock_plain_english(d)}</p>
+{_stock_metrics_html(d)}
+<div class="updated">Last updated {updated}. The scanner recomputes four times each trading day.</div>
+{teaser}
+<h2>See the rest of today's scan</h2>
+<p>QUANTIFY scans the S&amp;P 500 and Nasdaq-100 every trading day for stocks pulling back inside a
+long-term uptrend, then has AI check each one for blow-off-top and dead-cat-bounce risk.
+The full detected list, price alerts and portfolio tracking are available to members —
+or <a href="/demo">try the live demo</a> with no signup.</p>
+<p><a class="btn" href="/signup">Start your 7-day free trial</a></p>
+<p style="margin-top:18px"><a href="/stocks">Browse every ticker QUANTIFY covers &rarr;</a></p>
+<div class="disclaimer"><b>Not investment advice.</b> QUANTIFY is informational and educational only.
+Scores and AI commentary describe historical and current data — they are never a recommendation to
+buy or sell any security. Every investment decision, and its outcome, is your own.</div>'''
+
+    return render_marketing_page(
+        f"Is {ticker} a buy right now?",
+        f"Is {ticker} a buy right now? QUANTIFY's quant score, {('AI verdict, ' if verdict else '')}"
+        f"key indicators and a plain-English breakdown from the latest daily scan.",
+        body,
+        path=f"/stock/{ticker}",
+        extra_head=f"<style>{STOCK_PAGE_CSS}</style>",
+    )
+
+
+@app.get("/stocks", response_class=HTMLResponse)
+async def stocks_index():
+    conn = db()
+    latest = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
+    rows = conn.execute("""
+        SELECT ticker,universe,alpha_score,timing_verdict,
+               ROUND((alpha_score+timing_score)/2.0,1) AS overall_score
+        FROM daily_scans WHERE scan_date=? ORDER BY ticker
+    """, (latest,)).fetchall() if latest else []
+    conn.close()
+
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["universe"] or "Other", []).append(r)
+    sections = []
+    for uni, items in sorted(groups.items()):
+        links = "".join(
+            f'<a href="/stock/{r["ticker"]}"><span>{r["ticker"]}</span>'
+            f'<span class="sc">{r["overall_score"] if r["overall_score"] is not None else r["alpha_score"]}'
+            f'{" &middot; " + r["timing_verdict"] if r["timing_verdict"] else ""}</span></a>'
+            for r in items
+        )
+        sections.append(f'<h2>{html_lib.escape(uni)} <span style="color:var(--dim);font-size:16px;font-weight:500">({len(items)})</span></h2>'
+                        f'<div class="stock-index">{links}</div>')
+
+    body = f'''<h1>Every stock QUANTIFY covers</h1>
+<p class="sublead">Quant score, AI verdict and a plain-English breakdown for all
+{len(rows)} tickers in the S&amp;P 500 and Nasdaq-100 — updated four times each trading day.</p>
+{"".join(sections) if sections else "<p>The first scan has not completed yet — check back shortly.</p>"}
+<div class="disclaimer"><b>Not investment advice.</b> QUANTIFY is informational and educational only.
+Nothing here is a recommendation to buy or sell any security.</div>'''
+
+    return render_marketing_page(
+        "Every stock we cover",
+        f"Quant scores and plain-English breakdowns for all {len(rows)} S&P 500 and Nasdaq-100 "
+        "tickers QUANTIFY scans, updated four times every trading day.",
+        body,
+        path="/stocks",
+        extra_head=f"<style>{STOCK_PAGE_CSS}</style>",
+    )
 
 
 @app.get("/demo", response_class=HTMLResponse)
