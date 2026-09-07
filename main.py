@@ -481,6 +481,16 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN trial_reminder_sent_at REAL")
         if "trial_ended_email_sent_at" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN trial_ended_email_sent_at REAL")
+        # Retention tracking. login_count/last_login_at only move on a real
+        # re-authentication, which with a 30-day session cookie badly undercounts
+        # return visits -- last_seen_at (written once per ET day on any authenticated
+        # request) is the signal that actually answers "did they come back".
+        if "last_login_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_login_at REAL")
+        if "login_count" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN login_count INTEGER NOT NULL DEFAULT 0")
+        if "last_seen_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_seen_at REAL")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + TRIAL_DAYS * 86400,))
@@ -634,6 +644,14 @@ def create_session(email: str):
             "INSERT INTO sessions(token_hash,email,expires_at) VALUES(?,?,?)",
             (token_hash, email, time.time() + SESSION_TTL),
         )
+        # Both login paths (password + Google OAuth) funnel through here, and only
+        # after authentication has already succeeded -- the one place a real login
+        # can be recorded without touching any auth decision.
+        now = time.time()
+        conn.execute(
+            "UPDATE users SET last_login_at=?, login_count=COALESCE(login_count,0)+1, last_seen_at=? WHERE email=?",
+            (now, now, email),
+        )
         conn.commit()
         conn.close()
     except Exception as e:
@@ -652,6 +670,20 @@ def get_logged_in_user(request: Request) -> Optional[str]:
             "SELECT email,expires_at FROM sessions WHERE token_hash=?", (token_hash,)
         ).fetchone()
         if row and row["expires_at"] > time.time():
+            # Retention signal: record that this account was active today. The
+            # last_seen_at guard makes every repeat page load the same day a zero-row
+            # no-op, so this stays cheap. Purely additive -- the returned value and
+            # every other branch below are unchanged.
+            try:
+                now_et = datetime.now(ZoneInfo("America/New_York"))
+                day_start = now_et.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                conn.execute(
+                    "UPDATE users SET last_seen_at=? WHERE email=? AND (last_seen_at IS NULL OR last_seen_at < ?)",
+                    (time.time(), row["email"], day_start),
+                )
+                conn.commit()
+            except Exception as exc:
+                print(f"[Error: {type(exc).__name__}] last_seen_at update failed: {exc}")
             conn.close()
             return row["email"]
         if row:
@@ -3019,13 +3051,18 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
     signups_7d = conn.execute("SELECT COUNT(*) c FROM users WHERE created_at >= ?", (now - 7 * 86400,)).fetchone()["c"]
     active_subs = conn.execute("SELECT COUNT(*) c FROM users WHERE subscription_status='active'").fetchone()["c"]
     rows = conn.execute(
-        "SELECT email,created_at,subscription_status FROM users WHERE created_at >= ? ORDER BY created_at DESC",
+        "SELECT email,created_at,subscription_status,last_login_at,login_count,last_seen_at "
+        "FROM users WHERE created_at >= ? ORDER BY created_at DESC",
         (now - 14 * 86400,),
     ).fetchall()
     daily = {}
     for r in rows:
         day = datetime.fromtimestamp(r["created_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         daily[day] = daily.get(day, 0) + 1
+
+    retention_rows = conn.execute(
+        "SELECT email,created_at,last_login_at,login_count,last_seen_at FROM users"
+    ).fetchall()
 
     views_24h = conn.execute("SELECT COUNT(*) c FROM page_views WHERE created_at >= ?", (now - 86400,)).fetchone()["c"]
     views_7d = conn.execute("SELECT COUNT(*) c FROM page_views WHERE created_at >= ?", (now - 7 * 86400,)).fetchone()["c"]
@@ -3056,6 +3093,43 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         else:
             top_referrers["(direct / no referrer)"] = top_referrers.get("(direct / no referrer)", 0) + 1
 
+    def _et_day(ts):
+        return datetime.fromtimestamp(ts, ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+    returning_users = 0      # logged in again (new device / after cookie expiry)
+    came_back_users = 0      # seen on a calendar day after signup -- the real return signal
+    active_24h = 0
+    active_7d = 0
+    days_to_last_visit = []
+    weeks = {}
+    for r in retention_rows:
+        created_at, last_seen = r["created_at"], r["last_seen_at"]
+        if not created_at:
+            continue
+        week = datetime.fromtimestamp(created_at, ZoneInfo("America/New_York")).strftime("%G-W%V")
+        w = weeks.setdefault(week, {"signups": 0, "returned": 0, "active_7d": 0})
+        w["signups"] += 1
+        if (r["login_count"] or 0) >= 2:
+            returning_users += 1
+        if last_seen:
+            if last_seen >= now - 86400:
+                active_24h += 1
+            if last_seen >= now - 7 * 86400:
+                active_7d += 1
+                w["active_7d"] += 1
+            # "Came back" only counts a visit on a later calendar day, so the signup
+            # session itself can never make someone look retained.
+            if _et_day(last_seen) > _et_day(created_at):
+                came_back_users += 1
+                w["returned"] += 1
+                days_to_last_visit.append(round((last_seen - created_at) / 86400, 1))
+    for w in weeks.values():
+        w["returned_pct"] = round(w["returned"] / w["signups"] * 100, 1) if w["signups"] else 0.0
+    median_days = None
+    if days_to_last_visit:
+        s = sorted(days_to_last_visit)
+        median_days = s[len(s) // 2] if len(s) % 2 else round((s[len(s) // 2 - 1] + s[len(s) // 2]) / 2, 1)
+
     return {
         "total_users": total_users,
         "signups_last_24h": signups_24h,
@@ -3067,9 +3141,25 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
                 "email": r["email"],
                 "signed_up_at_et": datetime.fromtimestamp(r["created_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M"),
                 "subscription_status": r["subscription_status"],
+                "login_count": r["login_count"] or 0,
+                "last_login_at_et": datetime.fromtimestamp(r["last_login_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M") if r["last_login_at"] else None,
+                "last_seen_at_et": datetime.fromtimestamp(r["last_seen_at"], ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M") if r["last_seen_at"] else None,
+                "days_to_last_visit": round((r["last_seen_at"] - r["created_at"]) / 86400, 1) if r["last_seen_at"] and r["created_at"] else None,
             }
             for r in rows[:30]
         ],
+        "retention": {
+            "note": "last_seen_at is written at most once per ET day on any authenticated page load; login_count only moves on a real re-login (session cookie lasts 30 days). Data starts from the deploy that added these columns, so existing accounts show no history for visits before then.",
+            "returning_users_2plus_logins": returning_users,
+            "returning_rate_pct": round(returning_users / total_users * 100, 1) if total_users else 0.0,
+            "came_back_after_signup_day": came_back_users,
+            "came_back_rate_pct": round(came_back_users / total_users * 100, 1) if total_users else 0.0,
+            "never_came_back": total_users - came_back_users,
+            "active_last_24h": active_24h,
+            "active_last_7d": active_7d,
+            "median_days_signup_to_last_visit": median_days,
+            "by_signup_week_et": dict(sorted(weeks.items(), reverse=True)),
+        },
         "page_views_last_24h": views_24h,
         "page_views_last_7d": views_7d,
         "unique_visitors_last_24h": visitors_24h,
