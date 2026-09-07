@@ -151,7 +151,7 @@ def _looks_like_bot(user_agent: str) -> bool:
 # site's actual page routes is the only reliable filter, since a scanner's made-up path
 # can never be one of these.
 _PAGE_VIEW_ALLOWED_PATHS = {
-    "/", "/pricing", "/faq", "/about", "/demo", "/stocks", "/terms", "/privacy", "/accept-disclaimer",
+    "/", "/pricing", "/faq", "/about", "/demo", "/stocks", "/record", "/terms", "/privacy", "/accept-disclaimer",
     "/login", "/signup", "/check-email", "/verify-email", "/forgot-password",
     "/reset-password", "/terminal", "/market", "/watchlist", "/backtest",
     "/portfolio", "/subscription", "/contact", "/settings",
@@ -223,6 +223,12 @@ AI_TASK = None
 AI_QUOTA_EXHAUSTED_DATE = None  # date_str() of the last day the AI provider reported a tokens-per-day cap hit
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
+# Each day's highest-scoring tickers that did NOT qualify are recorded to a SEPARATE
+# watch list on /record -- tracked out of curiosity, never mixed into the strategy's
+# actual numbers. Defined as a top-N rather than a score threshold on purpose: the score
+# distribution is bimodal with a wide empty gap (non-passing tops out around 60, passing
+# starts at 83), so any fixed "within X points of the cutoff" band would never match.
+NEAR_MISS_COUNT = int(os.getenv("NEAR_MISS_COUNT", "5"))
 # Validated overnight against real 2yr history for the full ~518-ticker universe, across
 # three separate sweeps (500 -> 3000 -> ~10000 distinct entry rules, results identical
 # across all three -- this is a converged, not a lucky, result): a long-term uptrend
@@ -363,6 +369,29 @@ def init_db():
             alpha_score REAL
         );
         CREATE INDEX IF NOT EXISTS idx_scan_history_ticker_date ON scan_history(ticker, scan_date);
+        -- Public track record. APPEND-ONLY BY DESIGN: the scanner INSERTs here and
+        -- nothing else ever touches it. There must never be an UPDATE or DELETE
+        -- against this table anywhere in the codebase, and no endpoint that lets a
+        -- human add, edit or remove a row -- that is the entire point of the page it
+        -- feeds. UNIQUE(record_date,ticker,list_type) + INSERT OR IGNORE means the
+        -- first scan of the day that flags a ticker fixes its entry price, and the
+        -- three later scans that day cannot change it.
+        CREATE TABLE IF NOT EXISTS track_record (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_date TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            list_type TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            alpha_score REAL,
+            overall_score REAL,
+            timing_verdict TEXT,
+            benchmark_price REAL,
+            recorded_at REAL NOT NULL,
+            prev_hash TEXT,
+            row_hash TEXT NOT NULL,
+            UNIQUE(record_date, ticker, list_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_track_record_list ON track_record(list_type, id);
         CREATE TABLE IF NOT EXISTS user_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
@@ -1798,6 +1827,97 @@ async def build_scan_row(ticker: str, mode: str, df=None, make_ai=False):
     return row
 
 # -----------------------------------------------------------------------------
+# Public track record (append-only)
+#
+# Read /record's page copy before changing anything here: the value of that page rests
+# entirely on these rows being written automatically and never edited afterwards. Adding
+# an UPDATE, a DELETE, or any human-facing way to add a row would silently destroy it.
+# -----------------------------------------------------------------------------
+def _track_row_hash(prev_hash, record_date, ticker, list_type, entry_price, alpha_score, recorded_at):
+    payload = f"{prev_hash or ''}|{record_date}|{ticker}|{list_type}|{entry_price}|{alpha_score}|{recorded_at}"
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _benchmark_close():
+    """S&P proxy close from the cache the scan already populated -- no extra API call."""
+    try:
+        cached = CACHE["historical"].get("single:^GSPC:1d")
+        if cached is None:
+            return None
+        closes = normalize_series(cached["data"], "Close").dropna()
+        return round(float(closes.iloc[-1]), 2) if not closes.empty else None
+    except Exception:
+        return None
+
+
+def write_track_record(conn, date, results, now, benchmark=None):
+    """Append today's qualifying tickers. Called only from the scanner.
+
+    INSERT OR IGNORE against UNIQUE(record_date,ticker,list_type) means the first scan of
+    the day that flags a ticker sets its entry price, and the later scans that day are
+    no-ops -- entries can never be re-priced after the fact.
+    """
+    if benchmark is None:
+        benchmark = _benchmark_close()
+    # The day's closest-to-qualifying names, by score, among those that did not pass.
+    near_miss = {
+        r["ticker"] for r in sorted(
+            (r for r in results
+             if not r.get("quant_pass") and r.get("alpha_score") is not None and r.get("price") is not None),
+            key=lambda r: r["alpha_score"], reverse=True,
+        )[:NEAR_MISS_COUNT]
+    }
+    heads = {}
+    for lt in ("passed", "near_miss"):
+        row = conn.execute(
+            "SELECT row_hash FROM track_record WHERE list_type=? ORDER BY id DESC LIMIT 1", (lt,)
+        ).fetchone()
+        heads[lt] = row["row_hash"] if row else None
+    for r in results:
+        alpha = r.get("alpha_score")
+        price = r.get("price")
+        if price is None or alpha is None:
+            continue
+        if r.get("quant_pass"):
+            list_type = "passed"
+        elif r["ticker"] in near_miss:
+            list_type = "near_miss"
+        else:
+            continue
+        ticker = r["ticker"]
+        # Skip before hashing so a same-day duplicate can't advance the chain head.
+        if conn.execute(
+            "SELECT 1 FROM track_record WHERE record_date=? AND ticker=? AND list_type=?",
+            (date, ticker, list_type),
+        ).fetchone():
+            continue
+        row_hash = _track_row_hash(heads[list_type], date, ticker, list_type, price, alpha, now)
+        try:
+            conn.execute("""
+                INSERT OR IGNORE INTO track_record
+                (record_date,ticker,list_type,entry_price,alpha_score,overall_score,
+                 timing_verdict,benchmark_price,recorded_at,prev_hash,row_hash)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """, (date, ticker, list_type, price, alpha, None, None, benchmark, now,
+                  heads[list_type], row_hash))
+            heads[list_type] = row_hash
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Track record save error ({ticker}): {exc}", flush=True)
+
+
+def verify_track_chain(rows):
+    """Recompute the chain; returns (ok, first_broken_index). Rows must be id-ascending."""
+    prev = None
+    for i, r in enumerate(rows):
+        expected = _track_row_hash(prev, r["record_date"], r["ticker"], r["list_type"],
+                                   r["entry_price"], r["alpha_score"], r["recorded_at"])
+        if expected != r["row_hash"] or (r["prev_hash"] or None) != prev:
+            return False, i
+        prev = r["row_hash"]
+    return True, None
+
+
+# -----------------------------------------------------------------------------
 # Batch scanner
 # -----------------------------------------------------------------------------
 async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
@@ -1877,6 +1997,11 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                     )
                 except Exception as exc:
                     print(f"[Error: {type(exc).__name__}] Scan history save error ({r.get('ticker', '?')}): {exc}", flush=True)
+            try:
+                await download_stock("^GSPC", "1d")
+            except Exception as exc:
+                print(f"[Error: {type(exc).__name__}] Benchmark fetch for track record failed: {exc}", flush=True)
+            write_track_record(conn, date, results, now, _benchmark_close())
             cutoff_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
             conn.execute("DELETE FROM scan_history WHERE scan_date < ?", (cutoff_date,))
             conn.commit()
@@ -4400,7 +4525,7 @@ async def llms_txt():
 @app.get("/sitemap.xml")
 async def sitemap_xml(request: Request):
     base = str(request.base_url).rstrip("/")
-    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/stocks", "/terms", "/privacy"]
+    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/stocks", "/record", "/terms", "/privacy"]
     try:
         conn = db()
         latest = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
@@ -5468,6 +5593,153 @@ buy or sell any security. Every investment decision, and its outcome, is your ow
         body,
         path=f"/stock/{ticker}",
         extra_head=f"<style>{STOCK_PAGE_CSS}</style>",
+    )
+
+
+RECORD_PAGE_CSS = """
+.rec-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:22px 0 10px}
+.rec-box{border:1px solid var(--border);background:var(--panel2);border-radius:10px;padding:15px 16px}
+.rec-box .k{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px;font-weight:700}
+.rec-box .v{color:var(--head);font-weight:800;font-size:22px;margin-top:5px}
+.rec-box .v.up{color:#0e8a5f}.rec-box .v.down{color:#c8402c}
+.rec-wrap{overflow-x:auto;margin:8px 0 6px}
+table.rec{border-collapse:collapse;width:100%;font-size:15px;min-width:660px}
+table.rec th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--dim);border-bottom:1px solid var(--border);padding:9px 10px;white-space:nowrap}
+table.rec td{border-bottom:1px solid var(--border);padding:10px;white-space:nowrap}
+table.rec td.up{color:#0e8a5f;font-weight:700}
+table.rec td.down{color:#c8402c;font-weight:700}
+.chain{font-size:13.5px;color:var(--dim2);background:var(--bg-alt);border:1px solid var(--border);border-radius:9px;padding:12px 15px;margin:14px 0}
+.chain.bad{border-color:#c8402c;color:#c8402c}
+.chain code{font-size:12px;color:var(--dim)}
+.method{border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin-top:26px;font-size:14.5px;line-height:1.75;color:var(--dim2)}
+.method b{color:var(--head)}
+.sep-note{border-left:3px solid var(--orange);background:#fbf3e4;padding:14px 18px;border-radius:0 8px 8px 0;margin:10px 0 18px;font-size:14.5px;color:#6b5320}
+"""
+
+
+def _record_rows(list_type):
+    """Every row for one list, id-ascending (chain order), with live prices attached."""
+    conn = db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM track_record WHERE list_type=? ORDER BY id ASC", (list_type,)
+    ).fetchall()]
+    latest_scan = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
+    prices = {}
+    if latest_scan:
+        prices = {r["ticker"]: r["price"] for r in conn.execute(
+            "SELECT ticker,price FROM daily_scans WHERE scan_date=?", (latest_scan,)
+        ).fetchall()}
+    conn.close()
+    bench_now = _benchmark_close()
+    for d in rows:
+        cur = prices.get(d["ticker"])
+        d["current_price"] = cur
+        d["change_pct"] = round((cur - d["entry_price"]) / d["entry_price"] * 100, 2) if cur and d["entry_price"] else None
+        d["bench_change_pct"] = (
+            round((bench_now - d["benchmark_price"]) / d["benchmark_price"] * 100, 2)
+            if bench_now and d["benchmark_price"] else None
+        )
+    return rows
+
+
+def _record_section(rows, label):
+    """Summary + full table for one list. Renders every row -- no filtering, ever."""
+    scored = [d for d in rows if d["change_pct"] is not None]
+    winners = sum(1 for d in scored if d["change_pct"] > 0)
+    losers = sum(1 for d in scored if d["change_pct"] < 0)
+    avg = round(sum(d["change_pct"] for d in scored) / len(scored), 2) if scored else None
+    bench = [d["bench_change_pct"] for d in scored if d["bench_change_pct"] is not None]
+    avg_bench = round(sum(bench) / len(bench), 2) if bench else None
+
+    def cls(v):
+        return "up" if (v or 0) > 0 else ("down" if (v or 0) < 0 else "")
+
+    def box(k, v, c=""):
+        return f'<div class="rec-box"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
+
+    summary = ('<div class="rec-summary">'
+               + box("Records", len(rows))
+               + box("Up", winners, "up") + box("Down", losers, "down")
+               + box("Avg change", f"{avg:+}%" if avg is not None else "—", cls(avg))
+               + box("S&P, same span", f"{avg_bench:+}%" if avg_bench is not None else "—", cls(avg_bench))
+               + "</div>")
+
+    if not rows:
+        return summary + f"<p>No {label} recorded yet — the first entries appear after the next scan.</p>"
+
+    body = "".join(
+        f'<tr><td><a href="/stock/{d["ticker"]}">{d["ticker"]}</a></td>'
+        f'<td>{d["record_date"]}</td>'
+        f'<td>${d["entry_price"]}</td>'
+        f'<td>{d["alpha_score"]}</td>'
+        f'<td>{"$" + str(d["current_price"]) if d["current_price"] is not None else "—"}</td>'
+        f'<td class="{cls(d["change_pct"])}">{f"{d['change_pct']:+}%" if d["change_pct"] is not None else "—"}</td>'
+        f'<td>{f"{d['bench_change_pct']:+}%" if d["bench_change_pct"] is not None else "—"}</td></tr>'
+        for d in sorted(rows, key=lambda x: (x["record_date"], x["ticker"]), reverse=True)
+    )
+    table = ('<div class="rec-wrap"><table class="rec"><thead><tr>'
+             '<th>Ticker</th><th>Recorded</th><th>Price then</th><th>Score then</th>'
+             '<th>Price now</th><th>Change</th><th>S&amp;P same span</th>'
+             '</tr></thead><tbody>' + body + '</tbody></table></div>')
+    return summary + table
+
+
+@app.get("/record", response_class=HTMLResponse)
+async def record_page():
+    passed = _record_rows("passed")
+    near = _record_rows("near_miss")
+    ok, broken_at = verify_track_chain(passed)
+    ok_near, _ = verify_track_chain(near)
+    started = passed[0]["record_date"] if passed else None
+
+    if ok and ok_near:
+        chain = ('<div class="chain"><b>Chain verified.</b> Each row is hashed together with the '
+                 f'hash of the row before it, so editing or removing any past entry breaks every '
+                 f'hash after it. All {len(passed) + len(near)} rows currently verify.</div>')
+    else:
+        chain = ('<div class="chain bad"><b>Chain verification FAILED</b> — an entry does not match '
+                 f'its hash{f" (row {broken_at + 1})" if broken_at is not None else ""}. '
+                 'Treat these numbers as untrustworthy until this is explained.</div>')
+
+    body = f'''<h1>Track record</h1>
+<p class="sublead">Every stock QUANTIFY's scanner has flagged, recorded automatically on the day
+it was flagged — winners and losers, nothing removed.</p>
+{chain}
+<h2>Flagged by the scanner</h2>
+{_record_section(passed, "picks")}
+<div class="method"><b>How this is recorded.</b> The scanner runs four times every trading day.
+The first run that flags a ticker writes it here immediately, with the price and score it had at
+that moment — later runs the same day cannot change that entry. There is no screen, button or API
+anywhere in this product that lets anyone add, edit or delete a row: the scanner is the only writer.
+{f"Recording began {started}." if started else "Recording begins with the next scan."}
+<br><br>
+<b>How the numbers are calculated.</b> Closing prices only. No commissions, no slippage, no
+position sizing, no compounding, and no assumption about when you would have sold — "change" is
+simply the move from the recorded price to the most recent scan price. The S&amp;P column is the
+index's move over that same span, for context.</div>
+<h2 style="margin-top:46px">Separate watch list — did not qualify</h2>
+<div class="sep-note">These were the {NEAR_MISS_COUNT} highest-scoring tickers each day that
+<b>did not pass</b> the filter, so they were never picks. They are tracked out of curiosity on a separate
+chain, with separately calculated numbers, and are <b>not part of the record above</b> — they are
+never counted, averaged or summed into it.</div>
+{_record_section(near, "near misses")}
+<h2 style="margin-top:46px">See the current scan</h2>
+<p><a href="/demo">Try the live demo</a> with no signup, or <a href="/stocks">browse every ticker</a>
+QUANTIFY covers.</p>
+<p><a class="btn" href="/signup">Start your 7-day free trial</a></p>
+<div class="disclaimer"><b>Not investment advice.</b> Past results — including everything on this
+page — do not predict future returns. QUANTIFY is informational and educational only, and nothing
+here is a recommendation to buy or sell any security. These figures ignore commissions, slippage,
+taxes and position sizing, so they are not achievable real-world returns. Every investment
+decision, and its outcome, is your own.</div>'''
+
+    return render_marketing_page(
+        "Track record",
+        "Every stock QUANTIFY's scanner has flagged, recorded automatically on the day it was "
+        "flagged — including the losers. No filtering, no hand-picked examples.",
+        body,
+        path="/record",
+        extra_head=f"<style>{RECORD_PAGE_CSS}</style>",
     )
 
 
