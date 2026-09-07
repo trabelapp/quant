@@ -522,6 +522,17 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN login_count INTEGER NOT NULL DEFAULT 0")
         if "last_seen_at" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN last_seen_at REAL")
+        # Trial onboarding drip: one timestamp per email so a send can never repeat.
+        if "welcome_sent_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN welcome_sent_at REAL")
+        if "week1_sent_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN week1_sent_at REAL")
+        if "trial_end_sent_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_end_sent_at REAL")
+        if "pref_marketing_emails" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN pref_marketing_emails INTEGER NOT NULL DEFAULT 1")
+        if "unsub_token" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN unsub_token TEXT")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + TRIAL_DAYS * 86400,))
@@ -2416,14 +2427,100 @@ def _trial_subscribe_link() -> str:
     return f"{SITE_URL}/subscription"
 
 
-def send_trial_reminder_email(email: str, days_left: int) -> bool:
+def _unsub_token_for(conn, email: str) -> str:
+    """Stable per-user unsubscribe token, generated on first use."""
+    row = conn.execute("SELECT unsub_token FROM users WHERE email=?", (email,)).fetchone()
+    token = row["unsub_token"] if row else None
+    if not token:
+        token = secrets.token_urlsafe(24)
+        conn.execute("UPDATE users SET unsub_token=? WHERE email=?", (token, email))
+        conn.commit()
+    return token
+
+
+def _unsub_footer(token: str) -> str:
+    return (f"\n\n---\nDon't want these? Unsubscribe: {SITE_URL}/unsubscribe?token={token}\n"
+            f"(You'll still get account emails like password resets and price alerts you set.)")
+
+
+def _unsub_headers(token: str) -> dict:
+    # Lets Gmail/Apple Mail show a one-click unsubscribe control, which meaningfully
+    # reduces the odds of being marked as spam instead.
+    return {"List-Unsubscribe": f"<{SITE_URL}/unsubscribe?token={token}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+
+
+def send_welcome_email(email: str, token: str) -> bool:
     body = (
-        f"Your QUANTIFY free trial ends in {days_left} day{'s' if days_left != 1 else ''}.\n\n"
-        f"After that, you'll need to subscribe ($9.99/month) to keep using the scanner and AI reports.\n\n"
-        f"Subscribe anytime: {_trial_subscribe_link()}\n\n"
-        f"Questions? Just reply to this email."
+        "Thanks for signing up. One thing to try first: open today's scan and read the "
+        "plain-English note under any FAVORABLE ticker. That note is the whole point of "
+        "this thing. If it doesn't make sense to you, tell me and I'll fix how it's written.\n\n"
+        f"Today's scan: {SITE_URL}/terminal"
+        + _unsub_footer(token)
     )
-    return send_email_notification(email, "[QUANTIFY.] Your free trial ends soon", body)
+    return send_email_notification(email, "One thing to try first", body,
+                                   headers=_unsub_headers(token))
+
+
+def _week1_picks(conn, days=7, limit_win=2, limit_loss=1):
+    """Two recorded picks that went up and one that went down, from the public record.
+
+    Returns (winners, losers) or (None, None) when the record is too young to show
+    both sides -- the email's whole point is showing a miss, so it is skipped rather
+    than sent one-sided.
+    """
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = conn.execute(
+        "SELECT ticker,record_date,entry_price FROM track_record "
+        "WHERE list_type='passed' AND record_date >= ?", (cutoff,)
+    ).fetchall()
+    if not rows:
+        return None, None
+    latest = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
+    prices = {r["ticker"]: r["price"] for r in conn.execute(
+        "SELECT ticker,price FROM daily_scans WHERE scan_date=?", (latest,)
+    ).fetchall()} if latest else {}
+    scored = []
+    for r in rows:
+        cur = prices.get(r["ticker"])
+        if not cur or not r["entry_price"]:
+            continue
+        scored.append({"ticker": r["ticker"], "date": r["record_date"], "entry": r["entry_price"],
+                       "now": cur, "chg": round((cur - r["entry_price"]) / r["entry_price"] * 100, 2)})
+    winners = sorted([x for x in scored if x["chg"] > 0], key=lambda x: -x["chg"])[:limit_win]
+    losers = sorted([x for x in scored if x["chg"] < 0], key=lambda x: x["chg"])[:limit_loss]
+    if len(winners) < limit_win or len(losers) < limit_loss:
+        return None, None
+    return winners, losers
+
+
+def send_week1_email(email: str, token: str, winners, losers) -> bool:
+    def line(x):
+        return f"  {x['ticker']} — flagged {x['date']} at ${x['entry']}, now ${x['now']} ({x['chg']:+}%)"
+    body = (
+        "What the scanner caught this week:\n\n"
+        + "\n".join(line(w) for w in winners)
+        + "\n\nAnd one it missed:\n\n"
+        + "\n".join(line(l) for l in losers)
+        + f"\n\nEvery pick the scanner has ever made, winners and losers, is public here:\n"
+        f"{SITE_URL}/record\n\n"
+        "I send this because a screener that only shows you its wins isn't worth paying for."
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "What the scanner caught this week (and one it missed)",
+                                   body, headers=_unsub_headers(token))
+
+
+def send_trial_ending_email(email: str, token: str) -> bool:
+    body = (
+        "Your trial ends tomorrow. If you're keeping it, nothing to do, it just continues "
+        "at $9.99/month. If you're not, I'd really like to know why. One line is enough. "
+        "That answer is worth more to me than the $9.99.\n\n"
+        f"Manage your subscription: {_trial_subscribe_link()}"
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "Your trial ends tomorrow", body,
+                                   headers=_unsub_headers(token))
 
 
 def send_trial_ended_email(email: str) -> bool:
@@ -2441,21 +2538,61 @@ async def trial_lifecycle_scheduler():
         try:
             now = time.time()
             conn = db()
-            soon_cutoff = now + TRIAL_REMINDER_HOURS_BEFORE * 3600
-            soon = conn.execute(
-                "SELECT email,trial_ends_at FROM users WHERE subscription_status='trial' "
-                "AND trial_reminder_sent_at IS NULL AND trial_ends_at IS NOT NULL "
-                "AND trial_ends_at > ? AND trial_ends_at <= ?",
-                (now, soon_cutoff),
+            # --- Trial onboarding drip. Each email has its own *_sent_at column, so a
+            # send can never repeat, and all three respect pref_marketing_emails.
+            sent_counts = {"welcome": 0, "week1": 0, "ending": 0, "week1_skipped": 0}
+
+            welcome = conn.execute(
+                "SELECT email FROM users WHERE is_active=1 AND welcome_sent_at IS NULL "
+                "AND pref_marketing_emails=1"
             ).fetchall()
-            for row in soon:
-                days_left = max(1, round((row["trial_ends_at"] - now) / 86400))
+            for row in welcome:
                 try:
-                    if await asyncio.to_thread(send_trial_reminder_email, row["email"], days_left):
-                        conn.execute("UPDATE users SET trial_reminder_sent_at=? WHERE email=?", (now, row["email"]))
+                    token = _unsub_token_for(conn, row["email"])
+                    if await asyncio.to_thread(send_welcome_email, row["email"], token):
+                        conn.execute("UPDATE users SET welcome_sent_at=? WHERE email=?", (now, row["email"]))
                         conn.commit()
+                        sent_counts["welcome"] += 1
                 except Exception as exc:
-                    print(f"[Error: {type(exc).__name__}] Trial reminder email failed for {row['email']}: {exc}", flush=True)
+                    print(f"[Error: {type(exc).__name__}] Welcome email failed for {row['email']}: {exc}", flush=True)
+
+            week1 = conn.execute(
+                "SELECT email FROM users WHERE is_active=1 AND week1_sent_at IS NULL "
+                "AND pref_marketing_emails=1 AND created_at IS NOT NULL AND created_at <= ?",
+                (now - 3 * 86400,),
+            ).fetchall()
+            if week1:
+                winners, losers = _week1_picks(conn)
+                if not winners:
+                    # No recorded loser to show yet -- this email exists to show a miss,
+                    # so it waits rather than going out one-sided.
+                    sent_counts["week1_skipped"] = len(week1)
+                else:
+                    for row in week1:
+                        try:
+                            token = _unsub_token_for(conn, row["email"])
+                            if await asyncio.to_thread(send_week1_email, row["email"], token, winners, losers):
+                                conn.execute("UPDATE users SET week1_sent_at=? WHERE email=?", (now, row["email"]))
+                                conn.commit()
+                                sent_counts["week1"] += 1
+                        except Exception as exc:
+                            print(f"[Error: {type(exc).__name__}] Week-1 email failed for {row['email']}: {exc}", flush=True)
+
+            ending = conn.execute(
+                "SELECT email FROM users WHERE subscription_status='trial' "
+                "AND trial_end_sent_at IS NULL AND pref_marketing_emails=1 "
+                "AND trial_ends_at IS NOT NULL AND trial_ends_at > ? AND trial_ends_at <= ?",
+                (now, now + 24 * 3600),
+            ).fetchall()
+            for row in ending:
+                try:
+                    token = _unsub_token_for(conn, row["email"])
+                    if await asyncio.to_thread(send_trial_ending_email, row["email"], token):
+                        conn.execute("UPDATE users SET trial_end_sent_at=? WHERE email=?", (now, row["email"]))
+                        conn.commit()
+                        sent_counts["ending"] += 1
+                except Exception as exc:
+                    print(f"[Error: {type(exc).__name__}] Trial-ending email failed for {row['email']}: {exc}", flush=True)
 
             ended = conn.execute(
                 "SELECT email FROM users WHERE subscription_status='trial' "
@@ -2470,8 +2607,12 @@ async def trial_lifecycle_scheduler():
                 except Exception as exc:
                     print(f"[Error: {type(exc).__name__}] Trial-ended email failed for {row['email']}: {exc}", flush=True)
             conn.close()
-            if soon or ended:
-                print(f"[trial] Sent {len(soon)} reminder(s), {len(ended)} trial-ended email(s)", flush=True)
+            if any(sent_counts.values()) or ended:
+                print(f"[trial] drip sent: {sent_counts['welcome']} welcome, "
+                      f"{sent_counts['week1']} week-1, {sent_counts['ending']} trial-ending"
+                      + (f" ({sent_counts['week1_skipped']} week-1 deferred: record has no loser yet)"
+                         if sent_counts["week1_skipped"] else "")
+                      + f"; {len(ended)} trial-ended", flush=True)
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Trial lifecycle scheduler error: {exc}", flush=True)
 
@@ -2545,7 +2686,7 @@ async def startup():
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
 
-def _send_via_brevo(to_email, subject, body, max_retries=3, reply_to=None):
+def _send_via_brevo(to_email, subject, body, max_retries=3, reply_to=None, headers=None):
     payload = {
         "sender": {"email": SENDER_EMAIL, "name": SENDER_NAME},
         "to": [{"email": to_email}],
@@ -2554,6 +2695,8 @@ def _send_via_brevo(to_email, subject, body, max_retries=3, reply_to=None):
     }
     if reply_to:
         payload["replyTo"] = {"email": reply_to}
+    if headers:
+        payload["headers"] = headers
     headers = {"api-key": BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json"}
     for attempt in range(max_retries):
         try:
@@ -2572,7 +2715,7 @@ def _send_via_brevo(to_email, subject, body, max_retries=3, reply_to=None):
     return False
 
 
-def _send_via_sendgrid(to_email, subject, body, max_retries=3, reply_to=None):
+def _send_via_sendgrid(to_email, subject, body, max_retries=3, reply_to=None, headers=None):
     payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
         "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
@@ -2581,6 +2724,8 @@ def _send_via_sendgrid(to_email, subject, body, max_retries=3, reply_to=None):
     }
     if reply_to:
         payload["reply_to"] = {"email": reply_to}
+    if headers:
+        payload["headers"] = headers
     headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
     for attempt in range(max_retries):
         try:
@@ -2599,10 +2744,12 @@ def _send_via_sendgrid(to_email, subject, body, max_retries=3, reply_to=None):
     return False
 
 
-def _send_via_smtp(to_email, subject, body, max_retries=3, reply_to=None):
+def _send_via_smtp(to_email, subject, body, max_retries=3, reply_to=None, headers=None):
     msg = MIMEMultipart(); msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"; msg["To"] = to_email; msg["Subject"] = subject
     if reply_to:
         msg["Reply-To"] = reply_to
+    for k, v in (headers or {}).items():
+        msg[k] = v
     msg.attach(MIMEText(body, "plain", "utf-8"))
     for attempt in range(max_retries):
         try:
@@ -2623,15 +2770,15 @@ def _send_via_smtp(to_email, subject, body, max_retries=3, reply_to=None):
     return False
 
 
-def send_email_notification(to_email, subject, body, max_retries=3, reply_to=None):
+def send_email_notification(to_email, subject, body, max_retries=3, reply_to=None, headers=None):
     if BREVO_API_KEY and SENDER_EMAIL:
-        return _send_via_brevo(to_email, subject, body, max_retries, reply_to=reply_to)
+        return _send_via_brevo(to_email, subject, body, max_retries, reply_to=reply_to, headers=headers)
     if SENDGRID_API_KEY and SENDER_EMAIL:
-        return _send_via_sendgrid(to_email, subject, body, max_retries, reply_to=reply_to)
+        return _send_via_sendgrid(to_email, subject, body, max_retries, reply_to=reply_to, headers=headers)
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         print(f"[Error: EmailNotConfigured] No email backend configured — could not send '{subject}' to {to_email}")
         return False
-    return _send_via_smtp(to_email, subject, body, max_retries, reply_to=reply_to)
+    return _send_via_smtp(to_email, subject, body, max_retries, reply_to=reply_to, headers=headers)
 
 
 def check_email_config():
@@ -5682,6 +5829,41 @@ def _record_section(rows, label):
              '<th>Price now</th><th>Change</th><th>S&amp;P same span</th>'
              '</tr></thead><tbody>' + body + '</tbody></table></div>')
     return summary + table
+
+
+@app.get("/unsubscribe", response_class=HTMLResponse)
+async def unsubscribe_page(token: str = ""):
+    return _do_unsubscribe(token)
+
+
+@app.post("/unsubscribe", response_class=HTMLResponse)
+async def unsubscribe_post(token: str = ""):
+    # Gmail/Apple one-click unsubscribe POSTs to this same URL (RFC 8058).
+    return _do_unsubscribe(token)
+
+
+def _do_unsubscribe(token: str):
+    ok = False
+    if token:
+        try:
+            conn = db()
+            row = conn.execute("SELECT email FROM users WHERE unsub_token=?", (token,)).fetchone()
+            if row:
+                conn.execute("UPDATE users SET pref_marketing_emails=0 WHERE unsub_token=?", (token,))
+                conn.commit()
+                ok = True
+            conn.close()
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Unsubscribe failed: {exc}")
+    body = ('<h1>Unsubscribed</h1><p class="sublead">You won\'t get any more onboarding or '
+            'update emails from QUANTIFY.</p><p>You will still get account emails — password '
+            'resets, email verification, and price alerts you set up yourself.</p>'
+            '<p>Changed your mind? Email support and we\'ll turn them back on.</p>'
+            if ok else
+            '<h1>Link not recognised</h1><p class="sublead">That unsubscribe link is not valid — '
+            'it may have already been used or been cut short by your email client.</p>'
+            '<p>Reply to any QUANTIFY email and we\'ll take you off the list manually.</p>')
+    return render_marketing_page("Unsubscribe", "Manage QUANTIFY email preferences.", body, path="/unsubscribe")
 
 
 @app.get("/record", response_class=HTMLResponse)
