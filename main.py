@@ -174,9 +174,15 @@ def _log_page_view(path: str, visitor_id: str, referrer: str):
 @app.middleware("http")
 async def track_page_views(request: Request, call_next):
     path = request.url.path
+    # Visit any page once with ?notrack=1 (e.g. https://quantify.trading/?notrack=1) to
+    # opt this browser out of analytics permanently -- for recording demo videos etc.
+    # without polluting real visitor stats. Sets a long-lived cookie; to undo it, clear
+    # cookies for the site.
+    opted_out = request.cookies.get("qtfy_notrack") == "1" or request.query_params.get("notrack") == "1"
     should_track = (
         request.method == "GET"
         and path in _PAGE_VIEW_ALLOWED_PATHS
+        and not opted_out
         and not _looks_like_bot(request.headers.get("user-agent", ""))
     )
     existing_visitor_id = request.cookies.get("qtfy_vid")
@@ -187,6 +193,8 @@ async def track_page_views(request: Request, call_next):
         asyncio.create_task(asyncio.to_thread(_log_page_view, path, visitor_id, referrer))
     if not existing_visitor_id:
         response.set_cookie("qtfy_vid", visitor_id, max_age=365 * 86400, httponly=True, samesite="lax")
+    if request.query_params.get("notrack") == "1" and request.cookies.get("qtfy_notrack") != "1":
+        response.set_cookie("qtfy_notrack", "1", max_age=5 * 365 * 86400, httponly=True, samesite="lax")
     return response
 
 
