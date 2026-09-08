@@ -134,8 +134,21 @@ async def no_store_authenticated_pages(request: Request, call_next):
 # request just like a real visitor, and would otherwise permanently inflate traffic
 # counts -- filter anything that doesn't look like an actual browser.
 _PAGE_VIEW_BOT_UA_MARKERS = (
-    "curl", "wget", "python-requests", "python-httpx", "bot", "spider", "crawl",
-    "render", "uptimerobot", "pingdom", "monitor", "headlesschrome", "go-http-client",
+    # generic self-identifying crawlers ("bot" alone covers googlebot, bingbot, gptbot,
+    # claudebot, petalbot, semrushbot, ahrefsbot, discordbot, twitterbot, slackbot, ...)
+    "bot", "spider", "crawl", "slurp", "scrapy", "archiver", "feedfetcher",
+    # HTTP clients and scripts
+    "curl", "wget", "python-requests", "python-httpx", "python-urllib", "go-http-client",
+    "okhttp", "java/", "libwww", "httpclient", "axios", "node-fetch", "guzzle", "postman",
+    # uptime / infrastructure probes
+    "render", "uptimerobot", "pingdom", "monitor", "statuscake", "betteruptime",
+    # headless browsers and auditing tools
+    "headlesschrome", "phantomjs", "puppeteer", "playwright", "selenium", "lighthouse",
+    "google-inspectiontool", "chrome-privacy-preserving-prefetch",
+    # link-preview fetchers: these fire once per link paste on X/Discord/Slack/iMessage,
+    # so without them every post inflates the visitor count before a human clicks.
+    "facebookexternalhit", "whatsapp", "telegram", "skypeuripreview", "embedly",
+    "quora link preview", "vkshare", "redditbot", "discordbot", "linkedinbot",
 )
 
 
@@ -158,17 +171,109 @@ _PAGE_VIEW_ALLOWED_PATHS = {
 }
 
 
-def _log_page_view(path: str, visitor_id: str, referrer: str):
+# Channel attribution. utm_source values in the wild are inconsistent (x / twitter /
+# tw all mean the same channel), so everything is folded onto one canonical name before
+# it is stored -- otherwise the dashboard splits one channel across three rows.
+_CHANNEL_ALIASES = {
+    "x": "x", "twitter": "x", "tw": "x", "t.co": "x", "x.com": "x",
+    "reddit": "reddit", "rd": "reddit", "r": "reddit",
+    "ig": "ig", "instagram": "ig", "insta": "ig",
+}
+# Referrer fallback, so links already posted without utm params are still attributed.
+# Matched against the referring host, longest suffix first.
+_CHANNEL_REFERRER_HOSTS = (
+    ("t.co", "x"), ("twitter.com", "x"), ("x.com", "x"),
+    ("reddit.com", "reddit"), ("redd.it", "reddit"), ("com.reddit.frontpage", "reddit"),
+    ("instagram.com", "ig"), ("com.instagram.android", "ig"),
+)
+PRIMARY_CHANNELS = ("x", "reddit", "ig")
+
+
+def _normalize_channel(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    cleaned = re.sub(r"[^a-z0-9_.-]", "", raw.strip().lower())[:32]
+    if not cleaned:
+        return None
+    return _CHANNEL_ALIASES.get(cleaned, cleaned)
+
+
+def _channel_from_referrer(referrer: str) -> Optional[str]:
+    if not referrer:
+        return None
+    host = (urllib.parse.urlparse(referrer).netloc or referrer).lower()
+    if "quantify.trading" in host:
+        return None
+    for needle, channel in _CHANNEL_REFERRER_HOSTS:
+        if needle in host:
+            return channel
+    return None
+
+
+def _resolve_channel(request: Request, referrer: str) -> Optional[str]:
+    """First-touch attribution: an explicit ?utm_source wins, then the channel already
+    stored for this browser, then whatever the referring host implies. Deliberately
+    first-touch -- the channel that first brought someone here is the one that earned
+    the signup, not whichever page they happened to be on the day they converted."""
+    explicit = _normalize_channel(request.query_params.get("utm_source"))
+    if explicit:
+        return explicit
+    stored = _normalize_channel(request.cookies.get("qtfy_src"))
+    if stored:
+        return stored
+    return _channel_from_referrer(referrer)
+
+
+def _log_page_view(path: str, visitor_id: str, referrer: str, utm_source: Optional[str]):
     try:
         conn = db()
         conn.execute(
-            "INSERT INTO page_views(path,visitor_id,referrer,created_at) VALUES(?,?,?,?)",
-            (path, visitor_id, referrer[:300], time.time()),
+            "INSERT INTO page_views(path,visitor_id,referrer,created_at,utm_source) VALUES(?,?,?,?,?)",
+            (path, visitor_id, referrer[:300], time.time(), utm_source),
         )
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[Error: {type(e).__name__}] page view log failed: {e}")
+
+
+# Named so a typo can never silently create a fourth event stream that nothing reads.
+EVENT_DEMO_VIEW = "demo_view"
+EVENT_TERMINAL_VIEW = "terminal_view"
+EVENT_SIGNUP = "signup_completed"
+EVENT_PAYMENT = "payment_completed"
+TRACKED_EVENTS = (EVENT_DEMO_VIEW, EVENT_TERMINAL_VIEW, EVENT_SIGNUP, EVENT_PAYMENT)
+_EVENT_PATHS = {"/demo": EVENT_DEMO_VIEW, "/terminal": EVENT_TERMINAL_VIEW}
+
+
+def _log_event(name: str, visitor_id: Optional[str] = None,
+               utm_source: Optional[str] = None, email: Optional[str] = None):
+    try:
+        conn = db()
+        conn.execute(
+            "INSERT INTO events(name,visitor_id,utm_source,email,created_at) VALUES(?,?,?,?,?)",
+            (name, visitor_id, utm_source, email, time.time()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] event log failed ({name}): {e}")
+
+
+def _log_payment_event(email: str):
+    """A payment arrives by webhook with no browser cookie, so the only way to attribute
+    it is the channel frozen on the account at signup. Runs entirely in a worker thread --
+    both the lookup and the insert -- so it never blocks the event loop."""
+    channel = None
+    try:
+        conn = db()
+        row = conn.execute("SELECT signup_utm_source FROM users WHERE email=?", (email,)).fetchone()
+        conn.close()
+        if row:
+            channel = row["signup_utm_source"]
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] payment attribution lookup failed for {email}: {e}")
+    _log_event(EVENT_PAYMENT, None, channel, email)
 
 
 @app.middleware("http")
@@ -189,12 +294,31 @@ async def track_page_views(request: Request, call_next):
     )
     existing_visitor_id = request.cookies.get("qtfy_vid")
     visitor_id = existing_visitor_id or secrets.token_hex(16)
+    referrer = request.headers.get("referer", "")
+    channel = _resolve_channel(request, referrer)
+    request.state.qtfy_visitor_id = visitor_id
+    request.state.qtfy_channel = channel
     response = await call_next(request)
-    if should_track:
-        referrer = request.headers.get("referer", "")
-        asyncio.create_task(asyncio.to_thread(_log_page_view, path, visitor_id, referrer))
+    # A 4xx/5xx is not a visit. Vulnerability scanners probing made-up paths are already
+    # filtered by the allowlist, but /stock/<TICKER> is prefix-matched and 404s for a
+    # ticker that does not exist, and that should not count either. Redirects (303 off a
+    # gated page) are real visits and stay counted.
+    delivered = response.status_code < 400
+    if should_track and delivered:
+        asyncio.create_task(asyncio.to_thread(_log_page_view, path, visitor_id, referrer, channel))
+        # Two of the four tracked events are page views, so they are recorded here rather
+        # than inside the route handlers -- same bot, notrack and status filtering, one
+        # place to change. Only a 200 counts: /terminal 303-redirects logged-out visitors
+        # and that is not a terminal view.
+        event_name = _EVENT_PATHS.get(path)
+        if event_name and response.status_code == 200:
+            asyncio.create_task(asyncio.to_thread(_log_event, event_name, visitor_id, channel, None))
     if not existing_visitor_id:
         response.set_cookie("qtfy_vid", visitor_id, max_age=365 * 86400, httponly=True, samesite="lax")
+    # First-touch: only written when the browser has no channel yet, so a visitor who
+    # arrives from Reddit and later clicks an X link still counts as Reddit.
+    if channel and not _normalize_channel(request.cookies.get("qtfy_src")):
+        response.set_cookie("qtfy_src", channel, max_age=365 * 86400, httponly=True, samesite="lax")
     if request.query_params.get("notrack") == "1" and request.cookies.get("qtfy_notrack") != "1":
         response.set_cookie("qtfy_notrack", "1", max_age=5 * 365 * 86400, httponly=True, samesite="lax")
     return response
@@ -434,7 +558,22 @@ def init_db():
             created_at REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views(created_at);
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            visitor_id TEXT,
+            utm_source TEXT,
+            email TEXT,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
         """)
+        # Channel attribution. page_views.utm_source is per-visit; users.signup_utm_source
+        # is the frozen first-touch channel of the account, which is what lets a payment
+        # (which arrives by webhook with no browser cookie) be traced back to a channel.
+        pv_cols = {r[1] for r in conn.execute("PRAGMA table_info(page_views)").fetchall()}
+        if "utm_source" not in pv_cols:
+            conn.execute("ALTER TABLE page_views ADD COLUMN utm_source TEXT")
         user_cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         if "password_hash" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
@@ -533,6 +672,8 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN pref_marketing_emails INTEGER NOT NULL DEFAULT 1")
         if "unsub_token" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN unsub_token TEXT")
+        if "signup_utm_source" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN signup_utm_source TEXT")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + TRIAL_DAYS * 86400,))
@@ -3347,7 +3488,11 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         "SELECT COUNT(DISTINCT visitor_id) c FROM page_views WHERE created_at >= ?", (now - 7 * 86400,)
     ).fetchone()["c"]
     view_rows = conn.execute(
-        "SELECT path,referrer,created_at FROM page_views WHERE created_at >= ? ORDER BY created_at DESC",
+        "SELECT path,referrer,created_at,visitor_id,utm_source FROM page_views WHERE created_at >= ? ORDER BY created_at DESC",
+        (now - 7 * 86400,),
+    ).fetchall()
+    event_rows = conn.execute(
+        "SELECT name,visitor_id,utm_source,email,created_at FROM events WHERE created_at >= ?",
         (now - 7 * 86400,),
     ).fetchall()
     conn.close()
@@ -3366,6 +3511,60 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
                 top_referrers[host] = top_referrers.get(host, 0) + 1
         else:
             top_referrers["(direct / no referrer)"] = top_referrers.get("(direct / no referrer)", 0) + 1
+
+    # --- Channel attribution -------------------------------------------------------
+    # Every visitor lands in exactly one bucket, so the columns add up to the visitor
+    # total; x / reddit / ig are always present even at zero, because "no signups from
+    # Reddit this week" is itself the answer to the question being asked.
+    def _bucket(src):
+        return src if src in PRIMARY_CHANNELS else ("(direct / unknown)" if not src else f"other:{src}")
+
+    channel_visitors: dict = {}
+    channel_views: dict = {}
+    for r in view_rows:
+        b = _bucket(r["utm_source"])
+        channel_views[b] = channel_views.get(b, 0) + 1
+        channel_visitors.setdefault(b, set()).add(r["visitor_id"])
+
+    events_24h: dict = {name: 0 for name in TRACKED_EVENTS}
+    events_7d: dict = {name: 0 for name in TRACKED_EVENTS}
+    channel_events: dict = {}
+    for r in event_rows:
+        name = r["name"]
+        events_7d[name] = events_7d.get(name, 0) + 1
+        if r["created_at"] >= now - 86400:
+            events_24h[name] = events_24h.get(name, 0) + 1
+        b = _bucket(r["utm_source"])
+        channel_events.setdefault(b, {n: 0 for n in TRACKED_EVENTS})
+        channel_events[b][name] = channel_events[b].get(name, 0) + 1
+
+    funnel = {}
+    def _sort_key(k):
+        # x / reddit / ig first, in that declared order, then everything else A-Z.
+        return (PRIMARY_CHANNELS.index(k), "") if k in PRIMARY_CHANNELS else (len(PRIMARY_CHANNELS), k)
+
+    for b in sorted(set(list(channel_visitors) + list(channel_events) + list(PRIMARY_CHANNELS)),
+                    key=_sort_key):
+        ev = channel_events.get(b, {})
+        visitors = len(channel_visitors.get(b, ()))
+        funnel[b] = {
+            "unique_visitors": visitors,
+            "page_views": channel_views.get(b, 0),
+            "demo_views": ev.get(EVENT_DEMO_VIEW, 0),
+            "terminal_views": ev.get(EVENT_TERMINAL_VIEW, 0),
+            "signups": ev.get(EVENT_SIGNUP, 0),
+            "payments": ev.get(EVENT_PAYMENT, 0),
+            "signup_rate_pct": round(ev.get(EVENT_SIGNUP, 0) / visitors * 100, 1) if visitors else 0.0,
+        }
+    channels_block = {
+        "note": ("First-touch attribution: ?utm_source wins, then the channel already stored on "
+                 "the browser, then the referring host (t.co/x.com -> x, reddit.com -> reddit, "
+                 "instagram.com -> ig). A payment has no browser cookie, so it is attributed to "
+                 "the channel frozen on the account at signup. Data starts at the deploy that "
+                 "added this; earlier visits show as (direct / unknown)."),
+        "primary": list(PRIMARY_CHANNELS),
+        "funnel_last_7d": funnel,
+    }
 
     def _et_day(ts):
         return datetime.fromtimestamp(ts, ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
@@ -3441,6 +3640,9 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         "page_views_by_day_et": views_by_day,
         "top_paths_last_7d": dict(sorted(top_paths.items(), key=lambda x: -x[1])[:15]),
         "top_referrers_last_7d": dict(sorted(top_referrers.items(), key=lambda x: -x[1])[:15]),
+        "channels": channels_block,
+        "events_last_24h": events_24h,
+        "events_last_7d": events_7d,
     }
 
 
@@ -4042,7 +4244,7 @@ LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://quantify.trading/">
 <meta property="og:site_name" content="QUANTIFY.">
-<meta name="twitter:card" content="summary">
+%%OG_IMAGE%%
 <link rel="canonical" href="https://quantify.trading/">
 <script type="application/ld+json">
 {
@@ -4083,6 +4285,9 @@ header{border-bottom:1px solid var(--border);position:sticky;top:0;background:rg
    with the trial as a plain text link underneath. */
 .cta-link{color:var(--dim2);text-decoration:underline;font-weight:600}
 .cta-link:hover{color:var(--green)}
+/* Secondary to the filled demo button but still unmistakably a button. */
+.btn-signup{border:2px solid var(--green);color:var(--green);background:#ffffff;font-weight:800;padding:16px 30px;font-size:17px}
+.btn-signup:hover{background:var(--green);color:#ffffff}
 .hero{padding:96px 24px 76px;text-align:center;background:radial-gradient(ellipse 900px 500px at 50% -10%,rgba(14,138,95,.07),transparent 65%)}
 section:nth-of-type(even){background:var(--panel2)}
 .eyebrow{display:inline-block;font-size:14px;font-weight:700;color:var(--orange);border:1px solid #ecdcb8;background:#fbf3e4;padding:7px 16px;border-radius:20px;letter-spacing:.3px;margin-bottom:26px}
@@ -4222,8 +4427,8 @@ footer a{color:var(--dim2);text-decoration:underline}
   section{padding:54px 16px}
   /* One button, full width, allowed to wrap -- .btn sets white-space:nowrap globally,
      which would push a descriptive label off the side of a 375px screen. */
-  .btn-hero{display:block;width:100%;white-space:normal;line-height:1.3;padding:15px 12px;font-size:16px}
-  .cta-row{margin-bottom:12px}
+  .cta-row{flex-direction:column;gap:10px;margin-bottom:12px}
+  .cta-row .btn{display:block;width:100%;white-space:normal;line-height:1.3;padding:15px 12px;font-size:16px}
   /* Pull the scanner mock up so its top edge shows above the fold: the product output is
      the thing that explains the product, and it used to start entirely below it. */
   .mock{margin-top:30px}
@@ -4248,8 +4453,9 @@ footer a{color:var(--dim2);text-decoration:underline}
 <p class="sub hero-in hero-in-3">A daily quant scan of the S&amp;P 500 and Nasdaq-100, with an AI second pass that checks every hit for blow-off-top and dead-cat-bounce risk.</p>
 <div class="cta-row hero-in hero-in-4">
 <a class="btn btn-hero" href="/demo">%%HERO_CTA%%</a>
+<a class="btn btn-signup" href="/signup">Get Started Free</a>
 </div>
-<div class="cta-note hero-in hero-in-5">Free to look · no signup, no card. <a class="cta-link" href="/signup">Or start your 7-day trial →</a></div>
+<div class="cta-note hero-in hero-in-5">Demo needs no signup · trial is 7 days free, no credit card.</div>
 
 <div class="mock" data-reveal>
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
@@ -4518,8 +4724,10 @@ AUTH_BRAND_HTML = """<div class="authbrand">
 GOOGLE_ICON_SVG = '<svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 009 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 013.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 000 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 00.96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>'
 
 
-def render_auth_page(title: str, form_html: str) -> HTMLResponse:
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><style>{BASE_CSS}</style></head><body><div class="authwrap">{AUTH_BRAND_HTML}<div class="authform">{form_html}</div></div></body></html>''')
+def render_auth_page(title: str, form_html: str, path: str = "",
+                     description: str = "Start your 7-day free trial of QUANTIFY — a daily quant scan of the S&P 500 and Nasdaq-100 with an AI risk review on every hit.") -> HTMLResponse:
+    og = og_head(title, description, path)
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>{og}<style>{BASE_CSS}</style></head><body><div class="authwrap">{AUTH_BRAND_HTML}<div class="authform">{form_html}</div></div></body></html>''')
 
 
 def _render_validation_note(results: dict) -> str:
@@ -4691,6 +4899,7 @@ async def landing(request: Request):
             .replace("%%VALIDATION_NOTE%%", validation_note).replace("%%UNIVERSE_NOTE%%", universe_note))
     for placeholder, value in _landing_cta_copy().items():
         html = html.replace(placeholder, value)
+    html = html.replace("%%OG_IMAGE%%", _og_image_tags())
     return HTMLResponse(html)
 
 
@@ -4819,7 +5028,7 @@ _MARKETING_NAV = ('<a class="muted" href="/pricing">Pricing</a>'
 
 def render_marketing_page(title: str, description: str, body_html: str, path: str = "", extra_head: str = "") -> HTMLResponse:
     url = f"https://quantify.trading{path}"
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. — {title}</title><meta name="description" content="{description}"><meta property="og:title" content="QUANTIFY. — {title}"><meta property="og:description" content="{description}"><meta property="og:type" content="website"><meta property="og:url" content="{url}"><meta property="og:site_name" content="QUANTIFY."><meta name="twitter:card" content="summary"><link rel="canonical" href="{url}">{extra_head}<style>{MARKETING_CSS}</style></head><body>
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. — {title}</title><meta name="description" content="{description}">{og_head(f"QUANTIFY. — {title}", description, path)}<link rel="canonical" href="{url}">{extra_head}<style>{MARKETING_CSS}</style></head><body>
 <header><div class="nav"><a class="logo" href="/">QUANTIFY<span>.</span></a><div class="navlinks">{_MARKETING_NAV}</div></div></header>
 <main><div class="wrap">{body_html}</div></main>
 <footer>QUANTIFY. — informational and educational only, not investment advice.<br>
@@ -4916,8 +5125,9 @@ a{color:#0e8a5f}
 """
 
 
-def render_legal_page(title: str, updated: str, body_html: str) -> HTMLResponse:
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title><style>{LEGAL_CSS}</style></head><body><div class="wrap"><header><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="back" href="/">&larr; Back to home</a></header><h1>{title}</h1><div class="updated">Last updated: {updated}</div>{body_html}</div></body></html>''')
+def render_legal_page(title: str, updated: str, body_html: str, path: str = "") -> HTMLResponse:
+    og = og_head(f"QUANTIFY. {title}", f"QUANTIFY {title.lower()} — the terms that govern use of the service.", path)
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{og}<style>{LEGAL_CSS}</style></head><body><div class="wrap"><header><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="back" href="/">&larr; Back to home</a></header><h1>{title}</h1><div class="updated">Last updated: {updated}</div>{body_html}</div></body></html>''')
 
 
 # Reusable logged-in-app page shell (sidebar + base black-theme CSS lifted from the
@@ -5069,7 +5279,7 @@ async def terms_page():
 <h2>9. Contact</h2>
 <p>Questions about these Terms can be sent to <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</p>
 """
-    return render_legal_page("Terms of Service", "August 30, 2026", body)
+    return render_legal_page("Terms of Service", "August 30, 2026", body, path="/terms")
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -5106,7 +5316,7 @@ async def privacy_page():
 <h2>10. Contact</h2>
 <p>Questions about this policy can be sent to <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</p>
 """
-    return render_legal_page("Privacy Policy", "August 30, 2026", body)
+    return render_legal_page("Privacy Policy", "August 30, 2026", body, path="/privacy")
 
 
 @app.get("/auth/google/login")
@@ -5159,16 +5369,21 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
     if not email or not info.get("email_verified"):
         return RedirectResponse("/login?error=Could+not+verify+your+Google+email.", status_code=303)
 
+    channel = getattr(request.state, "qtfy_channel", None)
+    visitor_id = getattr(request.state, "qtfy_visitor_id", None)
     conn = db()
     row = conn.execute("SELECT email FROM users WHERE email=?", (email,)).fetchone()
     if not row:
         password_hash, salt = await asyncio.to_thread(make_password_hash, secrets.token_urlsafe(32))
         try:
             conn.execute(
-                "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at,pref_theme) VALUES(?,?,?,1,?,?,'light')",
-                (email, password_hash, salt, time.time(), time.time() + TRIAL_DAYS * 86400),
+                "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at,pref_theme,signup_utm_source) VALUES(?,?,?,1,?,?,'light',?)",
+                (email, password_hash, salt, time.time(), time.time() + TRIAL_DAYS * 86400, channel),
             )
             conn.commit()
+            # Only a genuinely new account is a signup -- a returning Google user hitting
+            # this same callback is a login, and counting it would inflate the funnel.
+            asyncio.create_task(asyncio.to_thread(_log_event, EVENT_SIGNUP, visitor_id, channel, email))
         except sqlite3.IntegrityError:
             # Two near-simultaneous callbacks for the same brand-new email (double-click,
             # redirected retry) can both pass the SELECT above before either INSERTs --
@@ -5231,7 +5446,8 @@ async def login_page(error: Optional[str] = None, msg: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     msg = html_lib.escape(msg) if msg else ''
     form = f'''<div class="card"><h2>Welcome back</h2><div class="subtitle">Log in to see today's detected tickers.</div><div class="error">{error}</div><div class="ok">{msg}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/login" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="current-password"><button>Log in</button></form><div class="links"><a href="/signup">Create an account</a><a href="/forgot-password">Forgot password?</a></div><details><summary>Didn't get a verification email?</summary><form action="/api/auth/resend-verification" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><button>Resend verification email</button></form></details></div>'''
-    return render_auth_page("QUANTIFY. Login", form)
+    return render_auth_page("QUANTIFY. Log in", form, path="/login",
+                            description="Log in to QUANTIFY — the daily quant scan of the S&P 500 and Nasdaq-100, AI risk-checked.")
 
 
 @app.post("/api/auth/login")
@@ -5298,7 +5514,7 @@ async def login(email: str = Form(...), password: str = Form(...)):
 async def signup_page(error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">7-day free trial, then $9.99/month. Cancel anytime.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="new-password"><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
-    return render_auth_page("QUANTIFY. Sign Up", form)
+    return render_auth_page("QUANTIFY. Sign up", form, path="/signup")
 
 
 VERIFY_TOKEN_TTL = 24 * 3600
@@ -5327,11 +5543,13 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
     password_hash,salt=await asyncio.to_thread(make_password_hash, password)
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
+    channel = getattr(request.state, "qtfy_channel", None)
+    visitor_id = getattr(request.state, "qtfy_visitor_id", None)
     try:
         conn=db()
         conn.execute(
-            "INSERT INTO users(email,password_hash,salt,is_active,verify_token_hash,verify_expires,created_at,trial_ends_at,pref_theme) VALUES(?,?,?,0,?,?,?,?,'light')",
-            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL,time.time(),time.time()+TRIAL_DAYS*86400),
+            "INSERT INTO users(email,password_hash,salt,is_active,verify_token_hash,verify_expires,created_at,trial_ends_at,pref_theme,signup_utm_source) VALUES(?,?,?,0,?,?,?,?,'light',?)",
+            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL,time.time(),time.time()+TRIAL_DAYS*86400,channel),
         )
         conn.commit()
         conn.close()
@@ -5342,6 +5560,7 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
         print(f"[Error: {type(e).__name__}] Signup error: {e}")
         return RedirectResponse("/signup?error=Database+error",status_code=303)
 
+    asyncio.create_task(asyncio.to_thread(_log_event, EVENT_SIGNUP, visitor_id, channel, email))
     if not await asyncio.to_thread(send_verification_email, request, email, token):
         return RedirectResponse("/login?msg=Account+created.+Verification+email+could+not+be+sent+-+contact+support.",status_code=303)
     return RedirectResponse("/check-email?email="+urllib.parse.quote(email),status_code=303)
@@ -6052,6 +6271,62 @@ Nothing here is a recommendation to buy or sell any security.</div>'''
     )
 
 
+
+# -----------------------------------------------------------------------------
+# Open Graph preview image
+# -----------------------------------------------------------------------------
+# A real screenshot of the live product, not an illustration -- the whole point of the
+# card is to show what someone actually gets when they click. Served from the repo so it
+# needs no image library and no headless browser on the server; regenerate it by
+# screenshotting /demo at 1200x630 whenever the UI changes.
+OG_IMAGE_PATH = "/og/scanner.png"
+OG_IMAGE_URL = f"https://quantify.trading{OG_IMAGE_PATH}"
+OG_IMAGE_FILE = Path(__file__).resolve().parent / "static" / "og-scanner.png"
+_OG_IMAGE_BYTES: Optional[bytes] = None
+try:
+    _OG_IMAGE_BYTES = OG_IMAGE_FILE.read_bytes()
+except Exception as _og_err:
+    print(f"[og] preview image not found at {OG_IMAGE_FILE} ({_og_err}) — og:image tags omitted", flush=True)
+
+
+@app.get(OG_IMAGE_PATH)
+async def og_scanner_image():
+    if not _OG_IMAGE_BYTES:
+        return Response(status_code=404)
+    return Response(
+        content=_OG_IMAGE_BYTES,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+def _og_image_tags() -> str:
+    """Emitted only when the file is actually on disk -- an og:image pointing at a 404
+    makes the preview card worse than having no image tag at all."""
+    if not _OG_IMAGE_BYTES:
+        return '<meta name="twitter:card" content="summary">'
+    return ('<meta property="og:image" content="' + OG_IMAGE_URL + '">'
+            '<meta property="og:image:width" content="1200">'
+            '<meta property="og:image:height" content="630">'
+            '<meta property="og:image:type" content="image/png">'
+            '<meta property="og:image:alt" content="The QUANTIFY scanner showing today\'s detected stocks with scores and AI risk verdicts">'
+            '<meta name="twitter:card" content="summary_large_image">'
+            '<meta name="twitter:image" content="' + OG_IMAGE_URL + '">')
+
+
+def og_head(title: str, description: str, path: str = "") -> str:
+    """The full Open Graph / Twitter block for a public page. One helper so every public
+    page gets the same tags and the image can never drift between them."""
+    url = f"https://quantify.trading{path}"
+    esc = html_lib.escape
+    return (f'<meta property="og:title" content="{esc(title)}">'
+            f'<meta property="og:description" content="{esc(description)}">'
+            f'<meta property="og:type" content="website">'
+            f'<meta property="og:url" content="{esc(url)}">'
+            f'<meta property="og:site_name" content="QUANTIFY.">'
+            + _og_image_tags())
+
+
 @app.get("/demo", response_class=HTMLResponse)
 async def demo_page():
     conn = db()
@@ -6106,7 +6381,7 @@ async def demo_page():
         list_html = "".join(rows_html)
         detail_html = "".join(_demo_detail_html(t, i == 0) for i, t in enumerate(tickers))
 
-    body = f'''<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Live Demo</title><meta name="description" content="See QUANTIFY's real, current scan results — score, indicators, and AI risk review — no signup required."><style>{DEMO_CSS}</style></head><body>
+    body = f'''<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Live Demo</title><meta name="description" content="See QUANTIFY's real, current scan results — score, indicators, and AI risk review — no signup required.">{og_head("QUANTIFY. Live Demo", "See QUANTIFY's real, current scan results — score, indicators, and AI risk review. No signup required.", "/demo")}<link rel="canonical" href="https://quantify.trading/demo"><style>{DEMO_CSS}</style></head><body>
 <div class="topbar"><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="signup-btn" href="/signup">Sign up free</a></div>
 <div class="panel intro-bar"><b>Live Demo</b> — real results from today's scan (informational only, not investment advice). <a href="/signup">Create a free account</a> to unlock alerts, watchlist, and portfolio tracking.</div>
 <div class="demo-grid">
@@ -6764,10 +7039,16 @@ async def lemonsqueezy_webhook(request: Request):
         if event_name in ("subscription_created", "subscription_updated", "subscription_resumed"):
             ls_status = attrs.get("status")
             sub_status = "active" if ls_status in ("active", "on_trial") else (ls_status or "active")
-            conn.execute(
+            was_active = (conn.execute("SELECT subscription_status FROM users WHERE email=?",
+                                       (email,)).fetchone() or {"subscription_status": None})["subscription_status"] == "active"
+            cur = conn.execute(
                 "UPDATE users SET subscription_status=?,ls_customer_id=?,ls_subscription_id=? WHERE email=?",
                 (sub_status, str(attrs.get("customer_id", "")), str(data.get("id", "")), email),
             )
+            # subscription_updated fires on every renewal too; only the transition into
+            # active is a conversion, or the count would climb every billing cycle.
+            if sub_status == "active" and not was_active and cur.rowcount:
+                asyncio.create_task(asyncio.to_thread(_log_payment_event, email))
         elif event_name in ("subscription_cancelled", "subscription_expired"):
             conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
         conn.commit()
@@ -6823,6 +7104,7 @@ async def gumroad_webhook(request: Request):
                           f"— the buyer needs to sign up on QUANTIFY with this exact email.", flush=True)
                 else:
                     print(f"[gumroad] Granted active access to {email} (sale_id={sale_id})", flush=True)
+                    asyncio.create_task(asyncio.to_thread(_log_payment_event, email))
             else:
                 print(f"[gumroad] Sale ping for {email} (sale_id={sale_id}) could not be verified "
                       f"(verified_email={verified_email or '(lookup failed)'}) — ignored.", flush=True)
