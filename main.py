@@ -2661,6 +2661,10 @@ async def refresh_fundamentals(force: bool = False):
 # 18:00 ET is two hours after the last scan of the day (16:00) and fifteen before the
 # first of the next, which is the widest quiet window there is.
 FUNDAMENTALS_HOUR_ET = 18
+# Below this share of the universe the snowflake is missing for too many tickers to
+# wait for the next scheduled window. Not 1.0: some tickers legitimately return nothing
+# (no market cap on the provider), and chasing them every boot would loop forever.
+FUNDAMENTALS_MIN_COVERAGE = 0.95
 
 
 async def fundamentals_scheduler():
@@ -2672,14 +2676,16 @@ async def fundamentals_scheduler():
             if target <= now_et:
                 target += timedelta(days=1)
             wait = (target - now_et).total_seconds()
-            # First boot with an empty table would otherwise show no snowflake at all
-            # until the next 18:00, so seed it immediately and let the daily run take
-            # over from there.
+            # A pass takes ~7 minutes, and a deploy restart in the middle of one leaves
+            # the table partly filled. Checking only for an *empty* table meant those
+            # tickers waited until the next 18:00 with no snowflake at all -- so catch
+            # up whenever coverage is short, not just when there is nothing.
             conn = db()
-            have = conn.execute("SELECT COUNT(*) FROM fundamentals").fetchone()[0]
+            have = conn.execute("SELECT COUNT(*) FROM fundamentals WHERE fetched_at >= ?",
+                                (time.time() - FUNDAMENTALS_TTL,)).fetchone()[0]
             conn.close()
-            if have == 0 and UNIVERSE:
-                print("[fundamentals] table is empty — seeding now", flush=True)
+            if UNIVERSE and have < len(UNIVERSE) * FUNDAMENTALS_MIN_COVERAGE:
+                print(f"[fundamentals] coverage {have}/{len(UNIVERSE)} — catching up now", flush=True)
                 async with BATCH_LOCK:
                     await refresh_fundamentals()
             await asyncio.sleep(wait)
