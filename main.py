@@ -2633,11 +2633,11 @@ def _save_fundamentals(rows: list):
         conn.close()
 
 
-async def refresh_fundamentals(force: bool = False):
-    """One sequential pass over the universe. Sequential on purpose: this is the same
-    provider the price scan uses, and running both wide at once is what triggered
-    rate-limiting before. It runs once a day and nothing waits on it."""
-    tickers = list(UNIVERSE)
+async def refresh_fundamentals(force: bool = False, tickers: Optional[list] = None,
+                               label: str = "universe"):
+    """Sequential on purpose: this is the same provider the price scan uses, and running
+    both wide at once is what triggered rate-limiting before. Nothing waits on it."""
+    tickers = list(tickers if tickers is not None else UNIVERSE)
     if not tickers:
         return
     conn = db()
@@ -2652,20 +2652,7 @@ async def refresh_fundamentals(force: bool = False):
     # cut it short, and in universe order the tickers left behind were arbitrary -- which
     # is how a ticker sitting at the top of today's scanner ended up with an empty
     # snowflake. Today's detected names come first, then everything else.
-    priority: list = []
-    try:
-        conn = db()
-        priority = [r["ticker"] for r in conn.execute(
-            "SELECT ticker FROM daily_scans WHERE scan_date=? AND quant_pass=1 "
-            "ORDER BY alpha_score DESC", (today_str(),))]
-        conn.close()
-        rank = {tk: i for i, tk in enumerate(priority)}
-        todo.sort(key=lambda tk: rank.get(tk, len(rank) + 1))
-    except Exception as e:
-        print(f"[Error: {type(e).__name__}] fundamentals prioritisation failed: {e}", flush=True)
-    queued_detected = sum(1 for tk in todo if tk in set(priority))
-    print(f"[fundamentals] refreshing {len(todo)} of {len(tickers)} tickers "
-          f"({queued_detected} of them detected today, fetched first)", flush=True)
+    print(f"[fundamentals:{label}] refreshing {len(todo)} of {len(tickers)}", flush=True)
     batch, saved = [], 0
     for i, tk in enumerate(todo):
         row = await asyncio.to_thread(_fetch_one_fundamental, tk)
@@ -2679,47 +2666,70 @@ async def refresh_fundamentals(force: bool = False):
     if batch:
         await asyncio.to_thread(_save_fundamentals, batch)
         saved += len(batch)
-    print(f"[fundamentals] saved {saved}/{len(todo)}", flush=True)
+    print(f"[fundamentals:{label}] saved {saved}/{len(todo)}", flush=True)
+    _PEER_CACHE["at"] = 0.0   # ladders are stale the moment new rows land
 
 
-# A full pass takes ~7 minutes and holds BATCH_LOCK, so it must never land on a scan.
-# 18:00 ET is two hours after the last scan of the day (16:00) and fifteen before the
-# first of the next, which is the widest quiet window there is.
-FUNDAMENTALS_HOUR_ET = 18
-# Below this share of the universe the snowflake is missing for too many tickers to
-# wait for the next scheduled window. Not 1.0: some tickers legitimately return nothing
-# (no market cap on the provider), and chasing them every boot would loop forever.
-FUNDAMENTALS_MIN_COVERAGE = 0.95
+# Two jobs with different reasons to exist:
+#
+#   detected  -- the ~50 tickers whose snowflake anyone actually opens. ~40 seconds, so
+#                it runs after every scan and a restart mid-pass costs nothing.
+#   universe  -- all ~518, and its only job is the sector peer ladders the percentiles
+#                are measured against. Ranking 50 detected names against each other
+#                would be meaningless: they land 4-5 per sector, below the threshold for
+#                a fair comparison, so the whole "cheap for its sector" claim collapses.
+#                Fundamentals move quarterly, so weekly is plenty for a ladder.
+FUNDAMENTALS_HOUR_ET = 18            # quiet window: 2h after the last scan of the day
+FUNDAMENTALS_UNIVERSE_DOW = 6        # Sunday -- the full pass, for the peer ladders
+FUNDAMENTALS_MIN_COVERAGE = 0.60     # ladders need breadth, not completeness
+
+
+def detected_tickers_today() -> list:
+    try:
+        conn = db()
+        rows = [r["ticker"] for r in conn.execute(
+            "SELECT ticker FROM daily_scans WHERE scan_date=? AND quant_pass=1", (today_str(),))]
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] detected ticker lookup failed: {e}", flush=True)
+        return []
+
+
+async def refresh_detected_fundamentals():
+    """The only tickers whose snowflake anyone actually opens. ~50 names, about 40
+    seconds, so this can run after every scan instead of once a day -- and a restart
+    mid-pass costs almost nothing."""
+    detected = detected_tickers_today()
+    if detected:
+        await refresh_fundamentals(tickers=detected, label="detected")
 
 
 async def fundamentals_scheduler():
-    await asyncio.sleep(120)  # let the price warmup finish first
+    await asyncio.sleep(60)
     while True:
         try:
-            now_et = datetime.now(ZoneInfo("America/New_York"))
-            target = now_et.replace(hour=FUNDAMENTALS_HOUR_ET, minute=0, second=0, microsecond=0)
-            if target <= now_et:
-                target += timedelta(days=1)
-            wait = (target - now_et).total_seconds()
-            # A pass takes ~7 minutes, and a deploy restart in the middle of one leaves
-            # the table partly filled. Checking only for an *empty* table meant those
-            # tickers waited until the next 18:00 with no snowflake at all -- so catch
-            # up whenever coverage is short, not just when there is nothing.
+            # Whatever is on the scanner right now gets covered first and cheaply.
+            async with BATCH_LOCK:
+                await refresh_detected_fundamentals()
+
+            # The ladder: rebuild weekly, or straight away if it is too thin to rank
+            # against. A brand-new deploy has no ladder at all, and without one every
+            # percentile would be computed against a handful of rows.
             conn = db()
-            have = conn.execute("SELECT COUNT(*) FROM fundamentals WHERE fetched_at >= ?",
-                                (time.time() - FUNDAMENTALS_TTL,)).fetchone()[0]
+            have = conn.execute("SELECT COUNT(*) FROM fundamentals").fetchone()[0]
             conn.close()
-            if UNIVERSE and have < len(UNIVERSE) * FUNDAMENTALS_MIN_COVERAGE:
-                print(f"[fundamentals] coverage {have}/{len(UNIVERSE)} — catching up now", flush=True)
-                async with BATCH_LOCK:
-                    await refresh_fundamentals()
-            await asyncio.sleep(wait)
-            if UNIVERSE:
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            thin = bool(UNIVERSE) and have < len(UNIVERSE) * FUNDAMENTALS_MIN_COVERAGE
+            due = now_et.weekday() == FUNDAMENTALS_UNIVERSE_DOW and now_et.hour == FUNDAMENTALS_HOUR_ET
+            if thin or due:
+                print(f"[fundamentals] ladder {have}/{len(UNIVERSE)} "
+                      f"({'too thin' if thin else 'weekly rebuild'})", flush=True)
                 async with BATCH_LOCK:
                     await refresh_fundamentals()
         except Exception as e:
             print(f"[Error: {type(e).__name__}] fundamentals scheduler: {e}", flush=True)
-            await asyncio.sleep(3600)
+        await asyncio.sleep(3600)
 
 
 def _track_row_hash(prev_hash, record_date, ticker, list_type, entry_price, alpha_score, recorded_at):
@@ -2895,6 +2905,11 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
             except Exception as exc:
                 print(f"[Error: {type(exc).__name__}] Benchmark fetch for track record failed: {exc}", flush=True)
             write_track_record(conn, date, results, now, _benchmark_close())
+            # Fundamentals for whatever this scan just detected. Scheduled rather than
+            # awaited: the scan should not wait ~40s on a company-data provider, and a
+            # newly detected ticker having an empty snowflake for a minute is fine --
+            # having one for a day, which is what the daily-only job produced, was not.
+            asyncio.create_task(refresh_detected_fundamentals())
             cutoff_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
             conn.execute("DELETE FROM scan_history WHERE scan_date < ?", (cutoff_date,))
             conn.commit()
