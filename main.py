@@ -2564,7 +2564,12 @@ async def build_scan_row(ticker: str, mode: str, df=None, make_ai=False):
 # stored. These are the numbers a snowflake is actually supposed to answer -- is this
 # company cheap, growing, profitable, solvent, paying you -- so they are fetched and
 # kept for the whole universe, once a day.
-FUNDAMENTALS_TTL = 20 * 3600          # a quarter's numbers do not change overnight
+# Balance sheets are quarterly. A 20-hour TTL meant re-fetching all ~518 tickers every
+# single day for numbers that had not moved, which is the request volume that got the
+# provider to start refusing us -- and worse, it would have expired the 491 good rows we
+# already hold and blanked the snowflake for everyone. Two weeks is still far more often
+# than the underlying figures change.
+FUNDAMENTALS_TTL = 14 * 24 * 3600
 FUNDAMENTALS_FETCH_GAP = 0.15         # polite spacing; a full universe pass takes ~7 min
 
 _FUNDAMENTAL_FIELDS = (
@@ -2682,7 +2687,16 @@ async def refresh_fundamentals(force: bool = False, tickers: Optional[list] = No
     # snowflake. Today's detected names come first, then everything else.
     print(f"[fundamentals:{label}] refreshing {len(todo)} of {len(tickers)}", flush=True)
     FUNDAMENTALS_STATUS["last_fetch_attempted"] = len(todo)
-    await _warm_provider_session()
+    # If a known-good ticker comes back empty the provider is refusing us, and grinding
+    # through hundreds of doomed requests only digs the hole deeper. Stop the pass and
+    # let the caller wait it out.
+    if not await _warm_provider_session():
+        FUNDAMENTALS_STATUS.update({"phase": "provider refusing requests",
+                                    "blocked_since": FUNDAMENTALS_STATUS.get("blocked_since") or time.time()})
+        FUNDAMENTALS_STATUS["last_fetch_saved"] = 0
+        print(f"[fundamentals:{label}] provider is refusing requests — skipping this pass", flush=True)
+        return
+    FUNDAMENTALS_STATUS["blocked_since"] = None
     batch, saved = [], 0
     for i, tk in enumerate(todo):
         row = await asyncio.to_thread(_fetch_one_fundamental, tk)
@@ -2721,7 +2735,7 @@ FUNDAMENTALS_STATUS: dict = {
     "started": False, "loops": 0, "last_loop_at": None, "last_error": None,
     "last_detected_count": None, "last_fetch_attempted": None, "last_fetch_saved": None,
     "waiting_on_lock": False, "phase": "not started",
-    "last_fetch_failure": None, "provider_warm": None,
+    "last_fetch_failure": None, "provider_warm": None, "blocked_since": None,
 }
 
 
@@ -2786,7 +2800,9 @@ async def fundamentals_scheduler():
             })
             print(f"[Error: {type(e).__name__}] fundamentals scheduler: {e}", flush=True)
             traceback.print_exc()
-        await asyncio.sleep(3600)
+        # Retrying a refusing provider every hour is what keeps it refusing.
+        blocked = FUNDAMENTALS_STATUS.get("blocked_since")
+        await asyncio.sleep(6 * 3600 if blocked else 3600)
 
 
 def _track_row_hash(prev_hash, record_date, ticker, list_type, entry_price, alpha_score, recorded_at):
