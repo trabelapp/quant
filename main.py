@@ -2584,13 +2584,21 @@ _FUNDAMENTAL_FIELDS = (
 )
 
 
-def _fetch_one_fundamental(ticker: str) -> Optional[dict]:
-    try:
-        info = yf.Ticker(ticker).info or {}
-    except Exception as e:
-        print(f"[fundamentals] {ticker} fetch failed: {type(e).__name__} {e}", flush=True)
-        return None
+def _fetch_one_fundamental(ticker: str, attempts: int = 2) -> Optional[dict]:
+    info = {}
+    for attempt in range(attempts):
+        try:
+            info = yf.Ticker(ticker).info or {}
+        except Exception as e:
+            print(f"[fundamentals] {ticker} fetch failed "
+                  f"(attempt {attempt + 1}/{attempts}): {type(e).__name__} {e}", flush=True)
+            info = {}
+        if info.get("marketCap"):
+            break
+        if attempt + 1 < attempts:
+            time.sleep(1.5)
     if not info.get("marketCap"):
+        print(f"[fundamentals] {ticker} returned no market cap after {attempts} attempts", flush=True)
         return None
     row = {"ticker": ticker, "fetched_at": time.time()}
     for col, key in _FUNDAMENTAL_FIELDS:
@@ -2640,7 +2648,24 @@ async def refresh_fundamentals(force: bool = False):
     todo = [t for t in tickers if t not in fresh]
     if not todo:
         return
-    print(f"[fundamentals] refreshing {len(todo)} of {len(tickers)} tickers", flush=True)
+    # Fetch what people actually open first. A pass takes ~7 minutes and a restart can
+    # cut it short, and in universe order the tickers left behind were arbitrary -- which
+    # is how a ticker sitting at the top of today's scanner ended up with an empty
+    # snowflake. Today's detected names come first, then everything else.
+    priority: list = []
+    try:
+        conn = db()
+        priority = [r["ticker"] for r in conn.execute(
+            "SELECT ticker FROM daily_scans WHERE scan_date=? AND quant_pass=1 "
+            "ORDER BY alpha_score DESC", (today_str(),))]
+        conn.close()
+        rank = {tk: i for i, tk in enumerate(priority)}
+        todo.sort(key=lambda tk: rank.get(tk, len(rank) + 1))
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] fundamentals prioritisation failed: {e}", flush=True)
+    queued_detected = sum(1 for tk in todo if tk in set(priority))
+    print(f"[fundamentals] refreshing {len(todo)} of {len(tickers)} tickers "
+          f"({queued_detected} of them detected today, fetched first)", flush=True)
     batch, saved = [], 0
     for i, tk in enumerate(todo):
         row = await asyncio.to_thread(_fetch_one_fundamental, tk)
@@ -4272,6 +4297,11 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
                               (now - FUNDAMENTALS_TTL,)).fetchone()[0]
     fund_last = conn.execute("SELECT MAX(fetched_at) FROM fundamentals").fetchone()[0]
     fund_sectors = conn.execute("SELECT COUNT(DISTINCT sector) FROM fundamentals WHERE sector IS NOT NULL").fetchone()[0]
+    have_f = {r["ticker"] for r in conn.execute("SELECT ticker FROM fundamentals")}
+    missing_f = [t for t in UNIVERSE if t not in have_f]
+    detected_today = [r["ticker"] for r in conn.execute(
+        "SELECT ticker FROM daily_scans WHERE scan_date=? AND quant_pass=1", (today_str(),))]
+    missing_detected = [t for t in detected_today if t not in have_f]
     conn.close()
 
     views_by_day = {}
@@ -4424,6 +4454,11 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
             "sectors": fund_sectors,
             "last_fetch_et": (datetime.fromtimestamp(fund_last, ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M")
                               if fund_last else None),
+            "missing": len(missing_f),
+            "missing_sample": missing_f[:15],
+            # The ones that matter: a detected ticker with no fundamentals is a visibly
+            # empty snowflake on the page people actually open.
+            "missing_detected": missing_detected,
         },
         "channels": channels_block,
         "events_last_24h": events_24h,
