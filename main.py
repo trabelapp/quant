@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import bisect
 import hashlib
 import html as html_lib
 import hmac
@@ -579,6 +580,28 @@ def init_db():
         -- Survives account deletion on purpose: without it, "delete account, sign up
         -- again" hands out an unlimited number of free trials. Stores no readable
         -- address -- only a peppered one-way hash that can be compared but not reversed.
+        -- Company fundamentals, refreshed once a day. Separate from daily_scans because
+        -- these barely move intraday and are fetched from a different source on a
+        -- different schedule; mixing them would mean refetching balance sheets four
+        -- times a day for numbers that change quarterly.
+        CREATE TABLE IF NOT EXISTS fundamentals (
+            ticker TEXT PRIMARY KEY,
+            sector TEXT,
+            market_cap REAL,
+            trailing_pe REAL,
+            price_to_book REAL,
+            ev_ebitda REAL,
+            peg REAL,
+            return_on_equity REAL,
+            profit_margin REAL,
+            debt_to_equity REAL,
+            current_ratio REAL,
+            revenue_growth REAL,
+            earnings_growth REAL,
+            dividend_yield REAL,
+            payout_ratio REAL,
+            fetched_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS trial_ledger (
             email_hash TEXT PRIMARY KEY,
             first_trial_at REAL NOT NULL
@@ -1691,6 +1714,29 @@ UI_STRINGS = {
     "act_sizing_link": {"en": "Position sizing calculator", "ko": "포지션 사이즈 계산기"},
     "act_toggle": {"en": "Set an alert or add to portfolio", "ko": "알림 설정 또는 포트폴리오에 추가"},
     "score_radar_alt": {"en": "Score breakdown radar", "ko": "점수 구성 레이더 차트"},
+    "sf_value": {"en": "VALUE", "ko": "저평가"},
+    "sf_growth": {"en": "GROWTH", "ko": "성장"},
+    "sf_profit": {"en": "PROFIT", "ko": "수익성"},
+    "sf_health": {"en": "HEALTH", "ko": "건전성"},
+    "sf_dividend": {"en": "DIVIDEND", "ko": "배당"},
+    "sf_ai": {"en": "AI CHECK", "ko": "AI 평가"},
+    "sf_value_help": {"en": "How cheap the price is against earnings and book value, ranked against other companies in the same sector. Higher means cheaper than its peers.",
+                       "ko": "이익과 순자산 대비 주가가 얼마나 싼지를 같은 섹터의 다른 기업들과 비교한 순위입니다. 높을수록 동종 업계보다 쌉니다."},
+    "sf_growth_help": {"en": "Revenue and earnings growth, ranked against sector peers. Higher means growing faster than the companies it competes with.",
+                        "ko": "매출과 이익 성장률을 같은 섹터 기업들과 비교한 순위입니다. 높을수록 경쟁사보다 빠르게 성장하고 있습니다."},
+    "sf_profit_help": {"en": "Return on equity and profit margin, ranked against sector peers. Higher means it converts revenue into profit better than its peers.",
+                        "ko": "자기자본이익률(ROE)과 순이익률을 같은 섹터 기업들과 비교한 순위입니다. 높을수록 매출을 이익으로 잘 바꿉니다."},
+    "sf_health_help": {"en": "Debt relative to equity and short-term liquidity, ranked against sector peers. Higher means a stronger balance sheet.",
+                        "ko": "자기자본 대비 부채와 단기 유동성을 같은 섹터 기업들과 비교한 순위입니다. 높을수록 재무구조가 튼튼합니다."},
+    "sf_dividend_help": {"en": "Dividend yield ranked against sector peers. Blank means the company pays no dividend, which is not the same as a bad one.",
+                          "ko": "배당수익률을 같은 섹터 기업들과 비교한 순위입니다. 비어 있으면 배당을 지급하지 않는 것이며, 배당이 나쁘다는 뜻이 아닙니다."},
+    "sf_ai_help": {"en": "The AI's entry-timing review of the current setup — blow-off-top and dead-cat-bounce risk. This is the only axis about timing rather than the company.",
+                    "ko": "현재 진입 시점에 대한 AI의 검토입니다 — 급등 후 고점과 데드캣 바운스 위험. 여섯 축 중 유일하게 기업이 아니라 타이밍에 관한 항목입니다."},
+    "sf_title": {"en": "Company profile", "ko": "기업 프로필"},
+    "sf_vs_sector": {"en": "ranked against", "ko": "섹터 비교:"},
+    "sf_no_data": {"en": "Fundamentals not loaded for this ticker yet.", "ko": "이 종목의 재무 데이터가 아직 준비되지 않았습니다."},
+    "sf_footnote": {"en": "Each axis is a percentile against other companies in the same sector — wider is better. A blank axis means the figure does not exist for this company, not that it scores zero.",
+                     "ko": "각 축은 같은 섹터 기업들과 비교한 백분위입니다 — 넓을수록 좋습니다. 빈 축은 해당 수치가 이 기업에 존재하지 않는다는 뜻이며, 0점이라는 의미가 아닙니다."},
     "score_detail_show": {"en": "Breakdown", "ko": "구성 보기"},
     "score_detail_hide": {"en": "Hide breakdown", "ko": "구성 접기"},
     "score_note": {"en": "<b>Trend</b>, <b>Pullback</b> and <b>AI check</b> are what produce the score. <b>Room</b> and <b>Momentum</b> are shown for context and do not affect it.",
@@ -2257,90 +2303,206 @@ def _clamp01(x: float) -> float:
     return 0.0 if x < 0 else (1.0 if x > 1 else x)
 
 
-def _snowflake_axes(row) -> Optional[dict]:
-    """Five 0-100 values for one ticker, plus the raw number behind each one."""
+
+# --- Snowflake scoring -------------------------------------------------------------
+# "Undervalued" is meaningless in the abstract: a 30x P/E is dear for a utility and
+# cheap for software. Every valuation and quality axis is therefore a percentile against
+# the ticker's OWN SECTOR, which is what makes the shape comparable across the board.
+# Sectors with too few peers to rank fairly fall back to the whole universe.
+MIN_SECTOR_PEERS = 8
+_PEER_CACHE: dict = {"at": 0.0, "by_sector": {}, "all": {}}
+_PEER_CACHE_TTL = 900.0
+
+# (column, higher_is_better)
+_PEER_METRICS = (
+    ("trailing_pe", False), ("price_to_book", False), ("ev_ebitda", False),
+    ("return_on_equity", True), ("profit_margin", True),
+    ("debt_to_equity", False), ("current_ratio", True),
+    ("revenue_growth", True), ("earnings_growth", True),
+    ("dividend_yield", True),
+)
+
+
+def _load_peer_groups() -> tuple:
+    now = time.time()
+    if now - _PEER_CACHE["at"] < _PEER_CACHE_TTL and _PEER_CACHE["by_sector"]:
+        return _PEER_CACHE["by_sector"], _PEER_CACHE["all"]
+    by_sector: dict = {}
+    all_vals: dict = {c: [] for c, _ in _PEER_METRICS}
+    try:
+        conn = db()
+        cols = ",".join(c for c, _ in _PEER_METRICS)
+        for r in conn.execute(f"SELECT sector,{cols} FROM fundamentals"):
+            sec = r["sector"] or "(unknown)"
+            bucket = by_sector.setdefault(sec, {c: [] for c, _ in _PEER_METRICS})
+            for c, _ in _PEER_METRICS:
+                v = r[c]
+                # A negative P/E means the company lost money; it is not "cheap", so it
+                # must not rank as the best value in its sector. Drop it from the ladder.
+                if v is None:
+                    continue
+                if c in ("trailing_pe", "price_to_book", "ev_ebitda") and v <= 0:
+                    continue
+                bucket[c].append(float(v))
+                all_vals[c].append(float(v))
+        conn.close()
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] peer group load failed: {e}", flush=True)
+        return {}, {c: [] for c, _ in _PEER_METRICS}
+    for bucket in by_sector.values():
+        for c in bucket:
+            bucket[c].sort()
+    for c in all_vals:
+        all_vals[c].sort()
+    _PEER_CACHE.update({"at": now, "by_sector": by_sector, "all": all_vals})
+    return by_sector, all_vals
+
+
+def _percentile(sorted_vals: list, value: float, higher_is_better: bool) -> Optional[float]:
+    n = len(sorted_vals)
+    if n < 3 or value is None:
+        return None
+    lo = bisect.bisect_left(sorted_vals, value)
+    hi = bisect.bisect_right(sorted_vals, value)
+    rank = (lo + hi) / 2.0
+    pct = rank / n * 100.0
+    return pct if higher_is_better else 100.0 - pct
+
+
+def _axis_from(metrics: list, row, by_sector: dict, all_vals: dict) -> Optional[float]:
+    """Average the available percentiles for one axis. Missing inputs are skipped rather
+    than scored as zero -- a company with no dividend is not a company with a terrible
+    dividend, and a missing field should not dent the shape as if it were bad news."""
+    sec = (row["sector"] or "(unknown)") if "sector" in row.keys() else "(unknown)"
+    bucket = by_sector.get(sec) or {}
+    scores = []
+    for col, higher in metrics:
+        v = row[col] if col in row.keys() else None
+        if v is None:
+            continue
+        if col in ("trailing_pe", "price_to_book", "ev_ebitda") and v <= 0:
+            continue
+        peers = bucket.get(col) or []
+        if len(peers) < MIN_SECTOR_PEERS:
+            peers = all_vals.get(col) or []
+        pct = _percentile(peers, float(v), higher)
+        if pct is not None:
+            scores.append(pct)
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
+def _fmt_ratio(v, suffix="", digits=1):
+    if v is None:
+        return None
+    try:
+        return f"{float(v):.{digits}f}{suffix}"
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_pct(v, digits=1):
+    if v is None:
+        return None
+    try:
+        return f"{float(v) * 100:.{digits}f}%"
+    except (TypeError, ValueError):
+        return None
+
+
+SNOWFLAKE_AXES = ("VALUE", "GROWTH", "PROFIT", "HEALTH", "DIVIDEND", "AI CHECK")
+
+
+def _snowflake_axes(row, ticker: Optional[str] = None) -> Optional[dict]:
+    """Six axes over the company's own fundamentals, ranked against its sector peers.
+
+    Every axis is a 0-100 percentile where bigger is better, so the shape reads at a
+    glance the way a snowflake is supposed to: a wide shape is a cheap, growing,
+    profitable, solvent company. An axis with no data is returned as None and drawn as a
+    gap rather than a zero -- a company that pays no dividend has no dividend rank, and
+    denting the shape for it would be inventing bad news.
+    """
     if row is None:
         return None
     d = dict(row)
+    tk = ticker or d.get("ticker")
 
-    # TREND -- distance above the 200-day SMA. Below the SMA is 0: the strategy's gate
-    # fails outright there, and calculate_alpha_score() returns a flat 40.
-    above_sma = d.get("pct_above_200d_sma")
-    if above_sma is None:
-        # Distance is unknown on older rows, so this falls back to the pass/fail gate
-        # itself rather than inventing a magnitude. 70 (not 100) so the shape does not
-        # imply a stronger uptrend than was actually measured.
-        trend = 70.0 if d.get("above_200d_sma") else 0.0
-        trend_raw = "above 200d SMA" if d.get("above_200d_sma") else "below 200d SMA"
-    else:
-        trend = _clamp01(above_sma / 25.0) * 100 if above_sma > 0 else 0.0
-        trend_raw = f"{above_sma:+.1f}% vs 200d SMA"
+    fund = None
+    if tk:
+        try:
+            conn = db()
+            fund = conn.execute("SELECT * FROM fundamentals WHERE ticker=?", (tk,)).fetchone()
+            conn.close()
+        except Exception as e:
+            print(f"[Error: {type(e).__name__}] fundamentals lookup failed for {tk}: {e}")
 
-    # PULLBACK -- the centring term from calculate_alpha_score(), recomputed from the
-    # same stored number so the axis and the score can never disagree.
-    off_high = d.get("pct_off_20d_high")
-    if off_high is None:
-        # Rows written before pct_off_20d_high existed can still be recovered exactly:
-        # in the zone the scorer is alpha = 83 + centering*17, so centering inverts
-        # cleanly. Drawing a 0 here instead would show a near-perfect pullback as the
-        # worst possible one, which is worse than showing nothing.
-        alpha = d.get("alpha_score")
-        if alpha is not None and float(alpha) >= QUANT_PASS_THRESHOLD:
-            pullback = _clamp01((float(alpha) - 83.0) / 17.0) * 100
-            pullback_raw = "inside the 10-25% zone"
-        elif alpha is not None:
-            pullback, pullback_raw = 0.0, "outside the 10-25% zone"
-        else:
-            pullback, pullback_raw = 0.0, "no data"
-    else:
-        frac = off_high / 100.0
-        if PULLBACK_MIN <= frac <= PULLBACK_MAX:
-            pullback = _clamp01(1.0 - abs(frac - PULLBACK_CENTER) / PULLBACK_HALF_WIDTH) * 100
-        else:
-            pullback = 0.0
-        pullback_raw = f"{off_high:.1f}% off its 20-day high"
+    by_sector, all_vals = _load_peer_groups() if fund is not None else ({}, {})
 
-    # AI CHECK -- the AI's entry-timing score, higher meaning fewer red flags.
+    def axis(metrics):
+        return _axis_from(metrics, fund, by_sector, all_vals) if fund is not None else None
+
+    value_v = axis([("trailing_pe", False), ("price_to_book", False), ("ev_ebitda", False)])
+    growth_v = axis([("revenue_growth", True), ("earnings_growth", True)])
+    profit_v = axis([("return_on_equity", True), ("profit_margin", True)])
+    health_v = axis([("debt_to_equity", False), ("current_ratio", True)])
+    div_v = axis([("dividend_yield", True)])
+
     timing = d.get("timing_score")
-    ai_check = float(timing) if timing is not None else 0.0
-    ai_raw = f"{timing:.0f}/100" if timing is not None else "not scored yet"
+    ai_v = float(timing) if timing is not None else None
 
-    # ROOM -- how far below the 52-week high, i.e. how much recovery is left before the
-    # stock is back where it started. Context only.
-    from_high = d.get("pct_from_52w_high")
-    if from_high is None:
-        room, room_raw = 0.0, "no data"
-    else:
-        room = _clamp01(abs(min(from_high, 0.0)) / 40.0) * 100
-        room_raw = f"{from_high:.1f}% from 52w high"
+    g = (lambda c: (fund[c] if fund is not None and c in fund.keys() else None))
 
-    # MOMENTUM -- inverted RSI. For a pullback entry an oversold reading is the good end,
-    # so 35 and below scores 100 and 75 and above scores 0. Context only.
-    rsi = d.get("rsi")
-    if rsi is None:
-        momentum, momentum_raw = 0.0, "no data"
-    else:
-        momentum = _clamp01((75.0 - float(rsi)) / 40.0) * 100
-        momentum_raw = f"RSI {rsi:.1f}"
+    def pos(c):
+        """Ratios that are only meaningful when positive. A negative P/E means losses and
+        a negative P/B means negative book value; both are excluded from the ranking, so
+        printing them next to a high score would contradict the shape."""
+        v = g(c)
+        return v if (v is not None and v > 0) else None
 
+    def div(c):
+        """A company paying nothing has no yield and no payout to report -- showing
+        "0.0%" reads as a measured figure rather than an absence."""
+        v = g(c)
+        return v if (v is not None and v > 0) else None
+
+    sector = g("sector") or "-"
+
+    def raw(*parts):
+        got = [x for x in parts if x]
+        return " · ".join(got) if got else "데이터 없음"
+
+    axes = [
+        {"key": "VALUE", "label_key": "sf_value", "value": value_v, "scored": True,
+         "raw": raw(_fmt_ratio(pos("trailing_pe"), "x PER"), _fmt_ratio(pos("price_to_book"), "x PBR")),
+         "help_key": "sf_value_help"},
+        {"key": "GROWTH", "label_key": "sf_growth", "value": growth_v, "scored": True,
+         "raw": raw(_fmt_pct(g("revenue_growth")) and f'매출 {_fmt_pct(g("revenue_growth"))}',
+                    _fmt_pct(g("earnings_growth")) and f'이익 {_fmt_pct(g("earnings_growth"))}'),
+         "help_key": "sf_growth_help"},
+        {"key": "PROFIT", "label_key": "sf_profit", "value": profit_v, "scored": True,
+         "raw": raw(_fmt_pct(g("return_on_equity")) and f'ROE {_fmt_pct(g("return_on_equity"))}',
+                    _fmt_pct(g("profit_margin")) and f'마진 {_fmt_pct(g("profit_margin"))}'),
+         "help_key": "sf_profit_help"},
+        {"key": "HEALTH", "label_key": "sf_health", "value": health_v, "scored": True,
+         "raw": raw(_fmt_ratio(g("debt_to_equity"), "% 부채비율", 0), _fmt_ratio(pos("current_ratio"), "x 유동비율", 2)),
+         "help_key": "sf_health_help"},
+        {"key": "DIVIDEND", "label_key": "sf_dividend", "value": div_v, "scored": True,
+         "raw": (raw(_fmt_ratio(div("dividend_yield"), "% 배당수익률", 2),
+                     _fmt_pct(div("payout_ratio")) and f'성향 {_fmt_pct(div("payout_ratio"))}')
+                 if div("dividend_yield") else "배당 없음"),
+         "help_key": "sf_dividend_help"},
+        {"key": "AI CHECK", "label_key": "sf_ai", "value": ai_v, "scored": True,
+         "raw": (f"{timing:.0f}/100" if timing is not None else None) or "미평가",
+         "help_key": "sf_ai_help"},
+    ]
+
+    known = [a["value"] for a in axes if a["value"] is not None]
     return {
-        "axes": [
-            {"key": "TREND", "value": round(trend, 1), "raw": trend_raw, "scored": True,
-             "help": "How far the price sits above its 200-day moving average. The strategy only "
-                     "considers stocks above it — below the line the quant score is capped at 40."},
-            {"key": "PULLBACK", "value": round(pullback, 1), "raw": pullback_raw, "scored": True,
-             "help": "How centred the pullback is in the 10–25% band below the stock's own 20-day high. "
-                     "17.5% scores highest. This is the gradient that orders the results."},
-            {"key": "AI CHECK", "value": round(ai_check, 1), "raw": ai_raw, "scored": True,
-             "help": "The AI's entry-timing review, looking for blow-off-top and dead-cat-bounce risk. "
-                     "Higher means fewer red flags. It is half of the overall score."},
-            {"key": "ROOM", "value": round(room, 1), "raw": room_raw, "scored": False,
-             "help": "How far below its 52-week high the stock still is. Context only — it does not "
-                     "affect the score."},
-            {"key": "MOMENTUM", "value": round(momentum, 1), "raw": momentum_raw, "scored": False,
-             "help": "RSI, inverted: for a pullback entry an oversold reading is the favourable end. "
-                     "Context only — it does not affect the score."},
-        ],
+        "axes": axes,
+        "sector": sector,
+        "have_fundamentals": fund is not None,
+        "covered": len(known),
         "quant_score": d.get("alpha_score"),
         "ai_score": timing,
         "overall_score": (round((float(d["alpha_score"]) + float(timing)) / 2.0, 1)
@@ -2378,6 +2540,142 @@ async def build_scan_row(ticker: str, mode: str, df=None, make_ai=False):
 # entirely on these rows being written automatically and never edited afterwards. Adding
 # an UPDATE, a DELETE, or any human-facing way to add a row would silently destroy it.
 # -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Fundamentals
+# -----------------------------------------------------------------------------
+# The score radar used to plot technical inputs only, because that was all the app
+# stored. These are the numbers a snowflake is actually supposed to answer -- is this
+# company cheap, growing, profitable, solvent, paying you -- so they are fetched and
+# kept for the whole universe, once a day.
+FUNDAMENTALS_TTL = 20 * 3600          # a quarter's numbers do not change overnight
+FUNDAMENTALS_FETCH_GAP = 0.15         # polite spacing; a full universe pass takes ~7 min
+
+_FUNDAMENTAL_FIELDS = (
+    ("sector", "sector"),
+    ("market_cap", "marketCap"),
+    ("trailing_pe", "trailingPE"),
+    ("price_to_book", "priceToBook"),
+    ("ev_ebitda", "enterpriseToEbitda"),
+    ("peg", "trailingPegRatio"),
+    ("return_on_equity", "returnOnEquity"),
+    ("profit_margin", "profitMargins"),
+    ("debt_to_equity", "debtToEquity"),
+    ("current_ratio", "currentRatio"),
+    ("revenue_growth", "revenueGrowth"),
+    ("earnings_growth", "earningsGrowth"),
+    ("dividend_yield", "dividendYield"),
+    ("payout_ratio", "payoutRatio"),
+)
+
+
+def _fetch_one_fundamental(ticker: str) -> Optional[dict]:
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception as e:
+        print(f"[fundamentals] {ticker} fetch failed: {type(e).__name__} {e}", flush=True)
+        return None
+    if not info.get("marketCap"):
+        return None
+    row = {"ticker": ticker, "fetched_at": time.time()}
+    for col, key in _FUNDAMENTAL_FIELDS:
+        v = info.get(key)
+        if col == "sector":
+            row[col] = str(v) if v else None
+        else:
+            try:
+                row[col] = float(v) if v is not None else None
+            except (TypeError, ValueError):
+                row[col] = None
+    return row
+
+
+def _save_fundamentals(rows: list):
+    if not rows:
+        return
+    cols = ["ticker", "fetched_at"] + [c for c, _ in _FUNDAMENTAL_FIELDS]
+    placeholders = ",".join("?" for _ in cols)
+    updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "ticker")
+    conn = db()
+    try:
+        conn.executemany(
+            f"INSERT INTO fundamentals({','.join(cols)}) VALUES({placeholders}) "
+            f"ON CONFLICT(ticker) DO UPDATE SET {updates}",
+            [tuple(r.get(c) for c in cols) for r in rows],
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] fundamentals save failed: {e}", flush=True)
+    finally:
+        conn.close()
+
+
+async def refresh_fundamentals(force: bool = False):
+    """One sequential pass over the universe. Sequential on purpose: this is the same
+    provider the price scan uses, and running both wide at once is what triggered
+    rate-limiting before. It runs once a day and nothing waits on it."""
+    tickers = list(UNIVERSE)
+    if not tickers:
+        return
+    conn = db()
+    fresh = {r["ticker"] for r in conn.execute(
+        "SELECT ticker FROM fundamentals WHERE fetched_at >= ?", (time.time() - FUNDAMENTALS_TTL,)
+    )} if not force else set()
+    conn.close()
+    todo = [t for t in tickers if t not in fresh]
+    if not todo:
+        return
+    print(f"[fundamentals] refreshing {len(todo)} of {len(tickers)} tickers", flush=True)
+    batch, saved = [], 0
+    for i, tk in enumerate(todo):
+        row = await asyncio.to_thread(_fetch_one_fundamental, tk)
+        if row:
+            batch.append(row)
+        if len(batch) >= 25:
+            await asyncio.to_thread(_save_fundamentals, batch)
+            saved += len(batch)
+            batch = []
+        await asyncio.sleep(FUNDAMENTALS_FETCH_GAP)
+    if batch:
+        await asyncio.to_thread(_save_fundamentals, batch)
+        saved += len(batch)
+    print(f"[fundamentals] saved {saved}/{len(todo)}", flush=True)
+
+
+# A full pass takes ~7 minutes and holds BATCH_LOCK, so it must never land on a scan.
+# 18:00 ET is two hours after the last scan of the day (16:00) and fifteen before the
+# first of the next, which is the widest quiet window there is.
+FUNDAMENTALS_HOUR_ET = 18
+
+
+async def fundamentals_scheduler():
+    await asyncio.sleep(120)  # let the price warmup finish first
+    while True:
+        try:
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            target = now_et.replace(hour=FUNDAMENTALS_HOUR_ET, minute=0, second=0, microsecond=0)
+            if target <= now_et:
+                target += timedelta(days=1)
+            wait = (target - now_et).total_seconds()
+            # First boot with an empty table would otherwise show no snowflake at all
+            # until the next 18:00, so seed it immediately and let the daily run take
+            # over from there.
+            conn = db()
+            have = conn.execute("SELECT COUNT(*) FROM fundamentals").fetchone()[0]
+            conn.close()
+            if have == 0 and UNIVERSE:
+                print("[fundamentals] table is empty — seeding now", flush=True)
+                async with BATCH_LOCK:
+                    await refresh_fundamentals()
+            await asyncio.sleep(wait)
+            if UNIVERSE:
+                async with BATCH_LOCK:
+                    await refresh_fundamentals()
+        except Exception as e:
+            print(f"[Error: {type(e).__name__}] fundamentals scheduler: {e}", flush=True)
+            await asyncio.sleep(3600)
+
+
 def _track_row_hash(prev_hash, record_date, ticker, list_type, entry_price, alpha_score, recorded_at):
     payload = f"{prev_hash or ''}|{record_date}|{ticker}|{list_type}|{entry_price}|{alpha_score}|{recorded_at}"
     return hashlib.sha256(payload.encode()).hexdigest()
@@ -3273,6 +3571,7 @@ async def startup():
     asyncio.create_task(backtest_scheduler())
     asyncio.create_task(trial_lifecycle_scheduler())
     asyncio.create_task(gumroad_reconcile_scheduler())
+    asyncio.create_task(fundamentals_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
@@ -4360,6 +4659,9 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     alpha_score = row["alpha_score"] if row else None
     timing_score = row["timing_score"] if row else None
     overall_score = round((alpha_score + timing_score) / 2, 1) if alpha_score is not None and timing_score is not None else None
+    # Reads the fundamentals table and the peer ladders, so it goes to a worker thread
+    # rather than blocking the loop on this request path.
+    snowflake = await asyncio.to_thread(_snowflake_axes, row, ticker)
     return {"ai":{
         "ai_report": row["ai_report"] if row else None,
         "report_sections": report_sections,
@@ -4376,7 +4678,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
         "error": row["ai_error"] if row else None,
         "language": row["ai_language"] if row and row["ai_report"] else None,
         "language_requested": language,
-        "snowflake": _snowflake_axes(row),
+        "snowflake": snowflake,
         "quota_exhausted": AI_QUOTA_EXHAUSTED_DATE == today_str(),
         # The price the score/verdict were computed from -- this only updates at the
         # next scan cycle (SCAN_TIMES_ET), while the live price shown alongside it can
@@ -7411,8 +7713,23 @@ header,.panel{{background:var(--panel);border:1px solid var(--border)}}
    which meant the single number the whole product produces was the least visible thing
    on the page. */
 .score-card{{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px}}
-.score-head{{display:flex;gap:14px;align-items:center}}
-.snowflake-wrap{{flex-shrink:0;width:152px;height:152px}}
+.score-head{{display:flex;gap:16px;align-items:center;flex-wrap:wrap}}
+.snowflake-wrap{{flex-shrink:0;width:248px;height:248px}}
+.sf-title{{font-size:11.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);margin:14px 0 2px}}
+.sf-sector{{font-size:12px;color:var(--dim);margin-bottom:8px}}
+.sf-sector b{{color:var(--head)}}
+.sf-legend{{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 14px;margin-top:4px}}
+.sf-item{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:4px 0;border-bottom:1px solid var(--border2);font-size:13.5px}}
+.sf-item .nm{{font-weight:700;color:var(--head);display:flex;align-items:center;gap:4px;white-space:nowrap}}
+.sf-item .sc{{font-weight:800;font-variant-numeric:tabular-nums}}
+.sf-item .rw{{font-size:11.5px;color:var(--dim);text-align:right;flex:1}}
+.sf-item.empty .nm,.sf-item.empty .sc{{color:var(--dim);font-weight:600}}
+.sf-foot{{font-size:11.5px;color:var(--dim);line-height:1.6;margin-top:9px}}
+@media(max-width:640px){{
+  .snowflake-wrap{{width:min(300px,84vw);height:min(300px,84vw);margin:0 auto}}
+  .sf-legend{{grid-template-columns:1fr}}
+  .sf-item{{font-size:14px}}
+}}
 .snowflake-wrap svg{{width:100%;height:100%;display:block;overflow:visible}}
 .score-main{{flex:1;min-width:0}}
 .score-num{{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:2px}}
@@ -7431,8 +7748,10 @@ header,.panel{{background:var(--panel);border:1px solid var(--border)}}
 .score-note{{font-size:11.5px;color:var(--dim);line-height:1.6;margin-top:9px}}
 .score-note b{{color:var(--head)}}
 @media(max-width:640px){{
+  /* This block sits after the snowflake rules, so a width here overrides them. Keep it
+     to the score number only -- the radar's own mobile size is set with its other
+     styles above, and shrinking it here is what made the axis labels unreadable. */
   .score-head{{gap:10px}}
-  .snowflake-wrap{{width:124px;height:124px}}
   .score-num b{{font-size:34px}}
 }}
 header{{padding:12px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap;border-radius:10px}}
@@ -7605,24 +7924,27 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 </div>
 </div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div><div class="score-card" id="scoreCard" style="display:none">
 <div class="score-head">
-<div class="snowflake-wrap"><svg id="snowflake" viewBox="-32 -10 264 224" role="img" aria-label="Score breakdown radar"></svg></div>
+<div class="snowflake-wrap"><svg id="snowflake" viewBox="-30 -14 260 232" role="img" aria-label="Score breakdown radar"></svg></div>
 <div class="score-main">
 <div class="score-num"><b id="scoreBig">-</b><span class="outof" id="scoreOutOf">/ 100</span></div>
 <div id="scoreBadge" style="margin:4px 0 6px"></div>
 <div class="score-split" id="scoreSplit"></div>
 </div>
 </div>
-<button class="score-detail-btn" id="scoreDetailBtn" onclick="toggleScoreDetail()" aria-expanded="false" aria-controls="scoreDetail"></button>
-<div id="scoreDetail" hidden>
 <div class="score-axes" id="scoreAxes"></div>
 <div class="score-note" id="scoreNote"></div>
-</div>
 </div>
 <div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="scoreDrift" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange)"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
 <div class="toast" id="toast"></div><script>
 const USER_LANGUAGE='{pref_language}';
 const SCORE_DETAIL_SHOW={json.dumps(t("score_detail_show", lang))};
 const SCORE_DETAIL_HIDE={json.dumps(t("score_detail_hide", lang))};
+const SF_TEXT={json.dumps({k: t(k, lang) for k in (
+    "sf_value","sf_growth","sf_profit","sf_health","sf_dividend","sf_ai",
+    "sf_value_help","sf_growth_help","sf_profit_help","sf_health_help","sf_dividend_help","sf_ai_help",
+    "sf_title","sf_vs_sector","sf_no_data","sf_footnote")})};
+const SCORE_SPLIT_NOTE={json.dumps(t("score_split", lang))};
+const SCORE_QUANT_ONLY={json.dumps(t("score_quant_only", lang))};
 const DEFAULT_SORT='{pref_default_sort}';
 const DEFAULT_VIEW='{pref_default_view}';
 const TRIAL_ENDS_STR='{trial_ends_str}';
@@ -7661,13 +7983,6 @@ function watchChartSize(el){{
     try{{chart.resize(w,h)}}catch(e){{}}
   }}).observe(el);
 }}
-function toggleScoreDetail(){{
-  const d=document.getElementById('scoreDetail'),b=document.getElementById('scoreDetailBtn');
-  const open=d.hidden;
-  d.hidden=!open;
-  b.setAttribute('aria-expanded',String(open));
-  b.innerText=open?SCORE_DETAIL_HIDE:SCORE_DETAIL_SHOW;
-}}
 function init(){{const c=document.getElementById('chart');chart=LightweightCharts.createChart(c,{{width:c.clientWidth,height:c.clientHeight,layout:{{background:{{type:'solid',color:CHART_THEME.bg}},textColor:CHART_THEME.text}},grid:{{vertLines:{{color:CHART_THEME.grid}},horzLines:{{color:CHART_THEME.grid}}}},timeScale:{{timeVisible:false}}}});candle=chart.addCandlestickSeries({{upColor:CHART_THEME.up,downColor:CHART_THEME.down,borderUpColor:CHART_THEME.up,borderDownColor:CHART_THEME.down,wickUpColor:CHART_THEME.up,wickDownColor:CHART_THEME.down}});volume=chart.addHistogramSeries({{color:CHART_THEME.vol,priceFormat:{{type:'volume'}},priceScaleId:''}});volume.priceScale().applyOptions({{scaleMargins:{{top:.8,bottom:0}}}});smaLines.sma20=chart.addLineSeries({{color:CHART_THEME.sma20,lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma50=chart.addLineSeries({{color:CHART_THEME.sma50,lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma200=chart.addLineSeries({{color:CHART_THEME.sma200,lineWidth:1,priceLineVisible:false,lastValueVisible:false}});bbLines.upper=chart.addLineSeries({{color:CHART_THEME.bb,lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});bbLines.lower=chart.addLineSeries({{color:CHART_THEME.bb,lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});watchChartSize(c);window.onresize=()=>{{chart.resize(c.clientWidth,c.clientHeight);Object.entries(idxCharts).forEach(([k,ic])=>{{const el=document.getElementById('idx-'+k);if(el)ic.resize(el.clientWidth,el.clientHeight)}})}};['sp500','ndx'].forEach(k=>{{const el=document.getElementById('idx-'+k);const ic=LightweightCharts.createChart(el,{{width:el.clientWidth,height:el.clientHeight,layout:{{background:{{type:'solid',color:CHART_THEME.bg}},textColor:CHART_THEME.text,fontSize:9}},grid:{{vertLines:{{visible:false}},horzLines:{{visible:false}}}},rightPriceScale:{{visible:false}},timeScale:{{visible:false}},handleScroll:false,handleScale:false}});idxCharts[k]=ic;idxCharts[k+'_line']=ic.addLineSeries({{color:CHART_THEME.sma20,lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}})}})}}
 async function loadIndices(){{try{{const r=await fetch('/api/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;const boxEl=document.getElementById('idx-'+k);if(boxEl&&boxEl.clientWidth&&boxEl.clientHeight)idxCharts[k].resize(boxEl.clientWidth,boxEl.clientHeight);idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);idxCharts[k+'_line'].applyOptions({{color:chg>=0?'#26a69a':'#ef5350'}});const valEl=document.getElementById('idx-'+k+'-val');if(valEl)valEl.innerHTML=`${{last}} <span style="color:${{chg>=0?'#26a69a':'#ef5350'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
 async function loadScoreHistory(t){{const el=document.getElementById('scoretrend');try{{const r=await fetch(`/api/score-history?ticker=${{encodeURIComponent(t)}}`);const d=await r.json();const scores=(d.points||[]).map(p=>p.alpha_score).filter(v=>v!=null);if(scores.length<2){{el.innerHTML=scores.length?scores[scores.length-1].toFixed(1):'-';return}}el.innerHTML=sparklineSVG(scores)+' '+scores[scores.length-1].toFixed(1)}}catch(e){{el.innerText='-'}}}}
@@ -7676,58 +7991,77 @@ function updateUcount(d){{document.getElementById('ucount').innerText=d.universe
 async function scan(){{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
 async function pollForUpdates(){{try{{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
 
-// ---- Score radar -----------------------------------------------------------------
-// Every axis is normalised so a bigger shape is better for THIS strategy (RSI included:
-// for a pullback entry, oversold is the good end). Only three of the five move the
-// score, and the list below marks which -- a five-pointed shape that implied five
-// inputs would be claiming more than the model does.
-const SNOW_N=5;
+// ---- Company snowflake ------------------------------------------------------------
+// Six fundamental axes, each a percentile against the ticker's own sector, so a wider
+// shape means a cheaper / faster-growing / more profitable / sounder / better-paying
+// company. An axis with no figure is drawn as a gap at the centre rather than a zero --
+// a company with no dividend has no dividend rank, and denting the shape would be
+// inventing bad news about it.
+const SNOW_N=6;
+const SNOW_KEYS=['sf_value','sf_growth','sf_profit','sf_health','sf_dividend','sf_ai'];
 function snowPoint(cx,cy,r,i){{const a=(-90+i*360/SNOW_N)*Math.PI/180;return [cx+r*Math.cos(a),cy+r*Math.sin(a)];}}
 function snowPoly(cx,cy,r){{let p=[];for(let i=0;i<SNOW_N;i++){{const q=snowPoint(cx,cy,r,i);p.push(q[0].toFixed(1)+','+q[1].toFixed(1));}}return p.join(' ');}}
-function scoreColor(v){{if(v===null||v===undefined)return 'var(--dim)';if(v>=83)return 'var(--green)';if(v>=60)return 'var(--orange)';return 'var(--red)';}}
+function sfColor(v){{if(v===null||v===undefined)return 'var(--dim)';if(v>=66)return 'var(--green)';if(v>=33)return 'var(--orange)';return 'var(--red)';}}
 
 function renderSnowflake(sf){{
   const card=document.getElementById('scoreCard');
   if(!sf){{card.style.display='none';return;}}
   card.style.display='block';
-  const cx=100,cy=100,R=62;
   const axes=sf.axes||[];
+  const cx=100,cy=100,R=64;
   let g='';
-  // grid rings + spokes
   [0.25,0.5,0.75,1].forEach(f=>{{g+=`<polygon points="${{snowPoly(cx,cy,R*f)}}" fill="none" stroke="var(--border)" stroke-width="1"/>`;}});
-  for(let i=0;i<SNOW_N;i++){{const q=snowPoint(cx,cy,R,i);g+=`<line x1="${{cx}}" y1="${{cy}}" x2="${{q[0].toFixed(1)}}" y2="${{q[1].toFixed(1)}}" stroke="var(--border)" stroke-width="1"/>`;}}
-  // data shape
-  const col=scoreColor(sf.overall_score);
-  const pts=axes.map((a,i)=>{{const q=snowPoint(cx,cy,R*Math.max(0.02,(a.value||0)/100),i);return q[0].toFixed(1)+','+q[1].toFixed(1);}}).join(' ');
-  g+=`<polygon points="${{pts}}" fill="${{col}}" fill-opacity="0.28" stroke="${{col}}" stroke-width="2" stroke-linejoin="round"/>`;
-  axes.forEach((a,i)=>{{const q=snowPoint(cx,cy,R*Math.max(0.02,(a.value||0)/100),i);
-    g+=`<circle cx="${{q[0].toFixed(1)}}" cy="${{q[1].toFixed(1)}}" r="2.6" fill="${{col}}"/>`;}});
-  // labels
-  axes.forEach((a,i)=>{{const q=snowPoint(cx,cy,R+14,i);
-    const anchor=Math.abs(q[0]-cx)<6?'middle':(q[0]>cx?'start':'end');
-    g+=`<text x="${{q[0].toFixed(1)}}" y="${{(q[1]+3.5).toFixed(1)}}" text-anchor="${{anchor}}" font-size="9.5" font-weight="700" letter-spacing="0.4" fill="${{a.scored?'var(--head)':'var(--dim)'}}">${{a.key}}</text>`;}});
+  for(let i=0;i<SNOW_N;i++){{const q=snowPoint(cx,cy,R,i);
+    const missing=(axes[i]&&(axes[i].value===null||axes[i].value===undefined));
+    g+=`<line x1="${{cx}}" y1="${{cy}}" x2="${{q[0].toFixed(1)}}" y2="${{q[1].toFixed(1)}}" stroke="var(--border)" stroke-width="1"${{missing?' stroke-dasharray="3 3"':''}}/>`;}}
+
+  const known=axes.filter(a=>a.value!==null&&a.value!==undefined).map(a=>a.value);
+  const avg=known.length?known.reduce((s,v)=>s+v,0)/known.length:null;
+  const col=sfColor(avg);
+  // Draw across only the axes that have a figure. Collapsing a missing one to the
+  // centre spikes the shape and reads as a catastrophic score -- and AI check is absent
+  // for every ticker that did not clear the quant scan, which is most of them. The
+  // spoke and its label stay visible, dimmed, so the gap is still legible.
+  const pts=axes.map((a,i)=>({{a,i}}))
+    .filter(o=>o.a.value!==null&&o.a.value!==undefined)
+    .map(o=>{{const q=snowPoint(cx,cy,R*Math.max(0.02,o.a.value/100),o.i);
+      return q[0].toFixed(1)+','+q[1].toFixed(1);}}).join(' ');
+  g+=`<polygon points="${{pts}}" fill="${{col}}" fill-opacity="0.3" stroke="${{col}}" stroke-width="2.5" stroke-linejoin="round"/>`;
+  axes.forEach((a,i)=>{{if(a.value===null||a.value===undefined)return;
+    const q=snowPoint(cx,cy,R*Math.max(0.02,a.value/100),i);
+    g+=`<circle cx="${{q[0].toFixed(1)}}" cy="${{q[1].toFixed(1)}}" r="3.2" fill="${{col}}"/>`;}});
+  axes.forEach((a,i)=>{{const q=snowPoint(cx,cy,R+20,i);
+    const anchor=Math.abs(q[0]-cx)<8?'middle':(q[0]>cx?'start':'end');
+    const dim=(a.value===null||a.value===undefined);
+    g+=`<text x="${{q[0].toFixed(1)}}" y="${{(q[1]+4).toFixed(1)}}" text-anchor="${{anchor}}" font-size="14" font-weight="800" letter-spacing="0.2" fill="${{dim?'var(--dim)':'var(--head)'}}">${{SF_TEXT[SNOW_KEYS[i]]||a.key}}</text>`;}});
   document.getElementById('snowflake').innerHTML=g;
 
   const q=sf.quant_score,ai=sf.ai_score;
   const hasOverall=sf.overall_score!==null&&sf.overall_score!==undefined;
   const shown=hasOverall?sf.overall_score:(q??null);
   const big=document.getElementById('scoreBig');
-  big.innerText=shown!==null?shown:'-';
-  big.style.color=scoreColor(shown);
+  big.innerText=shown!==null&&shown!==undefined?shown:'-';
+  big.style.color=(shown===null||shown===undefined)?'var(--dim)':(shown>=83?'var(--green)':shown>=60?'var(--orange)':'var(--red)');
   document.getElementById('scoreBadge').innerHTML=sf.verdict?`<span class="badge ${{verdictClass(sf.verdict)}}">${{sf.verdict}}</span>`:'';
   document.getElementById('scoreSplit').innerHTML=hasOverall
-    ? `Quant <b>${{q}}</b> &middot; AI check <b>${{ai}}</b> &middot; averaged into the total`
-    : `Quant score only. The AI check runs on tickers that clear the quant bar, and this one has not, so there is no combined score.`;
-  document.getElementById('scoreAxes').innerHTML=axes.map(a=>
-    `<div class="score-axis ${{a.scored?'scored':''}}"><span class="nm">${{a.key}}`+
-    `<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">${{a.help}}</span></span>`+
-    `</span><span class="rw">${{a.raw}}</span></div>`).join('');
-  const dBtn=document.getElementById('scoreDetailBtn');
-  if(dBtn && !dBtn.innerText) dBtn.innerText=SCORE_DETAIL_SHOW;
+    ? `Quant <b>${{q}}</b> &middot; AI <b>${{ai}}</b> &middot; ${{SCORE_SPLIT_NOTE}}`
+    : SCORE_QUANT_ONLY;
+
+  const legend=axes.map((a,i)=>{{
+    const empty=(a.value===null||a.value===undefined);
+    const label=SF_TEXT[SNOW_KEYS[i]]||a.key;
+    const help=SF_TEXT[SNOW_KEYS[i]+'_help']||'';
+    return `<div class="sf-item ${{empty?'empty':''}}"><span class="nm">${{label}}`+
+      `<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">${{help}}</span></span>`+
+      `<span class="sc" style="color:${{empty?'var(--dim)':sfColor(a.value)}}">${{empty?'—':Math.round(a.value)}}</span></span>`+
+      `<span class="rw">${{a.raw||''}}</span></div>`;}}).join('');
+  document.getElementById('scoreAxes').innerHTML=
+    `<div class="sf-title">${{SF_TEXT.sf_title}}</div>`+
+    `<div class="sf-sector">${{SF_TEXT.sf_vs_sector}} <b>${{sf.sector||'-'}}</b></div>`+
+    `<div class="sf-legend">${{legend}}</div>`;
   document.getElementById('scoreNote').innerHTML=
-    `<b>Trend</b>, <b>Pullback</b> and <b>AI check</b> are what produce the score. `+
-    `<b>Room</b> and <b>Momentum</b> are shown for context and do not affect it. `+
-    (sf.passed?`This one cleared today's scan.`:`This one did <b>not</b> clear today's scan.`);
+    sf.have_fundamentals?`<div class="sf-foot">${{SF_TEXT.sf_footnote}}</div>`
+                        :`<div class="sf-foot">${{SF_TEXT.sf_no_data}}</div>`;
 }}
 
 async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';document.getElementById('aiTldr').style.display='none';document.getElementById('scoreDrift').style.display='none';document.getElementById('scoreCard').style.display='none';const fastPromise=fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const sw=document.getElementById('staleWarning');if(d.fast.stale_as_of){{const asOfDate=new Date(d.fast.stale_as_of*1000);sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing last known data from ${{asOfDate.toLocaleString()}}.`}}else if(d.fast.stale_db_date){{sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing indicators from the last scan on ${{d.fast.stale_db_date}}. No chart available for this snapshot.`}}else{{sw.style.display='none'}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('portfolioPrice').value=d.fast.price??'';document.getElementById('portfolioShares').value='';renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();renderSnowflake(x.ai?.snowflake);const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';const reviewedNote=x.ai.updated_at?` <span style="color:var(--dim);font-size:11px" title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter">· AI reviewed ${{new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}})}}</span>`:'';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100${{reviewedNote}}`;const tldrEl=document.getElementById('aiTldr');const verdictPhrase={{Favorable:'looks like a reasonable entry point',Caution:'has some risk worth reading below',Risk:'looks risky right now'}}[x.ai.timing_verdict]||'has been reviewed';const trendPhrase=d.fast.above_200d_sma?'still in a long-term uptrend':'below its long-term trend';const pullbackPhrase=d.fast.pct_from_52w_high!=null?`, ${{Math.abs(d.fast.pct_from_52w_high)}}% off its 52-week high`:'';tldrEl.innerHTML=`<b>Bottom line:</b> ${{ticker}} ${{verdictPhrase}} — ${{trendPhrase}}${{pullbackPhrase}}. Score ${{x.ai.overall_score??'-'}}/100.<div class="tldr-next">Not a decision you need to make now — <b style="color:var(--head)">Set Alert</b> above to get emailed if it hits your price, or <b style="color:var(--head)">Save to Portfolio</b> to track it alongside your other picks.</div>`;tldrEl.style.display='block'}}else{{vEl.style.display='none';document.getElementById('aiTldr').style.display='none'}}const driftEl=document.getElementById('scoreDrift');if(x.ai?.scan_price&&d.fast?.price){{const drift=(d.fast.price-x.ai.scan_price)/x.ai.scan_price*100;if(Math.abs(drift)>=2){{const scanTimeStr=x.ai.updated_at?new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}}):'earlier today';driftEl.innerHTML=`⚠ This score was computed at $${{x.ai.scan_price}} (${{scanTimeStr}}) — price has moved ${{drift>=0?'+':''}}${{drift.toFixed(1)}}% since then, now $${{d.fast.price}}. The setup may no longer look the same.`;driftEl.style.display='block'}}else{{driftEl.style.display='none'}}}}else{{driftEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');const langMismatch=x.ai?.language&&x.ai.language!==x.ai.language_requested;const langNote=langMismatch?`<div class="notice" style="margin-bottom:8px;font-size:12px">Showing in ${{x.ai.language==='ko'?'Korean':'English'}} — today's AI usage limit was reached before this could be regenerated in your preferred language. It switches automatically once quota resets.</div>`:'';if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=langNote+Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=!x.ai?.quant_pass?'AI analysis only runs for tickers that clear the daily quant scan — this one did not make the list today.':(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':(x.ai?.quota_exhausted?"Today's AI usage limit has been reached, so this review couldn't be generated right now — a shared daily limit, unrelated to your language setting. It resumes automatically tomorrow.":'AI analysis is unavailable.'))}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
