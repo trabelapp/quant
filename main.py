@@ -723,6 +723,13 @@ def init_db():
             conn.execute("ALTER TABLE daily_scans ADD COLUMN volume_ratio REAL")
         if "ai_prompt_version" not in scan_cols:
             conn.execute("ALTER TABLE daily_scans ADD COLUMN ai_prompt_version INTEGER")
+        # The two quantities calculate_alpha_score() decides on. They were computed and
+        # thrown away every scan; the score radar needs them as numbers, not re-derived
+        # guesses, or the chart would be showing something other than what scored.
+        if "pct_off_20d_high" not in scan_cols:
+            conn.execute("ALTER TABLE daily_scans ADD COLUMN pct_off_20d_high REAL")
+        if "pct_above_200d_sma" not in scan_cols:
+            conn.execute("ALTER TABLE daily_scans ADD COLUMN pct_above_200d_sma REAL")
         if "ai_scored_alpha_score" not in scan_cols:
             conn.execute("ALTER TABLE daily_scans ADD COLUMN ai_scored_alpha_score REAL")
 
@@ -2019,10 +2026,20 @@ def analyze_dataframe(ticker, df):
         pct_from_high = round((price / high_52w - 1) * 100, 2) if high_52w else None
         pct_from_low = round((price / low_52w - 1) * 100, 2) if low_52w else None
         above_trend = None
+        pct_above_sma200 = None
         if len(close) >= 200:
             sma200 = close.rolling(200).mean().iloc[-1]
-            if pd.notna(sma200):
+            if pd.notna(sma200) and float(sma200) > 0:
                 above_trend = bool(price > float(sma200))
+                pct_above_sma200 = round((price / float(sma200) - 1) * 100, 2)
+
+        # Same 20-day prior high calculate_alpha_score() uses -- through yesterday, so a
+        # gap-up day cannot serve as its own pullback reference.
+        pct_off_20d_high = None
+        if len(high) >= 21:
+            hh20_prior = float(high.iloc[-21:-1].max())
+            if hh20_prior > 0:
+                pct_off_20d_high = round((1.0 - price / hh20_prior) * 100, 2)
 
         volume_ratio = None
         try:
@@ -2038,10 +2055,126 @@ def analyze_dataframe(ticker, df):
                 "alpha_score": score, "rsi": round(float(rsi_series.iloc[-1]), 2),
                 "macd": round(float(macd_hist.iloc[-1]), 4),
                 "pct_from_52w_high": pct_from_high, "pct_from_52w_low": pct_from_low,
-                "above_200d_sma": above_trend, "volume_ratio": volume_ratio}
+                "above_200d_sma": above_trend, "volume_ratio": volume_ratio,
+                "pct_off_20d_high": pct_off_20d_high, "pct_above_200d_sma": pct_above_sma200}
     except Exception as e:
         print(f"[Error: {type(e).__name__}] Dataframe analysis error ({ticker}): {e}")
         return None
+
+
+
+# -----------------------------------------------------------------------------
+# Score radar
+# -----------------------------------------------------------------------------
+# A radar chart only tells the truth if a bigger shape always means "better for this
+# strategy", so every axis below is normalised in that direction -- including RSI, where
+# for a pullback entry LOW is the good end, not high.
+#
+# The harder honesty problem: only three of these five actually move the score.
+# calculate_alpha_score() decides on exactly two things (is price above the 200-day SMA,
+# and how centred the pullback is in the 10-25% band), and the AI's timing_score is the
+# other half of the overall. Room and Momentum are context the reader may want but they
+# do not score anything. Each axis carries scored=True/False and the UI shows the
+# difference, because a five-axis chart that implies five inputs would be the exact kind
+# of overclaim this product cannot afford.
+SNOWFLAKE_AXES = ("TREND", "PULLBACK", "AI CHECK", "ROOM", "MOMENTUM")
+
+
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0 else (1.0 if x > 1 else x)
+
+
+def _snowflake_axes(row) -> Optional[dict]:
+    """Five 0-100 values for one ticker, plus the raw number behind each one."""
+    if row is None:
+        return None
+    d = dict(row)
+
+    # TREND -- distance above the 200-day SMA. Below the SMA is 0: the strategy's gate
+    # fails outright there, and calculate_alpha_score() returns a flat 40.
+    above_sma = d.get("pct_above_200d_sma")
+    if above_sma is None:
+        # Distance is unknown on older rows, so this falls back to the pass/fail gate
+        # itself rather than inventing a magnitude. 70 (not 100) so the shape does not
+        # imply a stronger uptrend than was actually measured.
+        trend = 70.0 if d.get("above_200d_sma") else 0.0
+        trend_raw = "above 200d SMA" if d.get("above_200d_sma") else "below 200d SMA"
+    else:
+        trend = _clamp01(above_sma / 25.0) * 100 if above_sma > 0 else 0.0
+        trend_raw = f"{above_sma:+.1f}% vs 200d SMA"
+
+    # PULLBACK -- the centring term from calculate_alpha_score(), recomputed from the
+    # same stored number so the axis and the score can never disagree.
+    off_high = d.get("pct_off_20d_high")
+    if off_high is None:
+        # Rows written before pct_off_20d_high existed can still be recovered exactly:
+        # in the zone the scorer is alpha = 83 + centering*17, so centering inverts
+        # cleanly. Drawing a 0 here instead would show a near-perfect pullback as the
+        # worst possible one, which is worse than showing nothing.
+        alpha = d.get("alpha_score")
+        if alpha is not None and float(alpha) >= QUANT_PASS_THRESHOLD:
+            pullback = _clamp01((float(alpha) - 83.0) / 17.0) * 100
+            pullback_raw = "inside the 10-25% zone"
+        elif alpha is not None:
+            pullback, pullback_raw = 0.0, "outside the 10-25% zone"
+        else:
+            pullback, pullback_raw = 0.0, "no data"
+    else:
+        frac = off_high / 100.0
+        if PULLBACK_MIN <= frac <= PULLBACK_MAX:
+            pullback = _clamp01(1.0 - abs(frac - PULLBACK_CENTER) / PULLBACK_HALF_WIDTH) * 100
+        else:
+            pullback = 0.0
+        pullback_raw = f"{off_high:.1f}% off its 20-day high"
+
+    # AI CHECK -- the AI's entry-timing score, higher meaning fewer red flags.
+    timing = d.get("timing_score")
+    ai_check = float(timing) if timing is not None else 0.0
+    ai_raw = f"{timing:.0f}/100" if timing is not None else "not scored yet"
+
+    # ROOM -- how far below the 52-week high, i.e. how much recovery is left before the
+    # stock is back where it started. Context only.
+    from_high = d.get("pct_from_52w_high")
+    if from_high is None:
+        room, room_raw = 0.0, "no data"
+    else:
+        room = _clamp01(abs(min(from_high, 0.0)) / 40.0) * 100
+        room_raw = f"{from_high:.1f}% from 52w high"
+
+    # MOMENTUM -- inverted RSI. For a pullback entry an oversold reading is the good end,
+    # so 35 and below scores 100 and 75 and above scores 0. Context only.
+    rsi = d.get("rsi")
+    if rsi is None:
+        momentum, momentum_raw = 0.0, "no data"
+    else:
+        momentum = _clamp01((75.0 - float(rsi)) / 40.0) * 100
+        momentum_raw = f"RSI {rsi:.1f}"
+
+    return {
+        "axes": [
+            {"key": "TREND", "value": round(trend, 1), "raw": trend_raw, "scored": True,
+             "help": "How far the price sits above its 200-day moving average. The strategy only "
+                     "considers stocks above it — below the line the quant score is capped at 40."},
+            {"key": "PULLBACK", "value": round(pullback, 1), "raw": pullback_raw, "scored": True,
+             "help": "How centred the pullback is in the 10–25% band below the stock's own 20-day high. "
+                     "17.5% scores highest. This is the gradient that orders the results."},
+            {"key": "AI CHECK", "value": round(ai_check, 1), "raw": ai_raw, "scored": True,
+             "help": "The AI's entry-timing review, looking for blow-off-top and dead-cat-bounce risk. "
+                     "Higher means fewer red flags. It is half of the overall score."},
+            {"key": "ROOM", "value": round(room, 1), "raw": room_raw, "scored": False,
+             "help": "How far below its 52-week high the stock still is. Context only — it does not "
+                     "affect the score."},
+            {"key": "MOMENTUM", "value": round(momentum, 1), "raw": momentum_raw, "scored": False,
+             "help": "RSI, inverted: for a pullback entry an oversold reading is the favourable end. "
+                     "Context only — it does not affect the score."},
+        ],
+        "quant_score": d.get("alpha_score"),
+        "ai_score": timing,
+        "overall_score": (round((float(d["alpha_score"]) + float(timing)) / 2.0, 1)
+                          if d.get("alpha_score") is not None and timing is not None else None),
+        "verdict": d.get("timing_verdict"),
+        "passed": bool(d.get("quant_pass")),
+    }
 
 
 async def build_scan_row(ticker: str, mode: str, df=None, make_ai=False):
@@ -2199,13 +2332,16 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                         INSERT INTO daily_scans
                         (scan_date,ticker,universe,price,change_pct,alpha_score,rsi,macd,
                          pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,
+                         pct_off_20d_high,pct_above_200d_sma,
                          ai_report,short_percent,ai_status,ai_mode,ai_updated_at,ai_error,quant_pass,created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(scan_date,ticker) DO UPDATE SET
                             universe=excluded.universe, price=excluded.price, change_pct=excluded.change_pct,
                             alpha_score=excluded.alpha_score, rsi=excluded.rsi, macd=excluded.macd,
                             pct_from_52w_high=excluded.pct_from_52w_high, pct_from_52w_low=excluded.pct_from_52w_low,
                             above_200d_sma=excluded.above_200d_sma, volume_ratio=excluded.volume_ratio,
+                            pct_off_20d_high=excluded.pct_off_20d_high,
+                            pct_above_200d_sma=excluded.pct_above_200d_sma,
                             ai_report=COALESCE(excluded.ai_report,daily_scans.ai_report),
                             short_percent=excluded.short_percent,
                             ai_status=CASE WHEN daily_scans.ai_report IS NOT NULL THEN daily_scans.ai_status ELSE 'PENDING' END,
@@ -2220,6 +2356,7 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
                         r.get("pct_from_52w_high"), r.get("pct_from_52w_low"),
                         (1 if r.get("above_200d_sma") else (0 if r.get("above_200d_sma") is False else None)),
                         r.get("volume_ratio"),
+                        r.get("pct_off_20d_high"), r.get("pct_above_200d_sma"),
                         r.get("ai_report"),
                         r.get("short_percent"), "PENDING", mode, None, None, r.get("quant_pass", 0), now
                     ))
@@ -3918,7 +4055,8 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
 
     conn=db()
     row=conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
-                                price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version,alpha_score,quant_pass
+                                price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version,alpha_score,quant_pass,
+                                pct_off_20d_high,pct_above_200d_sma
                         FROM daily_scans WHERE scan_date=? AND ticker=?
                         ORDER BY id DESC LIMIT 1""",(today_str(),ticker)).fetchone()
 
@@ -3948,7 +4086,8 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
             ))
             conn.commit()
             row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
-                                          price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version,alpha_score,quant_pass
+                                          price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version,alpha_score,quant_pass,
+                                pct_off_20d_high,pct_above_200d_sma
                                   FROM daily_scans WHERE scan_date=? AND ticker=?""", (today_str(), ticker)).fetchone()
 
     # A cached report only satisfies this request if it matches both the selected
@@ -4011,6 +4150,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
         "error": row["ai_error"] if row else None,
         "language": row["ai_language"] if row and row["ai_report"] else None,
         "language_requested": language,
+        "snowflake": _snowflake_axes(row),
         "quota_exhausted": AI_QUOTA_EXHAUSTED_DATE == today_str(),
         # The price the score/verdict were computed from -- this only updates at the
         # next scan cycle (SCAN_TIMES_ET), while the live price shown alongside it can
@@ -6542,6 +6682,33 @@ header,.panel{{background:var(--panel);border:1px solid var(--border)}}
   .sidebar .side-brand,.side-spacer{{display:none}}
   .side-link{{flex-direction:column;gap:3px;padding:6px 8px;font-size:9.5px}}
 }}
+
+/* Score card -- the score used to live only as a line of text inside the AI panel,
+   which meant the single number the whole product produces was the least visible thing
+   on the page. */
+.score-card{{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px}}
+.score-head{{display:flex;gap:14px;align-items:center}}
+.snowflake-wrap{{flex-shrink:0;width:152px;height:152px}}
+.snowflake-wrap svg{{width:100%;height:100%;display:block;overflow:visible}}
+.score-main{{flex:1;min-width:0}}
+.score-num{{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:2px}}
+.score-num b{{font-size:44px;line-height:1;color:var(--head);font-weight:800;letter-spacing:-1px;font-variant-numeric:tabular-nums}}
+.score-num .outof{{font-size:15px;color:var(--dim);font-weight:600}}
+.score-split{{font-size:12.5px;color:var(--dim);margin-bottom:10px}}
+.score-split b{{color:var(--head);font-variant-numeric:tabular-nums}}
+.score-axes{{display:grid;grid-template-columns:1fr;gap:1px;font-size:12px;margin-top:10px}}
+.score-axis{{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:2px 0;border-bottom:1px solid var(--border2)}}
+.score-axis .nm{{color:var(--dim);letter-spacing:.3px;display:flex;align-items:center;gap:3px}}
+.score-axis.scored .nm{{color:var(--head);font-weight:700}}
+.score-axis .rw{{color:var(--dim);font-variant-numeric:tabular-nums;text-align:right}}
+.score-axis.scored .rw{{color:var(--head)}}
+.score-note{{font-size:11.5px;color:var(--dim);line-height:1.6;margin-top:9px}}
+.score-note b{{color:var(--head)}}
+@media(max-width:640px){{
+  .score-head{{gap:10px}}
+  .snowflake-wrap{{width:124px;height:124px}}
+  .score-num b{{font-size:34px}}
+}}
 header{{padding:12px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap;border-radius:10px}}
 .brand{{font-weight:700;font-size:19px;color:var(--head);text-decoration:none;letter-spacing:.2px}}
 .brand span{{color:var(--dim)}}
@@ -6684,7 +6851,19 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 }}
 </style></head><body>
 {_render_sidebar("scanner")}
-<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Track this ticker</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now"><select id="targetDir" title="Alert when price rises to/above, or falls to/below, the target" style="padding:0 4px"><option value="above">&#8593; at/above</option><option value="below">&#8595; at/below</option></select><input id="target" type="number" placeholder="Target price $" style="width:100px" title="Get an email when the price reaches this value"><button class="action-btn" onclick="setAlert()" title="Email me when the price hits my target">Set Alert</button><input id="portfolioShares" type="number" placeholder="Shares" style="width:70px" title="How many shares you're tracking (optional)"><input id="portfolioPrice" type="number" placeholder="Entry price $" style="width:100px" title="What you paid — defaults to today's scan price if left blank"><button class="action-btn" onclick="savePortfolio()" title="Add this ticker to My Portfolio">Save to Portfolio</button><a href="/settings#alerts" class="manage-alerts-link" title="View or cancel your existing price alerts">Manage alerts</a></div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div><div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="scoreDrift" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange)"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
+<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Track this ticker</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now"><select id="targetDir" title="Alert when price rises to/above, or falls to/below, the target" style="padding:0 4px"><option value="above">&#8593; at/above</option><option value="below">&#8595; at/below</option></select><input id="target" type="number" placeholder="Target price $" style="width:100px" title="Get an email when the price reaches this value"><button class="action-btn" onclick="setAlert()" title="Email me when the price hits my target">Set Alert</button><input id="portfolioShares" type="number" placeholder="Shares" style="width:70px" title="How many shares you're tracking (optional)"><input id="portfolioPrice" type="number" placeholder="Entry price $" style="width:100px" title="What you paid — defaults to today's scan price if left blank"><button class="action-btn" onclick="savePortfolio()" title="Add this ticker to My Portfolio">Save to Portfolio</button><a href="/settings#alerts" class="manage-alerts-link" title="View or cancel your existing price alerts">Manage alerts</a></div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div><div class="score-card" id="scoreCard" style="display:none">
+<div class="score-head">
+<div class="snowflake-wrap"><svg id="snowflake" viewBox="-32 -10 264 224" role="img" aria-label="Score breakdown radar"></svg></div>
+<div class="score-main">
+<div class="score-num"><b id="scoreBig">-</b><span class="outof" id="scoreOutOf">/ 100</span></div>
+<div id="scoreBadge" style="margin:4px 0 6px"></div>
+<div class="score-split" id="scoreSplit"></div>
+</div>
+</div>
+<div class="score-axes" id="scoreAxes"></div>
+<div class="score-note" id="scoreNote"></div>
+</div>
+<div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="scoreDrift" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange)"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
 <div class="toast" id="toast"></div><script>
 const USER_LANGUAGE='{pref_language}';
 const DEFAULT_SORT='{pref_default_sort}';
@@ -6717,7 +6896,60 @@ async function autoScanOnOpen(){{try{{await fetch('/api/auto-scan',{{method:'POS
 function updateUcount(d){{document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:''}}
 async function scan(){{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
 async function pollForUpdates(){{try{{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
-async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';document.getElementById('aiTldr').style.display='none';document.getElementById('scoreDrift').style.display='none';const fastPromise=fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const sw=document.getElementById('staleWarning');if(d.fast.stale_as_of){{const asOfDate=new Date(d.fast.stale_as_of*1000);sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing last known data from ${{asOfDate.toLocaleString()}}.`}}else if(d.fast.stale_db_date){{sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing indicators from the last scan on ${{d.fast.stale_db_date}}. No chart available for this snapshot.`}}else{{sw.style.display='none'}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('portfolioPrice').value=d.fast.price??'';document.getElementById('portfolioShares').value='';renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';const reviewedNote=x.ai.updated_at?` <span style="color:var(--dim);font-size:11px" title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter">· AI reviewed ${{new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}})}}</span>`:'';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100${{reviewedNote}}`;const tldrEl=document.getElementById('aiTldr');const verdictPhrase={{Favorable:'looks like a reasonable entry point',Caution:'has some risk worth reading below',Risk:'looks risky right now'}}[x.ai.timing_verdict]||'has been reviewed';const trendPhrase=d.fast.above_200d_sma?'still in a long-term uptrend':'below its long-term trend';const pullbackPhrase=d.fast.pct_from_52w_high!=null?`, ${{Math.abs(d.fast.pct_from_52w_high)}}% off its 52-week high`:'';tldrEl.innerHTML=`<b>Bottom line:</b> ${{ticker}} ${{verdictPhrase}} — ${{trendPhrase}}${{pullbackPhrase}}. Score ${{x.ai.overall_score??'-'}}/100.<div class="tldr-next">Not a decision you need to make now — <b style="color:var(--head)">Set Alert</b> above to get emailed if it hits your price, or <b style="color:var(--head)">Save to Portfolio</b> to track it alongside your other picks.</div>`;tldrEl.style.display='block'}}else{{vEl.style.display='none';document.getElementById('aiTldr').style.display='none'}}const driftEl=document.getElementById('scoreDrift');if(x.ai?.scan_price&&d.fast?.price){{const drift=(d.fast.price-x.ai.scan_price)/x.ai.scan_price*100;if(Math.abs(drift)>=2){{const scanTimeStr=x.ai.updated_at?new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}}):'earlier today';driftEl.innerHTML=`⚠ This score was computed at $${{x.ai.scan_price}} (${{scanTimeStr}}) — price has moved ${{drift>=0?'+':''}}${{drift.toFixed(1)}}% since then, now $${{d.fast.price}}. The setup may no longer look the same.`;driftEl.style.display='block'}}else{{driftEl.style.display='none'}}}}else{{driftEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');const langMismatch=x.ai?.language&&x.ai.language!==x.ai.language_requested;const langNote=langMismatch?`<div class="notice" style="margin-bottom:8px;font-size:12px">Showing in ${{x.ai.language==='ko'?'Korean':'English'}} — today's AI usage limit was reached before this could be regenerated in your preferred language. It switches automatically once quota resets.</div>`:'';if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=langNote+Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=!x.ai?.quant_pass?'AI analysis only runs for tickers that clear the daily quant scan — this one did not make the list today.':(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':(x.ai?.quota_exhausted?"Today's AI usage limit has been reached, so this review couldn't be generated right now — a shared daily limit, unrelated to your language setting. It resumes automatically tomorrow.":'AI analysis is unavailable.'))}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
+
+// ---- Score radar -----------------------------------------------------------------
+// Every axis is normalised so a bigger shape is better for THIS strategy (RSI included:
+// for a pullback entry, oversold is the good end). Only three of the five move the
+// score, and the list below marks which -- a five-pointed shape that implied five
+// inputs would be claiming more than the model does.
+const SNOW_N=5;
+function snowPoint(cx,cy,r,i){{const a=(-90+i*360/SNOW_N)*Math.PI/180;return [cx+r*Math.cos(a),cy+r*Math.sin(a)];}}
+function snowPoly(cx,cy,r){{let p=[];for(let i=0;i<SNOW_N;i++){{const q=snowPoint(cx,cy,r,i);p.push(q[0].toFixed(1)+','+q[1].toFixed(1));}}return p.join(' ');}}
+function scoreColor(v){{if(v===null||v===undefined)return 'var(--dim)';if(v>=83)return 'var(--green)';if(v>=60)return 'var(--orange)';return 'var(--red)';}}
+
+function renderSnowflake(sf){{
+  const card=document.getElementById('scoreCard');
+  if(!sf){{card.style.display='none';return;}}
+  card.style.display='block';
+  const cx=100,cy=100,R=62;
+  const axes=sf.axes||[];
+  let g='';
+  // grid rings + spokes
+  [0.25,0.5,0.75,1].forEach(f=>{{g+=`<polygon points="${{snowPoly(cx,cy,R*f)}}" fill="none" stroke="var(--border)" stroke-width="1"/>`;}});
+  for(let i=0;i<SNOW_N;i++){{const q=snowPoint(cx,cy,R,i);g+=`<line x1="${{cx}}" y1="${{cy}}" x2="${{q[0].toFixed(1)}}" y2="${{q[1].toFixed(1)}}" stroke="var(--border)" stroke-width="1"/>`;}}
+  // data shape
+  const col=scoreColor(sf.overall_score);
+  const pts=axes.map((a,i)=>{{const q=snowPoint(cx,cy,R*Math.max(0.02,(a.value||0)/100),i);return q[0].toFixed(1)+','+q[1].toFixed(1);}}).join(' ');
+  g+=`<polygon points="${{pts}}" fill="${{col}}" fill-opacity="0.28" stroke="${{col}}" stroke-width="2" stroke-linejoin="round"/>`;
+  axes.forEach((a,i)=>{{const q=snowPoint(cx,cy,R*Math.max(0.02,(a.value||0)/100),i);
+    g+=`<circle cx="${{q[0].toFixed(1)}}" cy="${{q[1].toFixed(1)}}" r="2.6" fill="${{col}}"/>`;}});
+  // labels
+  axes.forEach((a,i)=>{{const q=snowPoint(cx,cy,R+14,i);
+    const anchor=Math.abs(q[0]-cx)<6?'middle':(q[0]>cx?'start':'end');
+    g+=`<text x="${{q[0].toFixed(1)}}" y="${{(q[1]+3.5).toFixed(1)}}" text-anchor="${{anchor}}" font-size="9.5" font-weight="700" letter-spacing="0.4" fill="${{a.scored?'var(--head)':'var(--dim)'}}">${{a.key}}</text>`;}});
+  document.getElementById('snowflake').innerHTML=g;
+
+  const q=sf.quant_score,ai=sf.ai_score;
+  const hasOverall=sf.overall_score!==null&&sf.overall_score!==undefined;
+  const shown=hasOverall?sf.overall_score:(q??null);
+  const big=document.getElementById('scoreBig');
+  big.innerText=shown!==null?shown:'-';
+  big.style.color=scoreColor(shown);
+  document.getElementById('scoreBadge').innerHTML=sf.verdict?`<span class="badge ${{verdictClass(sf.verdict)}}">${{sf.verdict}}</span>`:'';
+  document.getElementById('scoreSplit').innerHTML=hasOverall
+    ? `Quant <b>${{q}}</b> &middot; AI check <b>${{ai}}</b> &middot; averaged into the total`
+    : `Quant score only. The AI check runs on tickers that clear the quant bar, and this one has not, so there is no combined score.`;
+  document.getElementById('scoreAxes').innerHTML=axes.map(a=>
+    `<div class="score-axis ${{a.scored?'scored':''}}"><span class="nm">${{a.key}}`+
+    `<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">${{a.help}}</span></span>`+
+    `</span><span class="rw">${{a.raw}}</span></div>`).join('');
+  document.getElementById('scoreNote').innerHTML=
+    `<b>Trend</b>, <b>Pullback</b> and <b>AI check</b> are what produce the score. `+
+    `<b>Room</b> and <b>Momentum</b> are shown for context and do not affect it. `+
+    (sf.passed?`This one cleared today's scan.`:`This one did <b>not</b> clear today's scan.`);
+}}
+
+async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';document.getElementById('aiTldr').style.display='none';document.getElementById('scoreDrift').style.display='none';document.getElementById('scoreCard').style.display='none';const fastPromise=fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const sw=document.getElementById('staleWarning');if(d.fast.stale_as_of){{const asOfDate=new Date(d.fast.stale_as_of*1000);sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing last known data from ${{asOfDate.toLocaleString()}}.`}}else if(d.fast.stale_db_date){{sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing indicators from the last scan on ${{d.fast.stale_db_date}}. No chart available for this snapshot.`}}else{{sw.style.display='none'}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('portfolioPrice').value=d.fast.price??'';document.getElementById('portfolioShares').value='';renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();renderSnowflake(x.ai?.snowflake);const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';const reviewedNote=x.ai.updated_at?` <span style="color:var(--dim);font-size:11px" title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter">· AI reviewed ${{new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}})}}</span>`:'';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100${{reviewedNote}}`;const tldrEl=document.getElementById('aiTldr');const verdictPhrase={{Favorable:'looks like a reasonable entry point',Caution:'has some risk worth reading below',Risk:'looks risky right now'}}[x.ai.timing_verdict]||'has been reviewed';const trendPhrase=d.fast.above_200d_sma?'still in a long-term uptrend':'below its long-term trend';const pullbackPhrase=d.fast.pct_from_52w_high!=null?`, ${{Math.abs(d.fast.pct_from_52w_high)}}% off its 52-week high`:'';tldrEl.innerHTML=`<b>Bottom line:</b> ${{ticker}} ${{verdictPhrase}} — ${{trendPhrase}}${{pullbackPhrase}}. Score ${{x.ai.overall_score??'-'}}/100.<div class="tldr-next">Not a decision you need to make now — <b style="color:var(--head)">Set Alert</b> above to get emailed if it hits your price, or <b style="color:var(--head)">Save to Portfolio</b> to track it alongside your other picks.</div>`;tldrEl.style.display='block'}}else{{vEl.style.display='none';document.getElementById('aiTldr').style.display='none'}}const driftEl=document.getElementById('scoreDrift');if(x.ai?.scan_price&&d.fast?.price){{const drift=(d.fast.price-x.ai.scan_price)/x.ai.scan_price*100;if(Math.abs(drift)>=2){{const scanTimeStr=x.ai.updated_at?new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}}):'earlier today';driftEl.innerHTML=`⚠ This score was computed at $${{x.ai.scan_price}} (${{scanTimeStr}}) — price has moved ${{drift>=0?'+':''}}${{drift.toFixed(1)}}% since then, now $${{d.fast.price}}. The setup may no longer look the same.`;driftEl.style.display='block'}}else{{driftEl.style.display='none'}}}}else{{driftEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');const langMismatch=x.ai?.language&&x.ai.language!==x.ai.language_requested;const langNote=langMismatch?`<div class="notice" style="margin-bottom:8px;font-size:12px">Showing in ${{x.ai.language==='ko'?'Korean':'English'}} — today's AI usage limit was reached before this could be regenerated in your preferred language. It switches automatically once quota resets.</div>`:'';if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=langNote+Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=!x.ai?.quant_pass?'AI analysis only runs for tickers that clear the daily quant scan — this one did not make the list today.':(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':(x.ai?.quota_exhausted?"Today's AI usage limit has been reached, so this review couldn't be generated right now — a shared daily limit, unrelated to your language setting. It resumes automatically tomorrow.":'AI analysis is unavailable.'))}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
 async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const dir=document.getElementById('targetDir').value;const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);f.append('direction',dir);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 async function savePortfolio(){{const sharesInput=document.getElementById('portfolioShares').value.trim();const priceInput=document.getElementById('portfolioPrice').value.trim();let shares='';if(sharesInput!==''){{const n=parseFloat(sharesInput);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}let price='';if(priceInput!==''){{const p=parseFloat(priceInput);if(!isFinite(p)||p<=0){{showToast("Enter a positive entry price, or leave it blank to use today's scan price.",true);return}}price=p}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);if(price!=='')f.append('price',price);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 function changeTF(x){{tf=x;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tf===x));chart.timeScale().applyOptions({{timeVisible:x==='1h'}});loadTicker(ticker)}}
