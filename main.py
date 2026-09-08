@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import bisect
+import traceback
 import hashlib
 import html as html_lib
 import hmac
@@ -2647,12 +2648,17 @@ async def refresh_fundamentals(force: bool = False, tickers: Optional[list] = No
     conn.close()
     todo = [t for t in tickers if t not in fresh]
     if not todo:
+        # "ran, nothing was stale" has to be distinguishable from "never ran" -- they
+        # look identical from the outside, which is the whole reason this is here.
+        FUNDAMENTALS_STATUS["last_fetch_attempted"] = 0
+        FUNDAMENTALS_STATUS["last_fetch_saved"] = 0
         return
     # Fetch what people actually open first. A pass takes ~7 minutes and a restart can
     # cut it short, and in universe order the tickers left behind were arbitrary -- which
     # is how a ticker sitting at the top of today's scanner ended up with an empty
     # snowflake. Today's detected names come first, then everything else.
     print(f"[fundamentals:{label}] refreshing {len(todo)} of {len(tickers)}", flush=True)
+    FUNDAMENTALS_STATUS["last_fetch_attempted"] = len(todo)
     batch, saved = [], 0
     for i, tk in enumerate(todo):
         row = await asyncio.to_thread(_fetch_one_fundamental, tk)
@@ -2667,6 +2673,7 @@ async def refresh_fundamentals(force: bool = False, tickers: Optional[list] = No
         await asyncio.to_thread(_save_fundamentals, batch)
         saved += len(batch)
     print(f"[fundamentals:{label}] saved {saved}/{len(todo)}", flush=True)
+    FUNDAMENTALS_STATUS["last_fetch_saved"] = saved
     _PEER_CACHE["at"] = 0.0   # ladders are stale the moment new rows land
 
 
@@ -2682,6 +2689,15 @@ async def refresh_fundamentals(force: bool = False, tickers: Optional[list] = No
 FUNDAMENTALS_HOUR_ET = 18            # quiet window: 2h after the last scan of the day
 FUNDAMENTALS_UNIVERSE_DOW = 6        # Sunday -- the full pass, for the peer ladders
 FUNDAMENTALS_MIN_COVERAGE = 0.60     # ladders need breadth, not completeness
+
+# A create_task'd scheduler that dies takes its traceback with it, and an empty
+# snowflake looks identical whether the job is running, waiting on a lock, or dead.
+# This is the only way to tell those apart from outside.
+FUNDAMENTALS_STATUS: dict = {
+    "started": False, "loops": 0, "last_loop_at": None, "last_error": None,
+    "last_detected_count": None, "last_fetch_attempted": None, "last_fetch_saved": None,
+    "waiting_on_lock": False, "phase": "not started",
+}
 
 
 def detected_tickers_today() -> list:
@@ -2701,16 +2717,24 @@ async def refresh_detected_fundamentals():
     seconds, so this can run after every scan instead of once a day -- and a restart
     mid-pass costs almost nothing."""
     detected = detected_tickers_today()
+    FUNDAMENTALS_STATUS["last_detected_count"] = len(detected)
     if detected:
         await refresh_fundamentals(tickers=detected, label="detected")
 
 
 async def fundamentals_scheduler():
+    FUNDAMENTALS_STATUS.update({"started": True, "phase": "warming up"})
     await asyncio.sleep(60)
     while True:
         try:
+            FUNDAMENTALS_STATUS.update({
+                "loops": FUNDAMENTALS_STATUS["loops"] + 1,
+                "last_loop_at": datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S"),
+                "phase": "waiting for batch lock", "waiting_on_lock": True,
+            })
             # Whatever is on the scanner right now gets covered first and cheaply.
             async with BATCH_LOCK:
+                FUNDAMENTALS_STATUS.update({"waiting_on_lock": False, "phase": "detected refresh"})
                 await refresh_detected_fundamentals()
 
             # The ladder: rebuild weekly, or straight away if it is too thin to rank
@@ -2725,10 +2749,18 @@ async def fundamentals_scheduler():
             if thin or due:
                 print(f"[fundamentals] ladder {have}/{len(UNIVERSE)} "
                       f"({'too thin' if thin else 'weekly rebuild'})", flush=True)
+                FUNDAMENTALS_STATUS["phase"] = "universe ladder rebuild"
                 async with BATCH_LOCK:
                     await refresh_fundamentals()
+            FUNDAMENTALS_STATUS.update({"phase": "idle", "last_error": None})
         except Exception as e:
+            FUNDAMENTALS_STATUS.update({
+                "phase": "error",
+                "last_error": f"{type(e).__name__}: {e}",
+                "waiting_on_lock": False,
+            })
             print(f"[Error: {type(e).__name__}] fundamentals scheduler: {e}", flush=True)
+            traceback.print_exc()
         await asyncio.sleep(3600)
 
 
@@ -4474,6 +4506,7 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
             # The ones that matter: a detected ticker with no fundamentals is a visibly
             # empty snowflake on the page people actually open.
             "missing_detected": missing_detected,
+            "scheduler": dict(FUNDAMENTALS_STATUS),
         },
         "channels": channels_block,
         "events_last_24h": events_24h,
