@@ -1735,6 +1735,18 @@ UI_STRINGS = {
     "sf_title": {"en": "Company profile", "ko": "기업 프로필"},
     "sf_vs_sector": {"en": "ranked against", "ko": "섹터 비교:"},
     "sf_no_data": {"en": "Fundamentals not loaded for this ticker yet.", "ko": "이 종목의 재무 데이터가 아직 준비되지 않았습니다."},
+    "sf_nodata": {"en": "no data", "ko": "데이터 없음"},
+    "sf_nodiv": {"en": "pays no dividend", "ko": "배당 없음"},
+    "sf_unscored": {"en": "not reviewed", "ko": "미평가"},
+    "sf_rev": {"en": "rev", "ko": "매출"},
+    "sf_earn": {"en": "earnings", "ko": "이익"},
+    "sf_margin": {"en": "margin", "ko": "마진"},
+    "sf_debt": {"en": "debt/equity", "ko": "부채비율"},
+    "sf_current": {"en": "current ratio", "ko": "유동비율"},
+    "sf_yield": {"en": "yield", "ko": "배당수익률"},
+    "sf_payout": {"en": "payout", "ko": "성향"},
+    "sf_pe": {"en": "P/E", "ko": "PER"},
+    "sf_pb": {"en": "P/B", "ko": "PBR"},
     "sf_footnote": {"en": "Each axis is a percentile against other companies in the same sector — wider is better. A blank axis means the figure does not exist for this company, not that it scores zero.",
                      "ko": "각 축은 같은 섹터 기업들과 비교한 백분위입니다 — 넓을수록 좋습니다. 빈 축은 해당 수치가 이 기업에 존재하지 않는다는 뜻이며, 0점이라는 의미가 아닙니다."},
     "score_detail_show": {"en": "Breakdown", "ko": "구성 보기"},
@@ -2414,7 +2426,7 @@ def _fmt_pct(v, digits=1):
 SNOWFLAKE_AXES = ("VALUE", "GROWTH", "PROFIT", "HEALTH", "DIVIDEND", "AI CHECK")
 
 
-def _snowflake_axes(row, ticker: Optional[str] = None) -> Optional[dict]:
+def _snowflake_axes(row, ticker: Optional[str] = None, lang: str = "en") -> Optional[dict]:
     """Six axes over the company's own fundamentals, ranked against its sector peers.
 
     Every axis is a 0-100 percentile where bigger is better, so the shape reads at a
@@ -2468,32 +2480,35 @@ def _snowflake_axes(row, ticker: Optional[str] = None) -> Optional[dict]:
 
     sector = g("sector") or "-"
 
+    L = (lambda k: t(k, lang))
+
     def raw(*parts):
         got = [x for x in parts if x]
-        return " · ".join(got) if got else "데이터 없음"
+        return " · ".join(got) if got else L("sf_nodata")
 
     axes = [
         {"key": "VALUE", "label_key": "sf_value", "value": value_v, "scored": True,
-         "raw": raw(_fmt_ratio(pos("trailing_pe"), "x PER"), _fmt_ratio(pos("price_to_book"), "x PBR")),
+         "raw": raw(_fmt_ratio(pos("trailing_pe"), "x " + L("sf_pe")), _fmt_ratio(pos("price_to_book"), "x " + L("sf_pb"))),
          "help_key": "sf_value_help"},
         {"key": "GROWTH", "label_key": "sf_growth", "value": growth_v, "scored": True,
-         "raw": raw(_fmt_pct(g("revenue_growth")) and f'매출 {_fmt_pct(g("revenue_growth"))}',
-                    _fmt_pct(g("earnings_growth")) and f'이익 {_fmt_pct(g("earnings_growth"))}'),
+         "raw": raw(_fmt_pct(g("revenue_growth")) and f'{L("sf_rev")} {_fmt_pct(g("revenue_growth"))}',
+                    _fmt_pct(g("earnings_growth")) and f'{L("sf_earn")} {_fmt_pct(g("earnings_growth"))}'),
          "help_key": "sf_growth_help"},
         {"key": "PROFIT", "label_key": "sf_profit", "value": profit_v, "scored": True,
          "raw": raw(_fmt_pct(g("return_on_equity")) and f'ROE {_fmt_pct(g("return_on_equity"))}',
-                    _fmt_pct(g("profit_margin")) and f'마진 {_fmt_pct(g("profit_margin"))}'),
+                    _fmt_pct(g("profit_margin")) and f'{L("sf_margin")} {_fmt_pct(g("profit_margin"))}'),
          "help_key": "sf_profit_help"},
         {"key": "HEALTH", "label_key": "sf_health", "value": health_v, "scored": True,
-         "raw": raw(_fmt_ratio(g("debt_to_equity"), "% 부채비율", 0), _fmt_ratio(pos("current_ratio"), "x 유동비율", 2)),
+         "raw": raw(_fmt_ratio(g("debt_to_equity"), "% " + L("sf_debt"), 0),
+                    _fmt_ratio(pos("current_ratio"), "x " + L("sf_current"), 2)),
          "help_key": "sf_health_help"},
         {"key": "DIVIDEND", "label_key": "sf_dividend", "value": div_v, "scored": True,
-         "raw": (raw(_fmt_ratio(div("dividend_yield"), "% 배당수익률", 2),
-                     _fmt_pct(div("payout_ratio")) and f'성향 {_fmt_pct(div("payout_ratio"))}')
-                 if div("dividend_yield") else "배당 없음"),
+         "raw": (raw(_fmt_ratio(div("dividend_yield"), "% " + L("sf_yield"), 2),
+                     _fmt_pct(div("payout_ratio")) and f'{L("sf_payout")} {_fmt_pct(div("payout_ratio"))}')
+                 if div("dividend_yield") else L("sf_nodiv")),
          "help_key": "sf_dividend_help"},
         {"key": "AI CHECK", "label_key": "sf_ai", "value": ai_v, "scored": True,
-         "raw": (f"{timing:.0f}/100" if timing is not None else None) or "미평가",
+         "raw": (f"{timing:.0f}/100" if timing is not None else None) or L("sf_unscored"),
          "help_key": "sf_ai_help"},
     ]
 
@@ -4244,6 +4259,13 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         "SELECT name,visitor_id,utm_source,email,created_at FROM events WHERE created_at >= ?",
         (now - 7 * 86400,),
     ).fetchall()
+    # Fundamentals feed the snowflake; without a count here there is no way to tell a
+    # batch still running from one that silently failed.
+    fund_total = conn.execute("SELECT COUNT(*) FROM fundamentals").fetchone()[0]
+    fund_fresh = conn.execute("SELECT COUNT(*) FROM fundamentals WHERE fetched_at >= ?",
+                              (now - FUNDAMENTALS_TTL,)).fetchone()[0]
+    fund_last = conn.execute("SELECT MAX(fetched_at) FROM fundamentals").fetchone()[0]
+    fund_sectors = conn.execute("SELECT COUNT(DISTINCT sector) FROM fundamentals WHERE sector IS NOT NULL").fetchone()[0]
     conn.close()
 
     views_by_day = {}
@@ -4389,6 +4411,14 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         "page_views_by_day_et": views_by_day,
         "top_paths_last_7d": dict(sorted(top_paths.items(), key=lambda x: -x[1])[:15]),
         "top_referrers_last_7d": dict(sorted(top_referrers.items(), key=lambda x: -x[1])[:15]),
+        "fundamentals": {
+            "rows": fund_total,
+            "fresh": fund_fresh,
+            "universe": len(UNIVERSE),
+            "sectors": fund_sectors,
+            "last_fetch_et": (datetime.fromtimestamp(fund_last, ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M")
+                              if fund_last else None),
+        },
         "channels": channels_block,
         "events_last_24h": events_24h,
         "events_last_7d": events_7d,
@@ -4661,7 +4691,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     overall_score = round((alpha_score + timing_score) / 2, 1) if alpha_score is not None and timing_score is not None else None
     # Reads the fundamentals table and the peer ladders, so it goes to a worker thread
     # rather than blocking the loop on this request path.
-    snowflake = await asyncio.to_thread(_snowflake_axes, row, ticker)
+    snowflake = await asyncio.to_thread(_snowflake_axes, row, ticker, language)
     return {"ai":{
         "ai_report": row["ai_report"] if row else None,
         "report_sections": report_sections,
@@ -8057,7 +8087,7 @@ function renderSnowflake(sf){{
       `<span class="rw">${{a.raw||''}}</span></div>`;}}).join('');
   document.getElementById('scoreAxes').innerHTML=
     `<div class="sf-title">${{SF_TEXT.sf_title}}</div>`+
-    `<div class="sf-sector">${{SF_TEXT.sf_vs_sector}} <b>${{sf.sector||'-'}}</b></div>`+
+    (sf.sector&&sf.sector!=='-'?`<div class="sf-sector">${{SF_TEXT.sf_vs_sector}} <b>${{sf.sector}}</b></div>`:'')+
     `<div class="sf-legend">${{legend}}</div>`;
   document.getElementById('scoreNote').innerHTML=
     sf.have_fundamentals?`<div class="sf-foot">${{SF_TEXT.sf_footnote}}</div>`
