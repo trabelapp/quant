@@ -567,6 +567,13 @@ def init_db():
             created_at REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
+        -- Survives account deletion on purpose: without it, "delete account, sign up
+        -- again" hands out an unlimited number of free trials. Stores no readable
+        -- address -- only a peppered one-way hash that can be compared but not reversed.
+        CREATE TABLE IF NOT EXISTS trial_ledger (
+            email_hash TEXT PRIMARY KEY,
+            first_trial_at REAL NOT NULL
+        );
         """)
         # Channel attribution. page_views.utm_source is per-visit; users.signup_utm_source
         # is the frozen first-touch channel of the account, which is what lets a payment
@@ -674,6 +681,10 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN unsub_token TEXT")
         if "signup_utm_source" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN signup_utm_source TEXT")
+        # Google accounts get a random password the user never sees, so anything that
+        # asks them to confirm with their password is impossible for them to satisfy.
+        if "auth_provider" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + TRIAL_DAYS * 86400,))
@@ -815,6 +826,81 @@ def validate_password_policy(password: str):
 
 def validate_email(email: str):
     return bool(re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", email))
+
+
+# The pepper turns the ledger from a rainbow-table lookup into something that cannot be
+# reversed even with the database file: email addresses are guessable, a bare sha256 of
+# one is not private. Persisted on the Render disk so it survives restarts -- if it were
+# regenerated, every existing ledger row would silently stop matching.
+TRIAL_PEPPER_FILE = DATA_DIR / "trial_pepper.txt"
+
+
+def _load_trial_pepper() -> str:
+    env = os.getenv("TRIAL_LEDGER_SECRET", "").strip()
+    if env:
+        return env
+    try:
+        if TRIAL_PEPPER_FILE.exists():
+            existing = TRIAL_PEPPER_FILE.read_text().strip()
+            if existing:
+                return existing
+        generated = secrets.token_hex(32)
+        TRIAL_PEPPER_FILE.write_text(generated)
+        print(f"[trial] generated a new trial-ledger pepper at {TRIAL_PEPPER_FILE}", flush=True)
+        return generated
+    except Exception as e:
+        # Losing the pepper only weakens the hash, so a read-only disk must not take the
+        # signup path down with it.
+        print(f"[Error: {type(e).__name__}] trial pepper unavailable ({e}) — using a weaker fallback", flush=True)
+        return "quantify-trial-ledger-fallback"
+
+
+TRIAL_PEPPER = _load_trial_pepper()
+_GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
+
+
+def canonical_email(email: str) -> str:
+    """Collapse the aliases that all land in one real inbox, so one person cannot take
+    one trial per alias. Plus-addressing (kim+1@) is routed to kim@ by essentially every
+    provider; dots are ignored only by Gmail, so that part is Gmail-only."""
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        return email
+    local, _, domain = email.rpartition("@")
+    local = local.split("+", 1)[0]
+    if domain in _GMAIL_DOMAINS:
+        local = local.replace(".", "")
+        domain = "gmail.com"
+    return f"{local}@{domain}"
+
+
+def trial_email_hash(email: str) -> str:
+    return hashlib.sha256(f"{TRIAL_PEPPER}:{canonical_email(email)}".encode()).hexdigest()
+
+
+def claim_trial(email: str) -> float:
+    """Returns the trial_ends_at to give this signup. A first-time address gets the full
+    TRIAL_DAYS and is written into the ledger; an address that has already had one gets
+    its original (long expired) end date back, so the account is created normally but
+    lands straight on the subscribe page. Deliberately not a signup refusal -- someone
+    who wants to pay must still be able to."""
+    now = time.time()
+    full_trial = now + TRIAL_DAYS * 86400
+    try:
+        h = trial_email_hash(email)
+        conn = db()
+        row = conn.execute("SELECT first_trial_at FROM trial_ledger WHERE email_hash=?", (h,)).fetchone()
+        if row:
+            conn.close()
+            return float(row["first_trial_at"]) + TRIAL_DAYS * 86400
+        conn.execute("INSERT OR IGNORE INTO trial_ledger(email_hash,first_trial_at) VALUES(?,?)", (h, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # Never block a signup on the ledger -- a broken anti-abuse check must not cost
+        # a real customer their account.
+        print(f"[Error: {type(e).__name__}] trial ledger check failed for signup: {e}", flush=True)
+    return full_trial
 
 
 def create_session(email: str):
@@ -1643,6 +1729,7 @@ UI_STRINGS = {
     "dir_below": {"en": "&#8595; at/below", "ko": "&#8595; 이하"},
     "dir_above": {"en": "&#8593; at/above", "ko": "&#8593; 이상"},
     "confirm_delete_account": {"en": "Are you sure? This permanently deletes your account and cannot be undone.", "ko": "정말 삭제하시겠습니까? 계정이 영구적으로 삭제되며 되돌릴 수 없습니다."},
+    "confirm_email_to_delete": {"en": "Type your account email to confirm", "ko": "확인을 위해 계정 이메일을 입력하세요"},
     "my_subscription": {"en": "My Subscription", "ko": "내 구독"},
     "onboarding_title": {"en": "Quick guide to QUANTIFY", "ko": "QUANTIFY 빠른 안내"},
     "onboarding_badges_p": {"en": "<b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.", "ko": "<b>배지</b>는 AI가 판단한 진입 타이밍입니다: <b>Favorable</b>(깨끗한 셋업), <b>Caution</b>(알아둘 리스크 있음), <b>Risk</b>(건너뛰거나 기다리는 게 나음). 매수/매도 지시가 아닙니다."},
@@ -4173,12 +4260,21 @@ async def get_settings(request: Request):
 
 
 @app.post("/api/account/delete")
-async def delete_account(request: Request, password: str = Form(...)):
+async def delete_account(request: Request, password: str = Form(""), confirm_email: str = Form("")):
     user = get_logged_in_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     conn = db()
-    row = conn.execute("SELECT password_hash,salt FROM users WHERE email=?", (user,)).fetchone()
-    if not row or not row["password_hash"] or not await asyncio.to_thread(verify_password, password, row["password_hash"], row["salt"]):
+    row = conn.execute("SELECT password_hash,salt,auth_provider FROM users WHERE email=?", (user,)).fetchone()
+    if not row:
+        conn.close()
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if row["auth_provider"] == "google":
+        # They signed in with Google and have no password of their own, so the account
+        # email is the only thing they can be asked to confirm.
+        if confirm_email.strip().lower() != user.lower():
+            conn.close()
+            return JSONResponse({"error": "Type your account email exactly to confirm."}, status_code=400)
+    elif not row["password_hash"] or not await asyncio.to_thread(verify_password, password, row["password_hash"], row["salt"]):
         conn.close()
         return JSONResponse({"error": "Incorrect password."}, status_code=400)
     for table in ("sessions", "portfolio_items", "watchlist_items", "user_alerts"):
@@ -5305,6 +5401,7 @@ async def privacy_page():
 <p>We use a single functional session cookie to keep you logged in. We do not use advertising or cross-site tracking cookies.</p>
 <h2>5. Data Retention</h2>
 <p>We retain account and portfolio data for as long as your account is active. Daily market scan history is retained for a limited number of days for product features like score trends.</p>
+<p>When an account is deleted, we retain one piece of information indefinitely: a one-way cryptographic hash of the email address, recorded solely to enforce the one-free-trial-per-person limit. It cannot be reversed to recover the address, is never used to contact you, and is not shared with anyone. We keep it on the basis of our legitimate interest in preventing repeated free trials.</p>
 <h2>6. Data Security</h2>
 <p>Passwords are hashed with PBKDF2-SHA256 and a unique salt per account — we never store your password in plain text. Traffic to the Service is encrypted in transit.</p>
 <h2>7. Your Rights</h2>
@@ -5376,9 +5473,10 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
     if not row:
         password_hash, salt = await asyncio.to_thread(make_password_hash, secrets.token_urlsafe(32))
         try:
+            trial_ends_at = await asyncio.to_thread(claim_trial, email)
             conn.execute(
-                "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at,pref_theme,signup_utm_source) VALUES(?,?,?,1,?,?,'light',?)",
-                (email, password_hash, salt, time.time(), time.time() + TRIAL_DAYS * 86400, channel),
+                "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at,pref_theme,signup_utm_source,auth_provider) VALUES(?,?,?,1,?,?,'light',?,'google')",
+                (email, password_hash, salt, time.time(), trial_ends_at, channel),
             )
             conn.commit()
             # Only a genuinely new account is a signup -- a returning Google user hitting
@@ -5389,6 +5487,11 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
             # redirected retry) can both pass the SELECT above before either INSERTs --
             # the account now exists (from the other request), so just proceed to log in.
             pass
+    else:
+        # Accounts created before auth_provider existed cannot be told apart in the
+        # database, so they are labelled the first time they sign in with Google again.
+        conn.execute("UPDATE users SET auth_provider='google' WHERE email=? AND auth_provider IS NULL", (email,))
+        conn.commit()
     conn.close()
 
     token = create_session(email)
@@ -5545,11 +5648,12 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     channel = getattr(request.state, "qtfy_channel", None)
     visitor_id = getattr(request.state, "qtfy_visitor_id", None)
+    trial_ends_at = await asyncio.to_thread(claim_trial, email)
     try:
         conn=db()
         conn.execute(
             "INSERT INTO users(email,password_hash,salt,is_active,verify_token_hash,verify_expires,created_at,trial_ends_at,pref_theme,signup_utm_source) VALUES(?,?,?,0,?,?,?,?,'light',?)",
-            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL,time.time(),time.time()+TRIAL_DAYS*86400,channel),
+            (email,password_hash,salt,token_hash,time.time()+VERIFY_TOKEN_TTL,time.time(),trial_ends_at,channel),
         )
         conn.commit()
         conn.close()
@@ -7121,6 +7225,16 @@ async def settings_page(request: Request):
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     lang = get_user_lang(user)
+    conn = db()
+    prov_row = conn.execute("SELECT auth_provider FROM users WHERE email=?", (user,)).fetchone()
+    conn.close()
+    is_google = bool(prov_row and prov_row["auth_provider"] == "google")
+    delete_field = (
+        f'<label>{t("confirm_email_to_delete", lang)}</label>'
+        '<input type="email" id="delete_confirm_email" autocomplete="off" autocapitalize="none">'
+        if is_google else
+        f'<label>{t("confirm_password", lang)}</label><input type="password" id="delete_password">'
+    )
     user = html_lib.escape(user)
     return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Settings</title><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c}}
@@ -7172,7 +7286,7 @@ button.danger-btn{{background:transparent;border:1px solid var(--red);color:var(
 </div>
 <div class="card danger"><h2>{t("danger_zone", lang)}</h2>
 <p style="font-size:14.5px;color:var(--text);margin:0 0 12px">{t("delete_account_warning", lang)}</p>
-<label>{t("confirm_password", lang)}</label><input type="password" id="delete_password">
+{delete_field}
 <button class="danger-btn" onclick="deleteAccount()">{t("delete_account_btn", lang)}</button><div class="msg" id="delete-msg"></div>
 </div>
 </div>
@@ -7185,7 +7299,7 @@ async function saveSettings(){{const f=new FormData();f.append('theme',document.
 async function changePassword(){{const f=new FormData();f.append('current_password',document.getElementById('current_password').value);f.append('new_password',document.getElementById('new_password').value);const r=await fetch('/api/settings/password',{{method:'POST',body:f}});const d=await r.json();const el=document.getElementById('password-msg');el.className='msg '+(r.ok?'ok':'err');el.innerText=d.message||d.error;if(r.ok){{document.getElementById('current_password').value='';document.getElementById('new_password').value=''}}}}
 async function loadAlerts(){{const r=await fetch('/api/alerts/list');const d=await r.json();const el=document.getElementById('alerts-list');if(!d.alerts?.length){{el.innerHTML='<div class="empty-hint">'+{json.dumps(t("loading_empty_hint", lang))}+'</div>';return}}el.innerHTML=d.alerts.map(a=>`<div class="alert-row"><span>${{a.ticker}} ${{a.direction==='below'?{json.dumps(t("dir_below", lang))}:{json.dumps(t("dir_above", lang))}}} $${{a.target_price}}${{a.is_sent?' <span style="color:var(--dim)">'+{json.dumps(t("sent_suffix", lang))}+'</span>':''}}</span><button class="remove-btn" onclick="removeAlert(${{a.id}})">{t("remove_btn", lang)}</button></div>`).join('')}}
 async function removeAlert(id){{const f=new FormData();f.append('id',id);await fetch('/api/alerts/remove',{{method:'POST',body:f}});loadAlerts()}}
-async function deleteAccount(){{const pw=document.getElementById('delete_password').value;if(!pw)return;if(!confirm({json.dumps(t("confirm_delete_account", lang))}))return;const f=new FormData();f.append('password',pw);const r=await fetch('/api/account/delete',{{method:'POST',body:f}});const d=await r.json();if(r.ok){{location.href='/'}}else{{const el=document.getElementById('delete-msg');el.className='msg err';el.innerText=d.error}}}}
+async function deleteAccount(){{const pwEl=document.getElementById('delete_password');const emEl=document.getElementById('delete_confirm_email');const val=(pwEl||emEl).value;if(!val)return;if(!confirm({json.dumps(t("confirm_delete_account", lang))}))return;const f=new FormData();f.append(pwEl?'password':'confirm_email',val);const r=await fetch('/api/account/delete',{{method:'POST',body:f}});const d=await r.json();if(r.ok){{location.href='/'}}else{{const el=document.getElementById('delete-msg');el.className='msg err';el.innerText=d.error}}}}
 loadSettings();loadAlerts();
 </script></body></html>''')
 

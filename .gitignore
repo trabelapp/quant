@@ -17,3 +17,5 @@ venv/
 users.json
 .DS_Store
 .streamlit/
+trial_pepper.txt
+static/.DS_Store
