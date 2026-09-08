@@ -5821,7 +5821,95 @@ PUBLIC_KO: dict[str, str] = {
         "<a href=\"/terms\">이용약관</a> 및 <a href=\"/privacy\">개인정보처리방침</a>",
     "home page</a>.": "홈페이지</a>에서 확인하세요.",
     "See the full numbers on the <a href=\"/#proof\">": "전체 수치는 <a href=\"/#proof\">",
+    # --- Terms of Service. Headings are tag-bounded; clauses are whole sentences.
+    ">Terms of Service<": ">이용약관<",
+    "These Terms of Service (\"Terms\") govern your access to and use of QUANTIFY (the \"Service\"). By creating an account or using the Service, you agree to these Terms.":
+        "본 이용약관(이하 \"약관\")은 QUANTIFY(이하 \"서비스\")에 대한 접근 및 이용에 적용됩니다. 계정을 만들거나 서비스를 이용하면 본 약관에 동의한 것으로 봅니다.",
+    ">1. Description of the Service<": ">1. 서비스 설명<",
+    "QUANTIFY is an informational and educational tool that runs a quantitative scan of the S&amp;P 500 and Nasdaq-100 and generates AI-written commentary about detected tickers. The Service is not a licensed investment adviser, broker-dealer, or financial planner.":
+        "QUANTIFY는 S&amp;P 500과 나스닥100을 정량적으로 스캔하고 감지된 종목에 대해 AI가 작성한 코멘트를 생성하는 정보 제공 및 교육용 도구입니다. 본 서비스는 허가받은 투자자문업자, 증권중개업자, 재무설계사가 아닙니다.",
+    ">2. Not Investment Advice<": ">2. 투자 조언이 아님<",
+    "Nothing on the Service — including quant scores, badges, AI-generated commentary, or any other content — is investment advice, a recommendation, or a solicitation to buy or sell any security. All investment decisions, and all outcomes from those decisions, are solely your own responsibility. Markets involve risk, including the possible loss of your entire investment. Consult a licensed financial professional before making investment decisions.":
+        "퀀트 점수, 배지, AI가 생성한 코멘트를 포함해 본 서비스의 어떤 내용도 투자 조언이나 추천, 증권 매매 권유가 아닙니다. 모든 투자 결정과 그 결과에 대한 책임은 전적으로 이용자 본인에게 있습니다. 시장에는 투자 원금 전액 손실을 포함한 위험이 따릅니다. 투자 결정을 내리기 전에 허가받은 금융 전문가와 상담하시기 바랍니다.",
+    ">3. Eligibility and Your Account<": ">3. 이용 자격 및 계정<",
+    "You must be at least 18 years old to use the Service. You are responsible for maintaining the confidentiality of your password and for all activity under your account. Notify us promptly of any unauthorized use.":
+        "본 서비스는 만 18세 이상만 이용할 수 있습니다. 비밀번호의 기밀 유지와 계정에서 이루어지는 모든 활동에 대한 책임은 이용자에게 있습니다. 무단 사용을 발견하면 즉시 알려주시기 바랍니다.",
+    ">4. Acceptable Use<": ">4. 허용되는 이용<",
+    "You agree not to: scrape, reverse-engineer, or systematically extract data from the Service; interfere with or overload our infrastructure; resell or redistribute Service content as your own product; or use the Service for any unlawful purpose.":
+        "이용자는 다음 행위를 하지 않는 데 동의합니다. 서비스의 데이터를 스크래핑·역설계하거나 조직적으로 추출하는 행위, 당사 인프라를 방해하거나 과부하시키는 행위, 서비스 콘텐츠를 자신의 제품인 것처럼 재판매·재배포하는 행위, 불법적인 목적으로 서비스를 이용하는 행위.",
+    ">5. Third-Party Data<": ">5. 제3자 데이터<",
+    "Market data displayed on the Service is sourced from third-party licensed data providers. News headlines and earnings dates are sourced from Yahoo Finance. This data may be delayed, incomplete, or inaccurate, and QUANTIFY is not affiliated with, endorsed by, or sponsored by any of these providers. We do not guarantee the accuracy, completeness, or timeliness of any data shown.":
+        "본 서비스에 표시되는 시장 데이터는 제3자 라이선스 데이터 제공업체로부터 제공받습니다. 뉴스 헤드라인과 실적 발표일은 Yahoo Finance에서 가져옵니다. 이 데이터는 지연되거나 불완전하거나 부정확할 수 있으며, QUANTIFY는 해당 제공업체들과 제휴 관계에 있지 않고 이들로부터 보증이나 후원을 받지 않습니다. 당사는 표시되는 데이터의 정확성, 완전성, 적시성을 보장하지 않습니다.",
+    ">6. Disclaimers and Limitation of Liability<": ">6. 면책 및 책임의 제한<",
+    "The Service is provided \"as is\" and \"as available,\" without warranties of any kind, express or implied. To the fullest extent permitted by law, QUANTIFY and its operator will not be liable for any direct, indirect, incidental, or consequential damages arising from your use of, or inability to use, the Service, including any investment losses.":
+        "본 서비스는 명시적이든 묵시적이든 어떠한 보증도 없이 \"있는 그대로\", \"이용 가능한 상태로\" 제공됩니다. 법이 허용하는 최대 범위에서, QUANTIFY와 그 운영자는 이용자의 서비스 이용 또는 이용 불가로 인해 발생하는 직접적·간접적·부수적·결과적 손해(투자 손실을 포함)에 대해 책임을 지지 않습니다.",
+    ">7. Termination<": ">7. 이용 종료<",
+    "We may suspend or terminate your account at any time, with or without notice, for conduct that violates these Terms or that we believe is harmful to the Service or other users.":
+        "당사는 본 약관을 위반하거나 서비스 또는 다른 이용자에게 해가 된다고 판단되는 행위에 대해, 사전 통지 여부와 관계없이 언제든지 계정을 정지하거나 종료할 수 있습니다.",
+    ">8. Changes to These Terms<": ">8. 약관의 변경<",
+    "We may update these Terms from time to time. Continued use of the Service after a change constitutes acceptance of the revised Terms. We will update the \"Last updated\" date above when changes are made.":
+        "당사는 본 약관을 수시로 변경할 수 있습니다. 변경 후에도 서비스를 계속 이용하면 변경된 약관에 동의한 것으로 봅니다. 변경이 있을 경우 위의 \"최종 수정일\"을 갱신합니다.",
+    ">9. Contact<": ">9. 문의<",
+    "Questions about these Terms can be sent to ": "본 약관에 관한 문의는 다음으로 보내주시기 바랍니다: ",
+
+    # --- Privacy Policy
+    ">Privacy Policy<": ">개인정보처리방침<",
+    "This Privacy Policy explains what information QUANTIFY (\"we\") collects, how we use it, and the choices you have.":
+        "본 개인정보처리방침은 QUANTIFY(이하 \"당사\")가 어떤 정보를 수집하고 어떻게 이용하는지, 그리고 이용자에게 어떤 선택권이 있는지를 설명합니다.",
+    ">1. Information We Collect<": ">1. 수집하는 정보<",
+    "your email address and a securely hashed password (or, if you sign in with Google, your verified Google email address).":
+        "이메일 주소와 안전하게 해시 처리된 비밀번호(구글로 로그인하는 경우에는 인증된 구글 이메일 주소).",
+    "saved portfolio tickers, price alerts, and display preferences (theme, language, default strategy).":
+        "저장한 포트폴리오 종목, 가격 알림, 표시 설정(테마, 언어, 기본 전략).",
+    "IP address and request timestamps, used only for security purposes such as rate-limiting login and signup attempts.":
+        "IP 주소와 요청 시각. 로그인·가입 시도 횟수 제한 등 보안 목적으로만 사용됩니다.",
+    ">2. How We Use Information<": ">2. 정보의 이용<",
+    "We use this information to operate your account, send transactional emails (email verification, password reset codes, price alerts), generate the AI commentary you request, and keep the Service secure and reliable.":
+        "당사는 이 정보를 계정 운영, 거래성 이메일 발송(이메일 인증, 비밀번호 재설정 코드, 가격 알림), 이용자가 요청한 AI 코멘트 생성, 그리고 서비스의 보안과 안정성 유지에 사용합니다.",
+    ">3. Third-Party Services We Use<": ">3. 이용 중인 제3자 서비스<",
+    "processes ticker/price/technical data to generate AI commentary. We do not send your name, email, or account details to Groq.":
+        "AI 코멘트 생성을 위해 종목·가격·기술적 지표 데이터를 처리합니다. 당사는 이용자의 이름, 이메일, 계정 정보를 Groq에 전송하지 않습니다.",
+    "sends transactional emails (verification, password reset, alerts) on our behalf.":
+        "당사를 대신해 거래성 이메일(인증, 비밀번호 재설정, 알림)을 발송합니다.",
+    ">4. Cookies<": ">4. 쿠키<",
+    "We use a single functional session cookie to keep you logged in. We do not use advertising or cross-site tracking cookies.":
+        "로그인 상태 유지를 위해 기능성 세션 쿠키 하나를 사용합니다. 광고나 교차 사이트 추적 쿠키는 사용하지 않습니다.",
+    ">5. Data Retention<": ">5. 데이터 보관<",
+    "We retain account and portfolio data for as long as your account is active. Daily market scan history is retained for a limited number of days for product features like score trends.":
+        "계정과 포트폴리오 데이터는 계정이 활성 상태인 동안 보관합니다. 일별 시장 스캔 기록은 점수 추이 같은 기능을 위해 제한된 일수 동안만 보관합니다.",
+    "When an account is deleted, we retain one piece of information indefinitely: a one-way cryptographic hash of the email address, recorded solely to enforce the one-free-trial-per-person limit. It cannot be reversed to recover the address, is never used to contact you, and is not shared with anyone. We keep it on the basis of our legitimate interest in preventing repeated free trials.":
+        "계정이 삭제되면 단 하나의 정보만 무기한 보관합니다. 이메일 주소의 단방향 암호학적 해시값으로, 1인 1회 무료 체험 제한을 적용하기 위한 목적으로만 기록됩니다. 이 값으로는 원래 주소를 복원할 수 없고, 연락 목적으로 사용되지 않으며, 제3자에게 제공되지 않습니다. 무료 체험의 반복 이용을 방지하려는 당사의 정당한 이익에 근거해 보관합니다.",
+    ">6. Data Security<": ">6. 데이터 보안<",
+    "Passwords are hashed with PBKDF2-SHA256 and a unique salt per account — we never store your password in plain text. Traffic to the Service is encrypted in transit.":
+        "비밀번호는 계정마다 고유한 솔트와 함께 PBKDF2-SHA256으로 해시 처리되며, 평문으로 저장하지 않습니다. 서비스로 오가는 통신은 전송 중 암호화됩니다.",
+    ">7. Your Rights<": ">7. 이용자의 권리<",
+    "You can update your preferences and password anytime from Settings. To request deletion of your account and associated data, email us and we will process the request.":
+        "설정에서 언제든지 환경설정과 비밀번호를 변경할 수 있습니다. 계정 및 관련 데이터의 삭제를 요청하려면 이메일로 연락 주시면 처리해 드립니다.",
+    ">8. Children's Privacy<": ">8. 아동의 개인정보<",
+    "The Service is not directed at individuals under 18, and we do not knowingly collect information from children.":
+        "본 서비스는 만 18세 미만을 대상으로 하지 않으며, 당사는 아동의 정보를 고의로 수집하지 않습니다.",
+    ">9. Changes to This Policy<": ">9. 방침의 변경<",
+    "We may update this Privacy Policy from time to time. We will update the \"Last updated\" date above when changes are made.":
+        "당사는 본 개인정보처리방침을 수시로 변경할 수 있습니다. 변경이 있을 경우 위의 \"최종 수정일\"을 갱신합니다.",
+    ">10. Contact<": ">10. 문의<",
+    "Questions about this policy can be sent to ": "본 방침에 관한 문의는 다음으로 보내주시기 바랍니다: ",
+    ">Account information:<": ">계정 정보:<",
+    ">Product data you create:<": ">이용자가 생성하는 데이터:<",
+    ">Basic usage data:<": ">기본 이용 데이터:<",
+    " — if you choose to log in with Google, Google shares your verified email address with us to create your session.":
+        " — 구글로 로그인을 선택하면, 구글이 세션 생성을 위해 인증된 이메일 주소를 당사에 제공합니다.",
+    " — we query these for public market data and headlines; no personal data about you is sent to them.":
+        " — 공개된 시장 데이터와 헤드라인을 조회하기 위해 이용하며, 이용자에 관한 개인정보는 전송하지 않습니다.",
+    ">Market and news data providers (Polygon/Massive for market data, Yahoo Finance for news and earnings)<":
+        ">시장·뉴스 데이터 제공업체 (시장 데이터는 Polygon/Massive, 뉴스와 실적은 Yahoo Finance)<",
+    ">Google Sign-In<": ">구글 로그인<",
+    # <title> and og:title read "QUANTIFY. <name>", so the ">Name<" keys above miss them.
+    "QUANTIFY. Terms of Service": "QUANTIFY. 이용약관",
+    "QUANTIFY. Privacy Policy": "QUANTIFY. 개인정보처리방침",
+    # The "Last updated" date is passed in as literal text by both legal pages.
+    "August 30, 2026": "2026년 8월 30일",
 }
+
 
 
 
@@ -5960,9 +6048,28 @@ a{color:#0e8a5f}
 """
 
 
-def render_legal_page(title: str, updated: str, body_html: str, path: str = "") -> HTMLResponse:
+LEGAL_GOVERNING_NOTICE_KO = (
+    '<div class="governing">이 문서는 영문 원본을 번역한 것입니다. 번역본과 영문 원본의 내용이 다를 경우 '
+    '<b>영문 원본이 우선</b>합니다. 원본은 <a href="?lang=en">여기에서</a> 확인할 수 있습니다.</div>'
+)
+
+
+def render_legal_page(title: str, updated: str, body_html: str, path: str = "",
+                      lang: str = "en") -> HTMLResponse:
     og = og_head(f"QUANTIFY. {title}", f"QUANTIFY {title.lower()} — the terms that govern use of the service.", path)
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{og}<style>{LEGAL_CSS}</style></head><body><div class="wrap"><header><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="back" href="/">&larr; Back to home</a></header><h1>{title}</h1><div class="updated">Last updated: {updated}</div>{body_html}</div></body></html>''')
+    toggle = lang_toggle_html(lang, path or "/")
+    # A translated contract is only safe if it says which version wins. Without this the
+    # Korean and English texts are two competing agreements the moment a phrase drifts.
+    notice = LEGAL_GOVERNING_NOTICE_KO if lang == "ko" else ""
+    updated_label = "최종 수정일" if lang == "ko" else "Last updated"
+    back_label = "&larr; 홈으로" if lang == "ko" else "&larr; Back to home"
+    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{og}{hreflang_links(path or "/")}<style>{LEGAL_CSS}
+.governing{{background:#fbf9f2;border:1px solid #ecdcb8;border-radius:10px;padding:14px 18px;font-size:14px;line-height:1.7;color:#5a5344;margin:0 0 26px}}
+.governing a{{color:#0e8a5f}}
+.legalhead{{display:flex;align-items:center;gap:12px;flex-wrap:wrap}}
+.lang-toggle{{display:inline-block;padding:5px 11px;border:1px solid #d9e0dc;border-radius:999px;color:#4d5a54;font-size:13px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}}
+.lang-toggle:hover{{border-color:#0e8a5f;color:#0e8a5f}}
+</style></head><body><div class="wrap"><header><a class="brand" href="/">QUANTIFY<span>.</span></a><div class="legalhead">{toggle}<a class="back" href="/">{back_label}</a></div></header><h1>{title}</h1><div class="updated">{updated_label}: {updated}</div>{notice}{body_html}</div></body></html>''', lang))
 
 
 # Reusable logged-in-app page shell (sidebar + base black-theme CSS lifted from the
@@ -6099,7 +6206,7 @@ def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: st
 
 
 @app.get("/terms", response_class=HTMLResponse)
-async def terms_page():
+async def terms_page(request: Request):
     body = """
 <p>These Terms of Service ("Terms") govern your access to and use of QUANTIFY (the "Service"). By creating an account or using the Service, you agree to these Terms.</p>
 <h2>1. Description of the Service</h2>
@@ -6121,11 +6228,12 @@ async def terms_page():
 <h2>9. Contact</h2>
 <p>Questions about these Terms can be sent to <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</p>
 """
-    return render_legal_page("Terms of Service", "August 30, 2026", body, path="/terms")
+    return render_legal_page("Terms of Service", "August 30, 2026", body, path="/terms",
+                             lang=resolve_lang(request, get_logged_in_user(request)))
 
 
 @app.get("/privacy", response_class=HTMLResponse)
-async def privacy_page():
+async def privacy_page(request: Request):
     body = """
 <p>This Privacy Policy explains what information QUANTIFY ("we") collects, how we use it, and the choices you have.</p>
 <h2>1. Information We Collect</h2>
@@ -6159,7 +6267,8 @@ async def privacy_page():
 <h2>10. Contact</h2>
 <p>Questions about this policy can be sent to <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</p>
 """
-    return render_legal_page("Privacy Policy", "August 30, 2026", body, path="/privacy")
+    return render_legal_page("Privacy Policy", "August 30, 2026", body, path="/privacy",
+                             lang=resolve_lang(request, get_logged_in_user(request)))
 
 
 @app.get("/auth/google/login")
