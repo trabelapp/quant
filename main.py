@@ -4078,8 +4078,11 @@ header{border-bottom:1px solid var(--border);position:sticky;top:0;background:rg
 .btn:hover{background:var(--green-bright);border-color:var(--green-bright);color:#fff}
 .btn-ghost{border-color:var(--border);color:var(--head);background:#ffffff}
 .btn-ghost:hover{border-color:var(--dim2);background:var(--panel2)}
-.btn-demo{border:2px solid var(--green);color:var(--green);background:#ffffff;font-weight:800}
-.btn-demo:hover{background:var(--green);color:#ffffff}
+/* The hero used to offer three competing buttons; 435 home views produced 18 signup-page
+   views and almost no demo clicks. One primary action only -- the lowest-friction one --
+   with the trial as a plain text link underneath. */
+.cta-link{color:var(--dim2);text-decoration:underline;font-weight:600}
+.cta-link:hover{color:var(--green)}
 .hero{padding:96px 24px 76px;text-align:center;background:radial-gradient(ellipse 900px 500px at 50% -10%,rgba(14,138,95,.07),transparent 65%)}
 section:nth-of-type(even){background:var(--panel2)}
 .eyebrow{display:inline-block;font-size:14px;font-weight:700;color:var(--orange);border:1px solid #ecdcb8;background:#fbf3e4;padding:7px 16px;border-radius:20px;letter-spacing:.3px;margin-bottom:26px}
@@ -4158,17 +4161,19 @@ footer a{color:var(--dim2);text-decoration:underline}
 [data-reveal].is-visible>*:nth-child(5){animation-delay:.37s}
 [data-reveal].is-visible>*:nth-child(n+6){animation-delay:.45s}
 @keyframes revealChild{to{opacity:1;transform:translateY(0)}}
-.hero-in{opacity:0;transform:translateY(20px);animation:heroIn .75s cubic-bezier(.16,1,.3,1) forwards}
-.hero-in-1{animation-delay:.05s}
-.hero-in-2{animation-delay:.15s}
-.hero-in-3{animation-delay:.32s}
-.hero-in-4{animation-delay:.48s}
-.hero-in-5{animation-delay:.6s}
+.hero-in{opacity:0;transform:translateY(20px);animation:heroIn .5s cubic-bezier(.16,1,.3,1) forwards}
+/* Kept the stagger, cut the total: the primary CTA used to finish animating in at ~1.2s
+   even though the HTML arrives in ~0.26s. Now it is fully on screen by ~0.7s. */
+.hero-in-1{animation-delay:.02s}
+.hero-in-2{animation-delay:.07s}
+.hero-in-3{animation-delay:.14s}
+.hero-in-4{animation-delay:.21s}
+.hero-in-5{animation-delay:.3s}
 @keyframes heroIn{to{opacity:1;transform:translateY(0)}}
 @media(prefers-reduced-motion:reduce){[data-reveal],[data-reveal].is-visible>*,.hero-in{animation:none;transition:none;opacity:1;transform:none}}
 .btn{transition:transform .15s ease,box-shadow .15s ease}
 .btn:hover{transform:translateY(-1px);box-shadow:0 10px 24px -10px rgba(14,138,95,.45)}
-.btn-hero{padding:16px 28px;font-size:17px;animation:heroPulse 2.6s ease-in-out infinite}
+.btn-hero{padding:17px 32px;font-size:17.5px;animation:heroPulse 2.6s ease-in-out infinite}
 .btn-hero:hover{animation:none}
 @keyframes heroPulse{0%,100%{box-shadow:0 0 0 0 rgba(14,138,95,.28)}50%{box-shadow:0 0 0 10px rgba(14,138,95,0)}}
 @media(prefers-reduced-motion:reduce){.btn-hero{animation:none}}
@@ -4210,10 +4215,18 @@ footer a{color:var(--dim2);text-decoration:underline}
      returning mobile visitors (most of the traffic) with no way back into the app. */
   .navlinks a.navlogin{display:inline-block;color:var(--head);font-weight:700}
   .btn{padding:11px 16px;font-size:14px}
-  .hero{padding:60px 16px 50px}
-  h1{font-size:30px;letter-spacing:-.5px}
-  .sub{font-size:17px}
+  .hero{padding:36px 16px 34px}
+  h1{font-size:29px;letter-spacing:-.5px;margin-bottom:16px}
+  .sub{font-size:16.5px;margin-bottom:24px}
+  .eyebrow{margin-bottom:18px;font-size:12.5px;padding:6px 13px}
   section{padding:54px 16px}
+  /* One button, full width, allowed to wrap -- .btn sets white-space:nowrap globally,
+     which would push a descriptive label off the side of a 375px screen. */
+  .btn-hero{display:block;width:100%;white-space:normal;line-height:1.3;padding:15px 12px;font-size:16px}
+  .cta-row{margin-bottom:12px}
+  /* Pull the scanner mock up so its top edge shows above the fold: the product output is
+     the thing that explains the product, and it used to start entirely below it. */
+  .mock{margin-top:30px}
 }
 </style></head><body>
 <header><div class="nav">
@@ -4225,20 +4238,18 @@ footer a{color:var(--dim2);text-decoration:underline}
 <a class="muted" href="/pricing">Pricing</a>
 <a class="muted" href="/faq">FAQ</a>
 <a class="muted navlogin" href="/login">Log in</a>
-<a class="btn" href="/signup">Get Started Free</a>
+<a class="btn btn-ghost" href="/signup">Start free trial</a>
 </div>
 </div></header>
 
 <section class="hero" style="border-top:none">
-<div class="eyebrow hero-in hero-in-1">7-DAY FREE TRIAL · THEN $9.99/MONTH</div>
+<div class="eyebrow hero-in hero-in-1">%%EYEBROW%%</div>
 <h1 class="hero-in hero-in-2">Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?</h1>
-<p class="sub hero-in hero-in-3">QUANTIFY scans the S&amp;P 500 and Nasdaq-100 every day for stocks pulling back inside a real uptrend, then has AI double-check for blow-off-top and dead-cat-bounce risk — before it ever reaches your screen.</p>
+<p class="sub hero-in hero-in-3">A daily quant scan of the S&amp;P 500 and Nasdaq-100, with an AI second pass that checks every hit for blow-off-top and dead-cat-bounce risk.</p>
 <div class="cta-row hero-in hero-in-4">
-<a class="btn btn-hero" href="/signup">See Today's Full List — Free for 7 Days</a>
-<a class="btn btn-ghost" href="#how">See how it works</a>
-<a class="btn btn-demo" href="/demo">▶ Try the live demo — no signup</a>
+<a class="btn btn-hero" href="/demo">%%HERO_CTA%%</a>
 </div>
-<div class="cta-note hero-in hero-in-5">No credit card required to start. Same data for every subscriber — never personalized picks.</div>
+<div class="cta-note hero-in hero-in-5">Free to look · no signup, no card. <a class="cta-link" href="/signup">Or start your 7-day trial →</a></div>
 
 <div class="mock" data-reveal>
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
@@ -4271,8 +4282,8 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div style="text-align:center;padding:8px 0 2px;font-size:10.5px;color:var(--dim)" id="mockFooterNote">Illustrative example</div>
 </div>
 <div style="text-align:center;margin-top:28px">
-<p style="color:var(--dim2);font-size:13.5px;margin-bottom:14px">That's a preview of 3. The scan runs four times a day around the open and close — miss a run and you miss what it found.</p>
-<a class="btn btn-hero" href="/signup">See the Full List Free for 7 Days</a>
+<p style="color:var(--dim2);font-size:13.5px;margin-bottom:14px">%%MOCK_NOTE%%</p>
+<a class="btn" href="/demo">%%MOCK_CTA%%</a>
 </div>
 </section>
 
@@ -4364,8 +4375,8 @@ QUANTIFY. — informational and educational only, not investment advice.<br>
 <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/pricing">Pricing</a> · <a href="/faq">FAQ</a> · <a href="/about">About</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
 </footer>
 <div class="sticky-cta" id="stickyCta">
-<span>7-day free trial · <b>no credit card required</b></span>
-<a class="btn" href="/signup">Get Started Free</a>
+<span>%%STICKY_NOTE%%</span>
+<a class="btn" href="/demo">%%STICKY_CTA%%</a>
 </div>
 <script>
 if('IntersectionObserver' in window){
@@ -4599,6 +4610,78 @@ def _render_proof_section() -> tuple[str, str, str, str]:
     return "".join(cards_html), note, _render_validation_note(results), _render_universe_note(tickers_sampled)
 
 
+
+# Landing-page copy is filled server-side rather than by the /api/public-preview fetch so
+# that a phone sees the actual numbers in the first paint -- no layout shift, and nothing
+# above the fold depends on JS. Cached because / is the highest-traffic route and the
+# underlying scan only changes four times a day.
+_LANDING_COUNT_CACHE: dict = {"at": 0.0, "detected": None, "scan_date": None}
+_LANDING_COUNT_TTL = 300.0
+
+
+def _landing_scan_counts() -> tuple[int | None, str | None]:
+    now = time.time()
+    if now - _LANDING_COUNT_CACHE["at"] < _LANDING_COUNT_TTL:
+        return _LANDING_COUNT_CACHE["detected"], _LANDING_COUNT_CACHE["scan_date"]
+    detected = scan_date = None
+    try:
+        conn = db()
+        scan_date = conn.execute(
+            "SELECT MAX(scan_date) FROM daily_scans WHERE quant_pass=1 AND timing_score IS NOT NULL"
+        ).fetchone()[0]
+        if scan_date:
+            detected = conn.execute(
+                "SELECT COUNT(*) FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL",
+                (scan_date,),
+            ).fetchone()[0]
+        conn.close()
+    except Exception:
+        # The landing page must render even if the DB is momentarily unavailable; the
+        # copy below falls back to wording that needs no numbers.
+        detected = scan_date = None
+    _LANDING_COUNT_CACHE.update({"at": now, "detected": detected, "scan_date": scan_date})
+    return detected, scan_date
+
+
+def _landing_cta_copy() -> dict:
+    detected, scan_date = _landing_scan_counts()
+    # UNIVERSE is filled by a startup task and is empty until it finishes, so every line
+    # that quotes it needs a version that reads correctly without it.
+    universe = len(UNIVERSE)
+    out_of = f" OUT OF {universe}" if universe else ""
+    of_universe = f" of {universe}" if universe else ""
+    if detected:
+        # A quiet day can legitimately flag one or two names; the copy has to stay
+        # grammatical and honest at those counts too.
+        noun = "stock" if detected == 1 else "stocks"
+        preview_n = min(3, detected)
+        if detected > preview_n:
+            mock_note = (f"That's {preview_n} of the {detected} the scan flagged today. It reruns four times "
+                         f"a day, around the open and the close.")
+            mock_cta = f"See all {detected} &mdash; no signup"
+        else:
+            mock_note = ("That's today's full list. The scan reruns four times a day, around the open "
+                         "and the close.")
+            mock_cta = "Open the live scan &mdash; no signup"
+        return {
+            "%%EYEBROW%%": f"TODAY'S SCAN &middot; {detected} DETECTED{out_of}",
+            "%%HERO_CTA%%": f"See today's {detected} detected {noun}",
+            "%%MOCK_NOTE%%": mock_note,
+            "%%MOCK_CTA%%": mock_cta,
+            "%%STICKY_NOTE%%": f"Today's scan &middot; <b>{detected}{of_universe} detected</b>",
+            "%%STICKY_CTA%%": "See them free",
+        }
+    return {
+        "%%EYEBROW%%": (f"DAILY QUANT SCAN &middot; {universe} TICKERS" if universe
+                        else "DAILY QUANT SCAN &middot; S&amp;P 500 + NASDAQ-100"),
+        "%%HERO_CTA%%": "See the live scan &mdash; no signup",
+        "%%MOCK_NOTE%%": "That's a preview of 3. The scan reruns four times a day, around the open and the close.",
+        "%%MOCK_CTA%%": "See the full list &mdash; no signup",
+        "%%STICKY_NOTE%%": "Today's scan &middot; <b>free to look</b>",
+        "%%STICKY_CTA%%": "See it free",
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def landing(request: Request):
     if get_logged_in_user(request):
@@ -4606,6 +4689,8 @@ async def landing(request: Request):
     cards, note, validation_note, universe_note = _render_proof_section()
     html = (LANDING_HTML.replace("%%PROOF_CARDS%%", cards).replace("%%PROOF_NOTE%%", note)
             .replace("%%VALIDATION_NOTE%%", validation_note).replace("%%UNIVERSE_NOTE%%", universe_note))
+    for placeholder, value in _landing_cta_copy().items():
+        html = html.replace(placeholder, value)
     return HTMLResponse(html)
 
 
@@ -5982,6 +6067,10 @@ async def demo_page():
             FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL
             ORDER BY overall_score DESC LIMIT 6
         """, (latest_date,)).fetchall()
+    detected_total = conn.execute(
+        "SELECT COUNT(*) FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL",
+        (latest_date,),
+    ).fetchone()[0] if latest_date else 0
     conn.close()
 
     tickers = []
@@ -6002,6 +6091,11 @@ async def demo_page():
                 sparkline = []
         tickers.append({**d, "sections": sections, "sparkline": sparkline})
 
+    if detected_total and detected_total > len(tickers):
+        scanner_caption = f"top {len(tickers)} of {detected_total} detected today"
+    else:
+        scanner_caption = f"{len(tickers)} real signals today"
+
     if not tickers:
         list_html = '<div class="notice">Demo is warming up — check back shortly.</div>'
         detail_html = ""
@@ -6016,7 +6110,7 @@ async def demo_page():
 <div class="topbar"><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="signup-btn" href="/signup">Sign up free</a></div>
 <div class="panel intro-bar"><b>Live Demo</b> — real results from today's scan (informational only, not investment advice). <a href="/signup">Create a free account</a> to unlock alerts, watchlist, and portfolio tracking.</div>
 <div class="demo-grid">
-<section class="panel"><h3>Market Scanner <small>({len(tickers)} real signals today)</small></h3><div class="list">{list_html}</div></section>
+<section class="panel"><h3>Market Scanner <small>({scanner_caption})</small></h3><div class="list">{list_html}</div></section>
 <section class="panel">{detail_html or '<div class="notice">No demo data yet — check back after the next scan.</div>'}</section>
 </div>
 <section class="panel demo-cta">
