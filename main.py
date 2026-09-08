@@ -86,6 +86,15 @@ BACKTEST_SAMPLE_SIZE = 200  # Reverted from a brief full-universe (600) experime
                              # The dynamic universe-note copy already handles this sample size
                              # honestly, so reverting is copy-safe.
 BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
+# Round-trip cost applied to every backtested signal: commission is zero at retail
+# brokers now, so this is spread plus slippage on large-cap S&P/Nasdaq names. 10bp is
+# deliberately on the pessimistic side for names this liquid -- a backtest should not
+# flatter itself on the one assumption nobody can check.
+BACKTEST_ROUND_TRIP_COST_PCT = 0.10
+# Bump when the shape or meaning of the results changes. A cached result from an older
+# version is discarded and recomputed rather than rendered, so the site never shows
+# numbers whose methodology no longer matches what the page says it did.
+BACKTEST_SCHEMA_VERSION = 2
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 MARKET_AI_SUMMARY_FILE = DATA_DIR / "market_ai_summary_cache.json"
 MARKET_AI_SUMMARY_CACHE = {"scan_date": None, "generated_at": None, "headline": None, "summary": None, "error": None}
@@ -1652,6 +1661,21 @@ UI_STRINGS = {
     "strategy_performance": {"en": "Strategy Performance", "ko": "전략 성과"},
     "strategy_performance_hint": {"en": "(real historical replay, not a guarantee of future results)", "ko": "(실제 과거 데이터 재현, 미래 수익을 보장하지 않습니다)"},
     "methodology": {"en": "Methodology", "ko": "방법론"},
+    "backtest_methodology_body": {
+        "en": ("QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have "
+               "pulled back 10-25% from their own recent 20-day high. This exact rule was chosen by backtesting "
+               "thousands of alternative entry rules against two years of real price history, ranking them on the "
+               "first 70% of that window only, then validating the leaders on the untouched final 30% — the "
+               "out-of-sample numbers below are that validation, not the numbers used to pick the rule. Returns are "
+               "net of a 0.10% round-trip cost, and the S&amp;P comparison is measured over the same windows the "
+               "strategy traded, not over every day in the period."),
+        "ko": ("QUANTIFY는 장기 상승 추세(200일 이동평균선 위)에 있으면서 최근 20일 고점 대비 10~25% 눌린 종목을 찾습니다. "
+               "이 규칙은 2년치 실제 가격 데이터로 수천 개의 대안 진입 규칙을 백테스트해서, 앞쪽 70% 구간에서만 순위를 매긴 뒤 "
+               "손대지 않은 마지막 30% 구간에서 상위 규칙들을 검증해 선택했습니다. 아래 out-of-sample 수치가 그 검증 결과이며, "
+               "규칙을 고르는 데 쓴 수치가 아닙니다. 수익률은 왕복 0.10% 비용을 뺀 값이고, S&amp;P 비교는 전체 기간 평균이 아니라 "
+               "전략이 실제로 진입한 것과 같은 구간에서 측정했습니다."),
+    },
+    "sp500_avg_matched": {"en": "S&P 500, same windows", "ko": "S&P 500 (동일 구간)"},
     "nothing_watched": {"en": "Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.", "ko": "아직 관심종목이 없습니다 — 위에서 종목을 추가하세요, 퀀트 기준 통과 여부와 상관없이 추가 가능합니다."},
     "remove_btn": {"en": "Remove", "ko": "삭제"},
     "backtest_computing": {"en": "Backtest is still computing on the server — check back soon.", "ko": "백테스트를 서버에서 계산하는 중입니다 — 잠시 후 다시 확인해주세요."},
@@ -1700,7 +1724,7 @@ UI_STRINGS = {
     "theme_label": {"en": "Theme", "ko": "테마"},
     "opt_light": {"en": "Light", "ko": "라이트"},
     "opt_dark": {"en": "Dark", "ko": "다크"},
-    "ai_report_language": {"en": "AI report language", "ko": "AI 리뷰 언어"},
+    "ai_report_language": {"en": "Language", "ko": "언어"},
     "default_scanner_sort": {"en": "Default scanner sort", "ko": "기본 정렬 기준"},
     "opt_score": {"en": "Score", "ko": "점수"},
     "opt_change_pct": {"en": "Change %", "ko": "변동률 %"},
@@ -1724,7 +1748,7 @@ UI_STRINGS = {
     "delete_account_btn": {"en": "Delete My Account", "ko": "계정 삭제"},
     "manage_alerts_link": {"en": "Manage alerts", "ko": "알림 관리"},
     "loading_empty_hint": {"en": "No alerts set. Open a ticker in the terminal and click Set Alert.", "ko": "설정된 알림이 없습니다. 터미널에서 종목을 열고 알림 설정을 클릭하세요."},
-    "language_toggle_hint": {"en": "Only translates the AI-written quant/risk review text on the Scanner page — the rest of the site stays in English. Depends on a shared daily AI usage limit, so a new language can take a minute to generate the first time.", "ko": "스캐너 페이지의 AI 퀀트/리스크 리뷰 텍스트만 번역됩니다. 하루 AI 사용량 한도를 공유하기 때문에, 언어를 새로 바꾸면 처음 생성될 때 약간 시간이 걸릴 수 있습니다."},
+    "language_toggle_hint": {"en": "Changes the app interface and the AI-written quant/risk reviews. Ticker symbols, company names and price data stay as they are. AI reviews share a daily usage limit, so the first report in a new language can take a minute to generate.", "ko": "앱 화면과 AI가 작성한 퀀트/리스크 리뷰가 함께 바뀝니다. 티커 심볼, 회사명, 가격 데이터는 그대로 유지됩니다. AI 리뷰는 하루 사용량 한도를 공유하기 때문에, 새 언어로 첫 리포트를 만들 때는 잠시 걸릴 수 있습니다."},
     "high_score_alert_hint": {"en": "One email a day, after market close, listing every ticker that reached a 90+ score that day — not one email per ticker.", "ko": "종목당 이메일이 아니라, 하루 한 번 장 마감 후 그날 90점 이상을 기록한 모든 종목을 모아 이메일로 보내드립니다."},
     "password_char_hint": {"en": "10+ characters, with at least 1 letter and 1 number", "ko": "10자 이상, 영문 1자와 숫자 1자 이상 포함"},
     "status_active": {"en": "Active Subscription", "ko": "구독 중"},
@@ -1786,6 +1810,30 @@ def t(key: str, lang: str) -> str:
     if not entry:
         return key
     return entry.get(lang) or entry.get("en") or key
+
+
+# Dark palette, kept identical to the terminal's so the two never drift. Every page
+# below already declares the same variable names against a light :root, so appending
+# this override plus a data-theme stamp is all a page needs to follow the setting --
+# which until now only /terminal did, leaving the other seven light-only.
+DARK_THEME_VARS = (
+    'html[data-theme="dark"]{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;'
+    '--border2:#181818;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;'
+    '--red:#ef5350;--orange:#ff9800;--grid-line:#161616;'
+    '--sb-bg:#0a0a0a;--sb-border:#222222;--sb-text:#8a8a8a;--sb-text-active:#ffffff;'
+    '--sb-hover:#161616;--sb-danger:#ef5350}'
+    'html[data-theme="dark"] .badge-ok{background:rgba(38,166,154,.15)}'
+    'html[data-theme="dark"] .badge-warn{background:rgba(255,152,0,.15)}'
+    'html[data-theme="dark"] .badge-danger{background:rgba(239,83,80,.15)}'
+)
+
+
+def get_user_theme(email: str) -> str:
+    conn = db()
+    row = conn.execute("SELECT pref_theme FROM users WHERE email=?", (email,)).fetchone()
+    conn.close()
+    theme = row["pref_theme"] if row else "light"
+    return theme if theme in ("dark", "light") else "light"
 
 
 def get_user_lang(email: str) -> str:
@@ -2455,19 +2503,24 @@ def load_high_score_digest_state():
         return False
 
 
-def _summarize_returns(returns):
+def _summarize_returns(returns, cost_pct: float = 0.0):
+    """cost_pct is a round-trip cost subtracted from every observation before anything
+    is averaged, so the win rate moves too -- a trade that made less than the spread was
+    not a win. Passing 0 gives the raw gross numbers."""
     if not returns:
         return None
-    wins = [x for x in returns if x > 0]
-    losses = [x for x in returns if x <= 0]
-    win_rate = len(wins) / len(returns) * 100
+    net = [x - cost_pct for x in returns] if cost_pct else list(returns)
+    wins = [x for x in net if x > 0]
+    losses = [x for x in net if x <= 0]
+    win_rate = len(wins) / len(net) * 100
     return {
-        "avg_return_pct": round(sum(returns) / len(returns), 2),
+        "avg_return_pct": round(sum(net) / len(net), 2),
         "win_rate_pct": round(win_rate, 1),
-        "n": len(returns),
+        "n": len(net),
         "avg_win_pct": round(sum(wins) / len(wins), 2) if wins else None,
         "avg_loss_pct": round(sum(losses) / len(losses), 2) if losses else None,
-        "worst_pct": round(min(returns), 2),
+        "worst_pct": round(min(net), 2),
+        "cost_pct_applied": cost_pct or 0.0,
     }
 
 
@@ -2488,12 +2541,22 @@ async def _run_backtest_locked():
     # ticker (no sampling) -- the seeded Random() only matters if BACKTEST_SAMPLE_SIZE
     # is ever lowered again, in which case it keeps whichever subset gets picked
     # deterministic instead of reshuffling on every redeploy.
+    # NOTE: BACKTEST_SAMPLE_SIZE (200) is below the real universe (~518), so this DOES
+    # sample -- a seeded random 200, stable across redeploys. An earlier comment here
+    # claimed full coverage; that was left behind when the size was reverted from 600.
     sample = tickers if len(tickers) <= BACKTEST_SAMPLE_SIZE else random.Random(42).sample(tickers, BACKTEST_SAMPLE_SIZE)
     horizons = [30, 60, 90]
     forward_returns = {h: [] for h in horizons}
     in_sample = {h: [] for h in horizons}
     out_sample = {h: [] for h in horizons}
     bench_returns = {h: [] for h in horizons}
+    # The S&P measured over the *same* windows the strategy actually traded, not over
+    # every day in the period. This is the comparison that means something: a
+    # pullback-in-uptrend rule fires after dips, and the market's own return following a
+    # dip is not the market's average return, so the unconditional benchmark flatters
+    # the strategy. Both are reported.
+    bench_matched = {h: [] for h in horizons}
+    signal_dates = []
     signal_count = 0
     for i_ticker, ticker in enumerate(sample):
         try:
@@ -2524,11 +2587,13 @@ async def _run_backtest_locked():
                     continue
                 signal_count += 1
                 entry = float(close.iloc[i])
+                entry_date = close.index[i]
                 for h in horizons:
                     if i + h < n and entry:
                         ret = float(close.iloc[i + h] / entry - 1) * 100
                         forward_returns[h].append(ret)
                         (in_sample[h] if i < split_idx else out_sample[h]).append(ret)
+                        signal_dates.append((h, entry_date))
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Backtest ticker error ({ticker}): {exc}")
             continue
@@ -2543,19 +2608,53 @@ async def _run_backtest_locked():
             for h in horizons:
                 if i + h < n and entry:
                     bench_returns[h].append(float(spx_close.iloc[i + h] / entry - 1) * 100)
+
+        # Same-window benchmark. searchsorted gives the S&P bar on or after the signal
+        # date, which handles a ticker trading on a day the index series lacks.
+        spx_index = spx_close.index
+        for h, entry_date in signal_dates:
+            try:
+                pos = int(spx_index.searchsorted(entry_date))
+            except Exception:
+                continue
+            if pos >= n or pos + h >= n:
+                continue
+            base = float(spx_close.iloc[pos])
+            if base:
+                bench_matched[h].append(float(spx_close.iloc[pos + h] / base - 1) * 100)
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] Backtest benchmark error: {exc}")
 
+    cost = BACKTEST_ROUND_TRIP_COST_PCT
     results = {
+        "schema_version": BACKTEST_SCHEMA_VERSION,
         "signal_count": signal_count,
         "tickers_sampled": len(sample),
         "horizons": {
-            str(h): {"strategy": _summarize_returns(forward_returns[h]), "benchmark": _summarize_returns(bench_returns[h])}
+            str(h): {
+                # Headline numbers are net of cost -- the gross ones are kept alongside
+                # so the difference is inspectable rather than hidden.
+                "strategy": _summarize_returns(forward_returns[h], cost),
+                "strategy_gross": _summarize_returns(forward_returns[h]),
+                "benchmark": _summarize_returns(bench_returns[h]),
+                "benchmark_matched": _summarize_returns(bench_matched[h]),
+            }
             for h in horizons
         },
         "validation": {
-            **{f"in_sample_{h}d": _summarize_returns(in_sample[h]) for h in horizons},
-            **{f"out_of_sample_{h}d": _summarize_returns(out_sample[h]) for h in horizons},
+            **{f"in_sample_{h}d": _summarize_returns(in_sample[h], cost) for h in horizons},
+            **{f"out_of_sample_{h}d": _summarize_returns(out_sample[h], cost) for h in horizons},
+        },
+        "assumptions": {
+            "round_trip_cost_pct": cost,
+            "universe": "current S&P 500 + Nasdaq-100 constituents",
+            "survivorship_bias": ("Present and not removable with this data. The universe is today's "
+                                  "index membership, so companies removed from the index during the "
+                                  "test period are absent. This biases the results upward by an unknown "
+                                  "amount."),
+            "overlapping_windows": ("Signals overlap, so the observation counts are not independent "
+                                    "samples and the averages carry more uncertainty than n suggests."),
+            "sampling": f"{len(sample)} of {len(tickers)} tickers, seeded so the subset is stable.",
         },
     }
     BACKTEST_CACHE.update({"computed_at": time.time(), "results": results, "error": None})
@@ -2576,7 +2675,9 @@ async def backtest_scheduler():
     print(f"[backtest] cache file loaded={loaded} computed_at_age_hours={age_hr} "
           f"(file={BACKTEST_FILE}, exists={BACKTEST_FILE.exists()})", flush=True)
     while True:
+        cached_results = BACKTEST_CACHE.get("results") or {}
         needs_refresh = (not BACKTEST_CACHE.get("computed_at")
+                          or cached_results.get("schema_version") != BACKTEST_SCHEMA_VERSION
                           or time.time() - BACKTEST_CACHE["computed_at"] > BACKTEST_REFRESH_SECONDS)
         if not needs_refresh:
             await asyncio.sleep(3600)
@@ -4755,8 +4856,10 @@ footer a{color:var(--dim2);text-decoration:underline}
 <ul>
 <li><b>Universe:</b> %%UNIVERSE_NOTE%%</li>
 <li><b>Signal counting:</b> only a fresh crossing above the score threshold counts as one signal — a stock staying "Favorable" for a week isn't counted 7 times.</li>
-<li><b>Survivorship bias:</b> this uses today's index membership applied to the past 2 years. Stocks removed from these indices during that window (delisted, acquired, or dropped for poor performance) aren't included, which can flatter results.</li>
-<li><b>Gross returns:</b> figures don't account for spreads, slippage, or taxes — real returns would be somewhat lower.</li>
+<li><b>Benchmark:</b> the S&amp;P figure is its return over <b>the same windows the strategy actually traded</b>, not its average over the whole period. This matters: a buy-the-dip rule fires after selloffs, and the market's own bounce after a selloff is better than its return on a random day. Measured the loose way, the edge looks about 40% larger than it is. The honest comparison is the one shown above.</li>
+<li><b>Costs:</b> every signal is charged a 0.10% round trip for spread and slippage before anything is averaged, and a trade that made less than that is not counted as a win. Taxes are not modelled.</li>
+<li><b>Survivorship bias:</b> this uses today's index membership applied to the past 2 years. Stocks removed from these indices during that window (delisted, acquired, or dropped for poor performance) aren't included, which flatters results by an amount that cannot be measured without historical index membership data we don't have. Assume the real numbers are lower than these.</li>
+<li><b>Overlapping windows:</b> signals fire close together, so the 30/60/90-day windows overlap heavily. The observation counts are not independent samples, and the averages carry more uncertainty than a raw "n" suggests.</li>
 <li><b>Out-of-sample check:</b> %%VALIDATION_NOTE%%</li>
 <li><b>Recomputed periodically, not per-visit:</b> normally about once a week, though a server restart can also trigger a one-off recompute if there's no cached result yet. Either way the universe covered doesn't change; the numbers only move because new price data came in.</li>
 </ul>
@@ -5023,7 +5126,14 @@ def _render_proof_section() -> tuple[str, str, str, str]:
     for h in ("30", "60", "90"):
         v = horizons.get(h, {})
         strat = v.get("strategy") or {}
-        bench = v.get("benchmark") or {}
+        # Compare against the S&P over the SAME windows the strategy traded, not its
+        # unconditional average. A pullback rule fires after dips, and the market's own
+        # return following a dip is higher than its return on a random day -- measuring
+        # against the random day overstated the edge by roughly 40%.
+        matched = v.get("benchmark_matched") or {}
+        bench = matched or (v.get("benchmark") or {})
+        bench_label = ("the S&amp;P 500 over the same windows" if matched
+                       else "the S&amp;P 500 over the whole period")
         avg = strat.get("avg_return_pct")
         bench_avg = bench.get("avg_return_pct")
         if avg is None:
@@ -5040,7 +5150,7 @@ def _render_proof_section() -> tuple[str, str, str, str]:
         cards_html.append(
             f'<div class="proof-card"><div class="horizon">{h}-Day Forward Return</div>'
             f'<div class="num">{sign}{avg}%</div>'
-            f'<div class="compare">vs {bench_sign}{bench_avg}% for the S&amp;P 500 &middot; {strat.get("win_rate_pct","-")}% win rate</div>'
+            f'<div class="compare">vs {bench_sign}{bench_avg}% for {bench_label} &middot; {strat.get("win_rate_pct","-")}% win rate</div>'
             f'{risk_row}</div>'
         )
     cards_html.append("</div>")
@@ -5484,8 +5594,10 @@ def _render_sidebar(active_nav: str, lang: str = "en") -> str:
             f'{top}<div class="side-spacer"></div>{bottom}</nav>')
 
 
-def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "", lang: str = "en") -> HTMLResponse:
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}</style></head><body>
+def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "",
+                     lang: str = "en", theme: str = "light") -> HTMLResponse:
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}
+{DARK_THEME_VARS}</style></head><body>
 {_render_sidebar(active_nav, lang)}
 <header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a></header>
 <div class="wrap"><h1 class="page-title">{title}</h1>{body_html}</div>
@@ -6774,7 +6886,16 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 .ai-tldr{{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:12px;font-size:15px;line-height:1.65}}
 .ai-tldr b{{color:var(--head)}}
 .tldr-next{{margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);color:var(--dim);font-size:13.5px;line-height:1.55}}
-.action-bar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:7px 10px;background:var(--green-soft,rgba(14,138,95,.08));border:1px solid var(--green);border-radius:8px}}
+.action-bar{{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;padding:8px 10px;background:var(--green-soft,rgba(14,138,95,.08));border:1px solid var(--green);border-radius:8px}}
+/* The shares and entry-price inputs already existed, but sat unlabelled among five
+   other controls in one undifferentiated row -- on a phone, behind a collapsed bar
+   called "Track this ticker". Two named groups make what the bar can do legible. */
+.action-group{{display:flex;flex-direction:column;gap:5px}}
+.action-group-label{{font-size:10.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--green)}}
+.action-row{{display:flex;gap:7px;flex-wrap:wrap;align-items:center}}
+.action-hint{{font-size:11.5px;color:var(--dim);line-height:1.45}}
+.action-hint a{{color:var(--dim);text-decoration:underline}}
+.action-hint a:hover{{color:var(--head)}}
 .action-btn{{color:#fff;background:var(--green);border-color:var(--green)}}
 .action-btn:hover{{opacity:.88;background:var(--green)}}
 .manage-alerts-link{{font-size:12.5px;color:var(--dim);text-decoration:underline;padding:0 2px;white-space:nowrap}}
@@ -6838,8 +6959,9 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
   /* Seven alert/portfolio controls in one bar eat a third of a phone screen before
      the chart and AI report -- collapse them behind one tap instead. */
   .mobile-actions-toggle{{display:block;width:100%;background:var(--panel2);border:1px solid var(--green);color:var(--green);font-weight:700;padding:11px}}
-  .action-bar{{display:none;width:100%}}
+  .action-bar{{display:none;width:100%;flex-direction:column;gap:12px}}
   .action-bar.open{{display:flex}}
+  .action-group{{width:100%}}
   .action-bar input,.action-bar select{{flex:1;min-width:0;width:auto!important;padding:10px}}
   .action-bar .action-btn{{flex:1 1 100%;padding:11px}}
   .action-bar .manage-alerts-link{{flex:1 1 100%;text-align:center;padding-top:2px}}
@@ -6851,7 +6973,18 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 }}
 </style></head><body>
 {_render_sidebar("scanner")}
-<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Track this ticker</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now"><select id="targetDir" title="Alert when price rises to/above, or falls to/below, the target" style="padding:0 4px"><option value="above">&#8593; at/above</option><option value="below">&#8595; at/below</option></select><input id="target" type="number" placeholder="Target price $" style="width:100px" title="Get an email when the price reaches this value"><button class="action-btn" onclick="setAlert()" title="Email me when the price hits my target">Set Alert</button><input id="portfolioShares" type="number" placeholder="Shares" style="width:70px" title="How many shares you're tracking (optional)"><input id="portfolioPrice" type="number" placeholder="Entry price $" style="width:100px" title="What you paid — defaults to today's scan price if left blank"><button class="action-btn" onclick="savePortfolio()" title="Add this ticker to My Portfolio">Save to Portfolio</button><a href="/settings#alerts" class="manage-alerts-link" title="View or cancel your existing price alerts">Manage alerts</a></div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div><div class="score-card" id="scoreCard" style="display:none">
+<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Set an alert or add to portfolio</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now">
+<div class="action-group">
+<span class="action-group-label">Price alert</span>
+<div class="action-row"><select id="targetDir" title="Alert when price rises to/above, or falls to/below, the target" style="padding:0 4px"><option value="above">&#8593; at/above</option><option value="below">&#8595; at/below</option></select><input id="target" type="number" placeholder="Target price $" style="width:100px" title="Get an email when the price reaches this value"><button class="action-btn" onclick="setAlert()" title="Email me when the price hits my target">Set Alert</button></div>
+<span class="action-hint"><a href="/settings#alerts" class="manage-alerts-link" title="View or cancel your existing price alerts">Manage alerts</a></span>
+</div>
+<div class="action-group">
+<span class="action-group-label">Add to portfolio</span>
+<div class="action-row"><input id="portfolioShares" type="number" placeholder="Shares" style="width:76px" title="How many shares you own or are tracking"><input id="portfolioPrice" type="number" placeholder="Entry price $" style="width:104px" title="What you paid — defaults to today's scan price if left blank"><button class="action-btn" onclick="savePortfolio()" title="Add this ticker to My Portfolio">Save to Portfolio</button></div>
+<span class="action-hint">Leave entry price blank to use today's scan price. Not sure how many shares? <a href="/portfolio#sizing">Position sizing calculator</a></span>
+</div>
+</div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div><div class="score-card" id="scoreCard" style="display:none">
 <div class="score-head">
 <div class="snowflake-wrap"><svg id="snowflake" viewBox="-32 -10 264 224" role="img" aria-label="Score breakdown radar"></svg></div>
 <div class="score-main">
@@ -7055,7 +7188,7 @@ loadMarketSummary();loadHeatmap();setInterval(()=>{loadMarketSummary();loadHeatm
         ('value="sector">Sector<', f'value="sector">{t("opt_sector", lang)}<'),
         (">Loading...<", f">{t('loading', lang)}<"),
     ])
-    return render_app_shell(t("nav_market", lang), "market", body, lang=lang)
+    return render_app_shell(t("nav_market", lang), "market", body, lang=lang, theme=get_user_theme(user))
 
 
 @app.get("/watchlist", response_class=HTMLResponse)
@@ -7084,7 +7217,7 @@ load();
         ("Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.", t("nothing_watched", lang)),
         (">Remove</button>", f">{t('remove_btn', lang)}</button>"),
     ])
-    return render_app_shell(t("nav_watchlist", lang), "watchlist", body, lang=lang)
+    return render_app_shell(t("nav_watchlist", lang), "watchlist", body, lang=lang, theme=get_user_theme(user))
 
 
 @app.get("/backtest", response_class=HTMLResponse)
@@ -7096,18 +7229,22 @@ async def backtest_page(request: Request):
     lang = get_user_lang(user)
     body = """
 <section class="panel"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
-<section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have pulled back 10-25% from their own recent 20-day high. This exact rule was chosen by backtesting thousands of alternative entry rules against two years of real price history, ranking them on the first 70% of that window only, then validating the leaders on the untouched final 30% — the out-of-sample numbers below are that validation, not the numbers used to pick the rule. See the <a href="/faq" style="color:var(--head);text-decoration:underline">FAQ</a> for more.</p></section>
+<section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">%%BT_METHOD%% See the <a href="/faq" style="color:var(--head);text-decoration:underline">FAQ</a> for more.</p></section>
 <script>
 async function load(){try{const r=await fetch('/api/backtest-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${h}-Day Forward Return</h4>
 <div class="backtest-row"><span>Strategy avg</span><b class="${cls(v.strategy?.avg_return_pct)}">${fmtPct(v.strategy?.avg_return_pct)}</b></div>
 <div class="backtest-row"><span>Strategy win rate</span><b>${v.strategy?.win_rate_pct??'-'}%</b></div>
 <div class="backtest-row"><span>When right / wrong</span><b>${fmtPct(v.strategy?.avg_win_pct)} / ${fmtPct(v.strategy?.avg_loss_pct)}</b></div>
 <div class="backtest-row"><span>Worst case</span><b class="loss">${fmtPct(v.strategy?.worst_pct)}</b></div>
-<div class="backtest-row"><span>S&amp;P 500 avg (same period)</span><b class="${cls(v.benchmark?.avg_return_pct)}">${fmtPct(v.benchmark?.avg_return_pct)}</b></div>
-</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${h}d`]&&val?.[`out_of_sample_${h}d`]).map(h=>{const i=val[`in_sample_${h}d`],o=val[`out_of_sample_${h}d`];return `${h}d: in-sample ${fmtPct(i.avg_return_pct)} / ${i.win_rate_pct}% win (n=${i.n}) vs out-of-sample ${fmtPct(o.avg_return_pct)} / ${o.win_rate_pct}% win (n=${o.n})`});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${valParts.join(' &middot; ')}.`:'';const universeText=res.tickers_sampled>=500?`All ${res.tickers_sampled} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${res.tickers_sampled} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${cards}</div><div class="backtest-meta">${universeText}, ${res.signal_count} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which can flatter results. Gross returns, before fees/slippage. ${valLine} Last computed: ${d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}. Past performance does not guarantee future results.</div>`}catch(e){console.error('Backtest load failed',e)}}
+<div class="backtest-row"><span>S&amp;P 500, same windows</span><b class="${cls((v.benchmark_matched||v.benchmark)?.avg_return_pct)}">${fmtPct((v.benchmark_matched||v.benchmark)?.avg_return_pct)}</b></div>
+</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${h}d`]&&val?.[`out_of_sample_${h}d`]).map(h=>{const i=val[`in_sample_${h}d`],o=val[`out_of_sample_${h}d`];return `${h}d: in-sample ${fmtPct(i.avg_return_pct)} / ${i.win_rate_pct}% win (n=${i.n}) vs out-of-sample ${fmtPct(o.avg_return_pct)} / ${o.win_rate_pct}% win (n=${o.n})`});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${valParts.join(' &middot; ')}.`:'';const universeText=res.tickers_sampled>=500?`All ${res.tickers_sampled} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${res.tickers_sampled} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${cards}</div><div class="backtest-meta">${universeText}, ${res.signal_count} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which flatters results. Returns are net of a 0.10% round-trip cost for spread and slippage; taxes are not modelled. The S&amp;P figure is its return over the same windows the strategy traded, not its average over the whole period. ${valLine} Last computed: ${d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}. Past performance does not guarantee future results.</div>`}catch(e){console.error('Backtest load failed',e)}}
 load();
 </script>
 """
+    # translate_body() no-ops for English, so a placeholder that has no English source
+    # text in the template has to be filled here rather than through the list below --
+    # otherwise an English visitor sees the raw %%BT_METHOD%% marker.
+    body = body.replace("%%BT_METHOD%%", t("backtest_methodology_body", lang))
     body = translate_body(body, lang, [
         (">Strategy Performance <", f">{t('strategy_performance', lang)} <"),
         ("(real historical replay, not a guarantee of future results)", t("strategy_performance_hint", lang)),
@@ -7119,9 +7256,9 @@ load();
         (">Strategy win rate<", f">{t('strategy_win_rate', lang)}<"),
         (">When right / wrong<", f">{t('when_right_wrong', lang)}<"),
         (">Worst case<", f">{t('worst_case', lang)}<"),
-        (">S&amp;P 500 avg (same period)<", f">{t('sp500_avg', lang)}<"),
+        (">S&amp;P 500, same windows<", f">{t('sp500_avg_matched', lang)}<"),
     ])
-    return render_app_shell(t("nav_backtest", lang), "backtest", body, lang=lang)
+    return render_app_shell(t("nav_backtest", lang), "backtest", body, lang=lang, theme=get_user_theme(user))
 
 
 @app.get("/portfolio", response_class=HTMLResponse)
@@ -7131,8 +7268,10 @@ async def portfolio_page(request: Request):
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
     lang = get_user_lang(user)
+    theme = get_user_theme(user)
     user = html_lib.escape(user)
-    html = f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Portfolio</title><style>
+    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Portfolio</title><style>{DARK_THEME_VARS}
+
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
@@ -7160,7 +7299,7 @@ button:hover{{background:var(--border)}}
 <div class="wrap" id="list">Loading...</div>
 <div class="wrap">
 <div class="item"><b style="color:var(--head);font-size:17px">Sector Concentration</b><div id="concentrationBody" style="margin-top:12px"><div class="meta">Loading...</div></div></div>
-<div class="item"><b style="color:var(--head);font-size:17px">Position Sizing Calculator</b>
+<div class="item" id="sizing"><b style="color:var(--head);font-size:17px">Position Sizing Calculator</b>
 <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
 <label style="font-size:13px;color:var(--dim)">Account size $<br><input id="szAccount" type="number" placeholder="10000" style="width:120px;background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:8px;border-radius:6px;margin-top:5px;font-size:14.5px"></label>
 <label style="font-size:13px;color:var(--dim)">Risk per trade %<br><input id="szRisk" type="number" placeholder="1" style="width:90px;background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:8px;border-radius:6px;margin-top:5px;font-size:14.5px"></label>
@@ -7212,6 +7351,7 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
     lang = get_user_lang(user)
+    theme = get_user_theme(user)
     conn = db()
     row = conn.execute(
         "SELECT trial_ends_at,subscription_status,gumroad_subscription_id,ls_subscription_id FROM users WHERE email=?",
@@ -7264,7 +7404,8 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
                        else 'Your free trial has ended — that\'s why you were sent here. Subscribe below to get back into the scanner and AI reports.')
         reason_banner = f'<div class="reason-banner">{banner_text}</div>'
 
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Subscription</title><style>
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Subscription</title><style>{DARK_THEME_VARS}
+
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--orange:#a8660a}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
@@ -7294,10 +7435,12 @@ async def contact_page(request: Request, msg: Optional[str] = None, error: Optio
     user = get_logged_in_user(request)
     if not user: return RedirectResponse("/login", status_code=303)
     lang = get_user_lang(user)
+    theme = get_user_theme(user)
     user = html_lib.escape(user)
     msg = html_lib.escape(msg) if msg else ''
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Contact</title><style>
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Contact</title><style>{DARK_THEME_VARS}
+
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
@@ -7457,6 +7600,7 @@ async def settings_page(request: Request):
     if not user: return RedirectResponse("/login", status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     lang = get_user_lang(user)
+    theme = get_user_theme(user)
     conn = db()
     prov_row = conn.execute("SELECT auth_provider FROM users WHERE email=?", (user,)).fetchone()
     conn.close()
@@ -7468,7 +7612,8 @@ async def settings_page(request: Request):
         f'<label>{t("confirm_password", lang)}</label><input type="password" id="delete_password">'
     )
     user = html_lib.escape(user)
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Settings</title><style>
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Settings</title><style>{DARK_THEME_VARS}
+
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
 header{{background:var(--panel);border:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px;flex-wrap:wrap;gap:12px}}
