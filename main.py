@@ -2585,21 +2585,29 @@ _FUNDAMENTAL_FIELDS = (
 )
 
 
-def _fetch_one_fundamental(ticker: str, attempts: int = 2) -> Optional[dict]:
-    info = {}
+def _fetch_one_fundamental(ticker: str, attempts: int = 4) -> Optional[dict]:
+    """The provider answers the first few requests of a fresh process with a body that
+    parses fine but carries no fields, while it negotiates a session. That is why the
+    tickers at the very start of the universe were the ones left without fundamentals --
+    they were spent on the handshake. Back off and try again rather than writing them
+    off for the day."""
+    info, last_detail = {}, "no attempt made"
     for attempt in range(attempts):
         try:
             info = yf.Ticker(ticker).info or {}
         except Exception as e:
-            print(f"[fundamentals] {ticker} fetch failed "
-                  f"(attempt {attempt + 1}/{attempts}): {type(e).__name__} {e}", flush=True)
+            last_detail = f"{type(e).__name__}: {str(e)[:120]}"
             info = {}
+        else:
+            if not info.get("marketCap"):
+                last_detail = f"response had {len(info)} fields, no marketCap"
         if info.get("marketCap"):
             break
         if attempt + 1 < attempts:
-            time.sleep(1.5)
+            time.sleep(1.5 * (2 ** attempt))   # 1.5s, 3s, 6s
     if not info.get("marketCap"):
-        print(f"[fundamentals] {ticker} returned no market cap after {attempts} attempts", flush=True)
+        FUNDAMENTALS_STATUS["last_fetch_failure"] = f"{ticker}: {last_detail}"
+        print(f"[fundamentals] {ticker} gave up after {attempts} attempts — {last_detail}", flush=True)
         return None
     row = {"ticker": ticker, "fetched_at": time.time()}
     for col, key in _FUNDAMENTAL_FIELDS:
@@ -2634,6 +2642,21 @@ def _save_fundamentals(rows: list):
         conn.close()
 
 
+async def _warm_provider_session():
+    """Spend the handshake on a throwaway request instead of on real tickers. Without
+    this the first names in the list absorb the empty responses and are the ones that
+    end up missing."""
+    for attempt in range(4):
+        row = await asyncio.to_thread(_fetch_one_fundamental, "AAPL", 1)
+        if row:
+            FUNDAMENTALS_STATUS["provider_warm"] = True
+            return True
+        await asyncio.sleep(2 * (attempt + 1))
+    FUNDAMENTALS_STATUS["provider_warm"] = False
+    print("[fundamentals] provider session would not warm up — proceeding anyway", flush=True)
+    return False
+
+
 async def refresh_fundamentals(force: bool = False, tickers: Optional[list] = None,
                                label: str = "universe"):
     """Sequential on purpose: this is the same provider the price scan uses, and running
@@ -2659,6 +2682,7 @@ async def refresh_fundamentals(force: bool = False, tickers: Optional[list] = No
     # snowflake. Today's detected names come first, then everything else.
     print(f"[fundamentals:{label}] refreshing {len(todo)} of {len(tickers)}", flush=True)
     FUNDAMENTALS_STATUS["last_fetch_attempted"] = len(todo)
+    await _warm_provider_session()
     batch, saved = [], 0
     for i, tk in enumerate(todo):
         row = await asyncio.to_thread(_fetch_one_fundamental, tk)
@@ -2697,6 +2721,7 @@ FUNDAMENTALS_STATUS: dict = {
     "started": False, "loops": 0, "last_loop_at": None, "last_error": None,
     "last_detected_count": None, "last_fetch_attempted": None, "last_fetch_saved": None,
     "waiting_on_lock": False, "phase": "not started",
+    "last_fetch_failure": None, "provider_warm": None,
 }
 
 
