@@ -1676,6 +1676,55 @@ UI_STRINGS = {
                "전략이 실제로 진입한 것과 같은 구간에서 측정했습니다."),
     },
     "sp500_avg_matched": {"en": "S&P 500, same windows", "ko": "S&P 500 (동일 구간)"},
+    # Terminal action bar + score card. Added in this session's earlier work and shipped
+    # English-only; caught by the Korean sweep.
+    "act_price_alert": {"en": "Price alert", "ko": "가격 알림"},
+    "act_add_portfolio": {"en": "Add to portfolio", "ko": "포트폴리오에 추가"},
+    "act_alert_hint": {"en": "Manage alerts", "ko": "알림 관리"},
+    "act_shares_ph": {"en": "Shares", "ko": "수량"},
+    "act_entry_ph": {"en": "Entry price $", "ko": "매수가 $"},
+    "act_target_ph": {"en": "Target price $", "ko": "목표가 $"},
+    "act_set_alert": {"en": "Set Alert", "ko": "알림 설정"},
+    "act_save_portfolio": {"en": "Save to Portfolio", "ko": "포트폴리오에 저장"},
+    "act_portfolio_hint": {"en": "Leave entry price blank to use today's scan price. Not sure how many shares?",
+                            "ko": "매수가를 비워두면 오늘 스캔 가격이 쓰입니다. 몇 주를 살지 모르겠다면?"},
+    "act_sizing_link": {"en": "Position sizing calculator", "ko": "포지션 사이즈 계산기"},
+    "act_toggle": {"en": "Set an alert or add to portfolio", "ko": "알림 설정 또는 포트폴리오에 추가"},
+    "score_radar_alt": {"en": "Score breakdown radar", "ko": "점수 구성 레이더 차트"},
+    "score_note": {"en": "<b>Trend</b>, <b>Pullback</b> and <b>AI check</b> are what produce the score. <b>Room</b> and <b>Momentum</b> are shown for context and do not affect it.",
+                    "ko": "<b>추세</b>, <b>눌림목</b>, <b>AI 점검</b>이 점수를 만듭니다. <b>여력</b>과 <b>모멘텀</b>은 참고용이며 점수에 영향을 주지 않습니다."},
+    "score_passed": {"en": "This one cleared today's scan.", "ko": "이 종목은 오늘 스캔을 통과했습니다."},
+    "score_not_passed": {"en": "This one did <b>not</b> clear today's scan.", "ko": "이 종목은 오늘 스캔을 통과하지 <b>못했습니다</b>."},
+    "score_split": {"en": "averaged into the total", "ko": "를 평균내어 총점 산출"},
+    "score_quant_only": {"en": "Quant score only. The AI check runs on tickers that clear the quant bar, and this one has not, so there is no combined score.",
+                          "ko": "퀀트 점수만 있습니다. AI 점검은 퀀트 기준을 통과한 종목에만 실행되는데 이 종목은 통과하지 못해 종합 점수가 없습니다."},
+    "axis_trend": {"en": "TREND", "ko": "추세"},
+    "axis_pullback": {"en": "PULLBACK", "ko": "눌림목"},
+    "axis_ai": {"en": "AI CHECK", "ko": "AI 점검"},
+    "axis_room": {"en": "ROOM", "ko": "여력"},
+    "axis_momentum": {"en": "MOMENTUM", "ko": "모멘텀"},
+    # Pre-existing gaps found in the same sweep.
+    "no_scan_data": {"en": "No scan data yet.", "ko": "아직 스캔 데이터가 없습니다."},
+    "no_scan_data_check": {"en": "No scan data yet — check back after the next scan.", "ko": "아직 스캔 데이터가 없습니다 — 다음 스캔 후 다시 확인해주세요."},
+    "heatmap_failed": {"en": "Could not load the heatmap.", "ko": "히트맵을 불러오지 못했습니다."},
+    "ai_summary_pending": {"en": "AI summary is being prepared for today's scan — check back after the next cycle.",
+                            "ko": "오늘 스캔에 대한 AI 요약을 준비하는 중입니다 — 다음 주기 후 다시 확인해주세요."},
+    "not_yet_reviewed": {"en": "Not yet reviewed", "ko": "아직 검토되지 않음"},
+    "cleared_quant_bar": {"en": "Cleared Quant Bar", "ko": "퀀트 기준 통과"},
+    # Tooltips: never translated since they were added, so a Korean reader got English
+    # help text on hover for every control in the action bar.
+    "tip_track_ticker": {"en": "Track this ticker without deciding anything right now", "ko": "지금 아무 결정도 하지 않고 이 종목만 추적합니다"},
+    "tip_alert_dir": {"en": "Alert when price rises to/above, or falls to/below, the target", "ko": "가격이 목표가 이상으로 오르거나 이하로 내릴 때 알림"},
+    "tip_target": {"en": "Get an email when the price reaches this value", "ko": "가격이 이 값에 도달하면 이메일로 알려줍니다"},
+    "tip_set_alert": {"en": "Email me when the price hits my target", "ko": "목표가에 도달하면 이메일 보내기"},
+    "tip_manage_alerts": {"en": "View or cancel your existing price alerts", "ko": "기존 가격 알림 확인 또는 취소"},
+    "tip_shares": {"en": "How many shares you own or are tracking", "ko": "보유 중이거나 추적 중인 주식 수"},
+    "tip_entry": {"en": "What you paid — defaults to today's scan price if left blank", "ko": "매수 단가 — 비워두면 오늘 스캔 가격이 사용됩니다"},
+    "tip_save_portfolio": {"en": "Add this ticker to My Portfolio", "ko": "이 종목을 내 포트폴리오에 추가"},
+    "tip_ai_refresh": {"en": "Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter",
+                        "ko": "위의 가격·RSI·추세는 스캔할 때마다 갱신되지만, 이 AI 리스크 리뷰는 퀀트 점수가 의미 있게 움직였을 때만 다시 실행됩니다"},
+    "faq_more": {"en": "See the <a href=\"/faq\" style=\"color:var(--head);text-decoration:underline\">FAQ</a> for more.",
+                  "ko": "자세한 내용은 <a href=\"/faq\" style=\"color:var(--head);text-decoration:underline\">자주 묻는 질문</a>을 참고하세요."},
     "nothing_watched": {"en": "Nothing watched yet — add any ticker above, regardless of whether it clears the quant bar.", "ko": "아직 관심종목이 없습니다 — 위에서 종목을 추가하세요, 퀀트 기준 통과 여부와 상관없이 추가 가능합니다."},
     "remove_btn": {"en": "Remove", "ko": "삭제"},
     "backtest_computing": {"en": "Backtest is still computing on the server — check back soon.", "ko": "백테스트를 서버에서 계산하는 중입니다 — 잠시 후 다시 확인해주세요."},
@@ -1828,12 +1877,86 @@ DARK_THEME_VARS = (
 )
 
 
+def adopt_browser_language(request: Request, email: str):
+    """Carry an explicit language choice made before signing in onto the account.
+
+    Without this, someone who switches to Korean on the landing page and then signs up
+    lands in an English app, because the account was created with the 'en' default and
+    the account preference outranks nothing -- the cookie would still win for display,
+    but Settings would show English and the choice would not follow them to another
+    browser. Only a real cookie counts here; a browser-detected language is a guess and
+    is never written to the account.
+    """
+    chosen = (request.cookies.get(LANG_COOKIE) or "").strip().lower()
+    if chosen not in LANGUAGE_NAMES:
+        return
+    try:
+        conn = db()
+        conn.execute("UPDATE users SET pref_language=? WHERE email=? AND pref_language<>?",
+                     (chosen, email, chosen))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] language adopt failed for {email}: {e}")
+
+
 def get_user_theme(email: str) -> str:
     conn = db()
     row = conn.execute("SELECT pref_theme FROM users WHERE email=?", (email,)).fetchone()
     conn.close()
     theme = row["pref_theme"] if row else "light"
     return theme if theme in ("dark", "light") else "light"
+
+
+LANG_COOKIE = "qtfy_lang"
+LANG_COOKIE_MAX_AGE = 365 * 86400
+
+
+def _parse_accept_language(header: str) -> Optional[str]:
+    """Pick the highest-q language we actually support out of an Accept-Language header
+    ("ko-KR,ko;q=0.9,en-US;q=0.8" -> "ko"). Region subtags are dropped: ko-KR and ko are
+    the same product to us."""
+    best, best_q = None, -1.0
+    for part in (header or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        tag, _, params = part.partition(";")
+        q = 1.0
+        params = params.strip()
+        if params.startswith("q="):
+            try:
+                q = float(params[2:])
+            except ValueError:
+                q = 1.0
+        base = tag.strip().lower().split("-")[0]
+        if base in LANGUAGE_NAMES and q > best_q:
+            best, best_q = base, q
+    return best
+
+
+def resolve_lang(request: Request, user: Optional[str] = None) -> str:
+    """One language decision for every page, public or not.
+
+    Order matters and is the whole point: anything the reader chose outranks anything
+    we guessed. The ?lang= parameter is a click on the header toggle; the cookie is that
+    same choice remembered; the account preference is the choice made in Settings; only
+    then do we fall back to sniffing the browser. Auto-detection can therefore never
+    overwrite a decision someone actually made -- it only fills the gap before they make
+    one.
+    """
+    q = (request.query_params.get("lang") or "").strip().lower()
+    if q in LANGUAGE_NAMES:
+        return q
+    cookie = (request.cookies.get(LANG_COOKIE) or "").strip().lower()
+    if cookie in LANGUAGE_NAMES:
+        return cookie
+    if user:
+        saved = get_user_lang(user)
+        if saved in LANGUAGE_NAMES:
+            return saved
+    detected = _parse_accept_language(request.headers.get("accept-language", ""))
+    return detected or "en"
 
 
 def get_user_lang(email: str) -> str:
@@ -4547,7 +4670,11 @@ async def update_settings(request: Request, theme: str = Form(...), language: st
     conn.execute("UPDATE users SET pref_theme=?,pref_language=?,pref_default_sort=?,pref_default_view=?,pref_high_score_alerts=? WHERE email=?",
                  (theme, language, default_sort, default_view, int(high_score_alerts), user))
     conn.commit(); conn.close()
-    return {"message": "Settings saved."}
+    # Mirror the language onto the cookie so the header toggle, the browser and Settings
+    # can never end up showing three different answers on the same machine.
+    res = JSONResponse({"message": "Settings saved."})
+    res.set_cookie(LANG_COOKIE, language, max_age=LANG_COOKIE_MAX_AGE, httponly=False, samesite="lax")
+    return res
 
 
 @app.post("/api/settings/password")
@@ -4571,7 +4698,7 @@ async def change_password(request: Request, current_password: str = Form(...), n
 # -----------------------------------------------------------------------------
 # Landing page
 # -----------------------------------------------------------------------------
-LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="google-site-verification" content="ijDMR9nIE6oGHc1hocnPovy0BwrxRdGBL3DvWNy6OZI" />
 <title>QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked</title>
@@ -4582,6 +4709,7 @@ LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta property="og:url" content="https://quantify.trading/">
 <meta property="og:site_name" content="QUANTIFY.">
 %%OG_IMAGE%%
+%%HREFLANG%%
 <link rel="canonical" href="https://quantify.trading/">
 <script type="application/ld+json">
 {
@@ -4693,6 +4821,8 @@ section{padding:80px 24px;border-top:1px solid var(--border)}
 footer{border-top:1px solid var(--border);padding:38px 24px;text-align:center;color:var(--dim);font-size:14px}
 footer a{color:var(--dim2);text-decoration:underline}
 .btn{white-space:nowrap}
+.lang-toggle{display:inline-block;padding:6px 12px;border:1px solid var(--border);border-radius:999px;color:var(--dim2);font-size:13.5px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}
+.lang-toggle:hover{border-color:var(--green);color:var(--green)}
 [data-reveal]{opacity:0}
 [data-reveal].is-visible{opacity:1}
 [data-reveal].is-visible>*{opacity:0;transform:translateY(26px);animation:revealChild .7s cubic-bezier(.16,1,.3,1) forwards}
@@ -4757,6 +4887,11 @@ footer a{color:var(--dim2);text-decoration:underline}
      returning mobile visitors (most of the traffic) with no way back into the app. */
   .navlinks a.navlogin{display:inline-block;color:var(--head);font-weight:700}
   .btn{padding:11px 16px;font-size:14px}
+  /* Adding the language toggle pushed the nav onto two lines on a phone. The hero has
+     both CTAs immediately below, so the duplicate trial button in the nav is the one
+     that goes -- the toggle and Log in are what a returning visitor needs up there. */
+  .navlinks .btn-ghost{display:none}
+  .lang-toggle{padding:5px 10px;font-size:12.5px}
   .hero{padding:36px 16px 34px}
   h1{font-size:29px;letter-spacing:-.5px;margin-bottom:16px}
   .sub{font-size:16.5px;margin-bottom:24px}
@@ -4780,6 +4915,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 <a class="muted" href="/pricing">Pricing</a>
 <a class="muted" href="/faq">FAQ</a>
 <a class="muted navlogin" href="/login">Log in</a>
+%%LANG_TOGGLE%%
 <a class="btn btn-ghost" href="/signup">Start free trial</a>
 </div>
 </div></header>
@@ -5064,9 +5200,16 @@ GOOGLE_ICON_SVG = '<svg width="18" height="18" viewBox="0 0 18 18"><path fill="#
 
 
 def render_auth_page(title: str, form_html: str, path: str = "",
-                     description: str = "Start your 7-day free trial of QUANTIFY — a daily quant scan of the S&P 500 and Nasdaq-100 with an AI risk review on every hit.") -> HTMLResponse:
-    og = og_head(title, description, path)
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>{og}<style>{BASE_CSS}</style></head><body><div class="authwrap">{AUTH_BRAND_HTML}<div class="authform">{form_html}</div></div></body></html>''')
+                     description: str = "Start your 7-day free trial of QUANTIFY — a daily quant scan of the S&P 500 and Nasdaq-100 with an AI risk review on every hit.",
+                     lang: str = "en") -> HTMLResponse:
+    og = og_head(title, description, path) + (hreflang_links(path) if path else "")
+    toggle = lang_toggle_html(lang, path or "/login")
+    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>{og}<style>{BASE_CSS}
+.lang-toggle{{display:inline-block;padding:6px 12px;border:1px solid var(--border);border-radius:999px;color:var(--dim2,#525f59);font-size:13.5px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}}
+.lang-toggle:hover{{border-color:var(--green);color:var(--green)}}
+.lang-toggle.app{{border-color:var(--sb-border,#232b2f);color:var(--sb-text,#9aa7ac);padding:5px 10px;font-size:12.5px}}
+.lang-toggle.app:hover{{border-color:var(--green);color:var(--green)}}
+</style></head><body><div class="authwrap">{AUTH_BRAND_HTML}<div class="authform"><div style="text-align:right;margin-bottom:10px">{toggle}</div>{form_html}</div></div></body></html>''', lang))
 
 
 def _render_validation_note(results: dict) -> str:
@@ -5197,7 +5340,7 @@ def _landing_scan_counts() -> tuple[int | None, str | None]:
     return detected, scan_date
 
 
-def _landing_cta_copy() -> dict:
+def _landing_cta_copy(lang: str = "en") -> dict:
     detected, scan_date = _landing_scan_counts()
     # UNIVERSE is filled by a startup task and is empty until it finishes, so every line
     # that quotes it needs a version that reads correctly without it.
@@ -5207,16 +5350,31 @@ def _landing_cta_copy() -> dict:
     if detected:
         # A quiet day can legitimately flag one or two names; the copy has to stay
         # grammatical and honest at those counts too.
-        noun = "stock" if detected == 1 else "stocks"
         preview_n = min(3, detected)
+        ko = lang == "ko"
         if detected > preview_n:
-            mock_note = (f"That's {preview_n} of the {detected} the scan flagged today. It reruns four times "
+            mock_note = (f"오늘 스캔이 찾아낸 {detected}개 중 {preview_n}개입니다. 장 시작과 마감 전후로 하루 네 번 다시 돕니다."
+                         if ko else
+                         f"That's {preview_n} of the {detected} the scan flagged today. It reruns four times "
                          f"a day, around the open and the close.")
-            mock_cta = f"See all {detected} &mdash; no signup"
+            mock_cta = (f"{detected}개 전부 보기 &mdash; 가입 불필요" if ko
+                        else f"See all {detected} &mdash; no signup")
         else:
-            mock_note = ("That's today's full list. The scan reruns four times a day, around the open "
+            mock_note = ("오늘 전체 목록입니다. 스캔은 장 시작과 마감 전후로 하루 네 번 돕니다." if ko else
+                         "That's today's full list. The scan reruns four times a day, around the open "
                          "and the close.")
-            mock_cta = "Open the live scan &mdash; no signup"
+            mock_cta = ("실시간 스캔 열기 &mdash; 가입 불필요" if ko else "Open the live scan &mdash; no signup")
+        if ko:
+            noun_ko = "개 종목"
+            return {
+                "%%EYEBROW%%": f"오늘의 스캔 &middot; {universe}개 중 {detected}개 감지" if universe else f"오늘의 스캔 &middot; {detected}개 감지",
+                "%%HERO_CTA%%": f"오늘 감지된 {detected}{noun_ko} 보기",
+                "%%MOCK_NOTE%%": mock_note,
+                "%%MOCK_CTA%%": mock_cta,
+                "%%STICKY_NOTE%%": f"오늘의 스캔 &middot; <b>{detected}개 감지</b>",
+                "%%STICKY_CTA%%": "무료로 보기",
+            }
+        noun = "stock" if detected == 1 else "stocks"
         return {
             "%%EYEBROW%%": f"TODAY'S SCAN &middot; {detected} DETECTED{out_of}",
             "%%HERO_CTA%%": f"See today's {detected} detected {noun}",
@@ -5224,6 +5382,16 @@ def _landing_cta_copy() -> dict:
             "%%MOCK_CTA%%": mock_cta,
             "%%STICKY_NOTE%%": f"Today's scan &middot; <b>{detected}{of_universe} detected</b>",
             "%%STICKY_CTA%%": "See them free",
+        }
+    if lang == "ko":
+        return {
+            "%%EYEBROW%%": (f"매일 도는 퀀트 스캔 &middot; {universe}개 종목" if universe
+                            else "매일 도는 퀀트 스캔 &middot; S&amp;P 500 + 나스닥100"),
+            "%%HERO_CTA%%": "실시간 스캔 보기 &mdash; 가입 불필요",
+            "%%MOCK_NOTE%%": "3개 미리보기입니다. 스캔은 장 시작과 마감 전후로 하루 네 번 돕니다.",
+            "%%MOCK_CTA%%": "전체 목록 보기 &mdash; 가입 불필요",
+            "%%STICKY_NOTE%%": "오늘의 스캔 &middot; <b>무료로 열람 가능</b>",
+            "%%STICKY_CTA%%": "무료로 보기",
         }
     return {
         "%%EYEBROW%%": (f"DAILY QUANT SCAN &middot; {universe} TICKERS" if universe
@@ -5236,17 +5404,75 @@ def _landing_cta_copy() -> dict:
     }
 
 
+def _safe_next(raw: Optional[str]) -> str:
+    """Only ever redirect back to a path on this site. A bare "/" prefix is not enough:
+    "//evil.com" and "/\\evil.com" are both read as protocol-relative URLs by browsers."""
+    nxt = (raw or "/").strip()
+    if not nxt.startswith("/") or nxt.startswith("//") or nxt.startswith("/\\"):
+        return "/"
+    return nxt
+
+
+@app.get("/set-language")
+async def set_language(request: Request, lang: str = "en", next: str = "/"):
+    lang = (lang or "").strip().lower()
+    if lang not in LANGUAGE_NAMES:
+        lang = "en"
+    response = RedirectResponse(_safe_next(next), status_code=303)
+    response.set_cookie(LANG_COOKIE, lang, max_age=LANG_COOKIE_MAX_AGE, httponly=False, samesite="lax")
+    # Keep the account in step so Settings never disagrees with what the reader is
+    # looking at, and so the choice follows them to another browser.
+    user = get_logged_in_user(request)
+    if user:
+        try:
+            conn = db()
+            conn.execute("UPDATE users SET pref_language=? WHERE email=?", (lang, user))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[Error: {type(e).__name__}] language preference save failed for {user}: {e}")
+    return response
+
+
+def lang_toggle_html(current: str, path: str = "/", style: str = "public") -> str:
+    """The header switcher. Deliberately shows the language you would GET, not the one
+    you are on -- a control labelled with the current state reads as a status display and
+    people don't click it."""
+    other = "ko" if current == "en" else "en"
+    label = "한국어" if other == "ko" else "English"
+    href = f"/set-language?lang={other}&next={urllib.parse.quote(path, safe='/?=&')}"
+    cls = "lang-toggle" if style == "public" else "lang-toggle app"
+    aria = "Switch to Korean" if other == "ko" else "Switch to English"
+    return f'<a class="{cls}" href="{href}" hreflang="{other}" aria-label="{aria}" rel="nofollow">{label}</a>'
+
+
+def hreflang_links(path: str) -> str:
+    base = f"https://quantify.trading{path}"
+    sep = "&" if "?" in path else "?"
+    return (f'<link rel="alternate" hreflang="en" href="{base}">'
+            f'<link rel="alternate" hreflang="ko" href="{base}{sep}lang=ko">'
+            f'<link rel="alternate" hreflang="x-default" href="{base}">')
+
+
 @app.get("/", response_class=HTMLResponse)
 async def landing(request: Request):
     if get_logged_in_user(request):
         return RedirectResponse("/terminal", status_code=303)
+    lang = resolve_lang(request)
     cards, note, validation_note, universe_note = _render_proof_section()
     html = (LANDING_HTML.replace("%%PROOF_CARDS%%", cards).replace("%%PROOF_NOTE%%", note)
             .replace("%%VALIDATION_NOTE%%", validation_note).replace("%%UNIVERSE_NOTE%%", universe_note))
-    for placeholder, value in _landing_cta_copy().items():
+    for placeholder, value in _landing_cta_copy(lang).items():
         html = html.replace(placeholder, value)
-    html = html.replace("%%OG_IMAGE%%", _og_image_tags())
-    return HTMLResponse(html)
+    html = (html.replace("%%OG_IMAGE%%", _og_image_tags())
+                .replace("%%LANG_TOGGLE%%", lang_toggle_html(lang, "/"))
+                .replace("%%HREFLANG%%", hreflang_links("/"))
+                .replace("%%LANG%%", lang))
+    return HTMLResponse(translate_public(html, lang),
+                        # Content differs by Accept-Language for a first-time visitor, so
+                        # any shared cache must key on it or one reader's language gets
+                        # served to another.
+                        headers={"Vary": "Accept-Language, Cookie"})
 
 
 _ROBOTS_GATED_PATHS = (
@@ -5372,19 +5598,282 @@ _MARKETING_NAV = ('<a class="muted" href="/pricing">Pricing</a>'
                    '<a class="btn" href="/signup">Get Started Free</a>')
 
 
-def render_marketing_page(title: str, description: str, body_html: str, path: str = "", extra_head: str = "") -> HTMLResponse:
+
+# -----------------------------------------------------------------------------
+# Public-page Korean copy
+# -----------------------------------------------------------------------------
+# Public pages had no language mechanism at all -- a Korean visitor arriving from
+# Instagram met the whole funnel in English and could only switch after signing up and
+# finding Settings. These are ordered longest-first at apply time so a long sentence is
+# never broken by an earlier replacement of a phrase inside it.
+PUBLIC_KO: dict[str, str] = {
+    # Short keys are tag-bounded (">Word<") on purpose. A bare "or " or "/month" as a key
+    # will happily rewrite the middle of an unrelated English sentence -- that produced
+    # "acquired 또는 dropped" and "$9.99/월" on the first pass. Anything not tag-bounded
+    # below is a full sentence, long enough to be unique on its own.
+
+    # --- nav / chrome
+    ">How it works<": ">작동 방식<",
+    ">Results<": ">성과<",
+    ">Features<": ">기능<",
+    ">Pricing<": ">가격<",
+    ">FAQ<": ">자주 묻는 질문<",
+    ">Log in<": ">로그인<",
+    ">Sign up<": ">회원가입<",
+    ">About<": ">소개<",
+    ">Terms<": ">이용약관<",
+    ">Privacy<": ">개인정보처리방침<",
+    ">Start free trial<": ">무료 체험 시작<",
+    ">Get Started Free<": ">무료로 시작하기<",
+    ">Email<": ">이메일<",
+    ">Password<": ">비밀번호<",
+    ">Create account<": ">계정 만들기<",
+    ">Create an account<": ">계정 만들기<",
+    ">Forgot password?<": ">비밀번호를 잊으셨나요?<",
+    ">Already have an account? Log in<": ">이미 계정이 있으신가요? 로그인<",
+    ">Log in<": ">로그인<",
+
+    # --- landing hero
+    "Is this dip worth buying?": "이 하락, 사도 되는 걸까?",
+    "Or is it a <span class=\"hl\">falling knife</span>?": "아니면 <span class=\"hl\">떨어지는 칼날</span>일까?",
+    "A daily quant scan of the S&amp;P 500 and Nasdaq-100, with an AI second pass that checks every hit for blow-off-top and dead-cat-bounce risk.":
+        "S&amp;P 500과 나스닥100을 매일 퀀트로 스캔하고, 통과한 종목마다 AI가 급등 후 고점과 데드캣 바운스 위험을 한 번 더 점검합니다.",
+    "Demo needs no signup &middot; trial is 7 days free, no credit card.":
+        "데모는 가입 없이 볼 수 있습니다 &middot; 체험은 7일 무료, 카드 등록 없음.",
+    ">Illustrative example<": ">예시 화면<",
+    ">AI QUANT REPORT <": ">AI 퀀트 리포트 <",
+    ">QUANT REVIEW<": ">퀀트 리뷰<",
+    ">RISK REVIEW<": ">리스크 리뷰<",
+    "Not extended near the high, well above its 52-week low — low blow-off-top and dead-cat-bounce risk.":
+        "고점 부근까지 과열되지 않았고 52주 저점보다 충분히 높습니다 — 급등 후 고점 및 데드캣 바운스 위험이 낮습니다.",
+
+    # --- how it works
+    ">HOW IT WORKS<": ">작동 방식<",
+    ">Two filters. Not one.<": ">필터는 하나가 아니라 둘입니다.<",
+    "Most screeners stop at the math. We add a second pass that specifically hunts for the ways a pure quant signal can fool you.":
+        "대부분의 스크리너는 계산에서 멈춥니다. QUANTIFY는 순수 퀀트 신호가 사람을 속이는 방식만 골라 찾아내는 2차 검증을 더합니다.",
+    ">STEP 1<": ">1단계<", ">STEP 2<": ">2단계<", ">STEP 3<": ">3단계<",
+    ">Quant scan, every day<": ">매일 도는 퀀트 스캔<",
+    ">AI risk cross-check<": ">AI 리스크 교차 검증<",
+    ">You decide<": ">판단은 당신이<",
+    "Real price data across all 518 S&amp;P 500 + Nasdaq-100 tickers is pulled and scored on long-term trend (200-day moving average) and pullback depth from the recent high. Only the top-scoring names — usually a dozen or two — clear the bar.":
+        "S&amp;P 500 + 나스닥100 518개 종목의 실제 가격 데이터를 받아 장기 추세(200일 이동평균)와 최근 고점 대비 하락 폭으로 점수를 매깁니다. 상위 점수 종목만 — 보통 10~20개 — 기준을 통과합니다.",
+    "Every ticker that clears the quant bar gets reviewed a second time by AI, specifically for two traps: chasing a stock already near a blow-off top, or mistaking a dead-cat bounce for a real recovery.":
+        "퀀트 기준을 통과한 모든 종목은 AI가 두 가지 함정을 집중적으로 다시 검토합니다. 이미 고점 부근까지 과열된 종목을 뒤늦게 쫓는 것, 그리고 데드캣 바운스를 진짜 회복으로 착각하는 것입니다.",
+    "You get the data, the reasoning, and a plain-language risk review — never a price target, never a \"buy now.\" What you do with it is up to you.":
+        "데이터와 근거, 그리고 쉬운 말로 된 리스크 리뷰를 제공합니다. 목표가도, \"지금 사세요\"도 없습니다. 그것으로 무엇을 할지는 당신이 정합니다.",
+
+    # --- proof section
+    ">PROVEN BY THE NUMBERS<": ">숫자로 검증<",
+    ">We tested it against 2 years of real data. Here's what happened.<": ">2년치 실제 데이터로 검증했습니다. 결과는 이렇습니다.<",
+    "Not cherry-picked winners — replayed against 2 years of real price history using the exact formula running today. See exactly what's covered below.":
+        "골라낸 성공 사례가 아닙니다. 지금 돌아가는 것과 똑같은 공식으로 2년치 실제 가격 데이터를 다시 재생한 결과입니다. 무엇이 포함됐는지는 아래에 그대로 적어뒀습니다.",
+    "Backtest is computing on the server — check back shortly.": "백테스트를 서버에서 계산하는 중입니다 — 잠시 후 다시 확인해주세요.",
+    ">How this was measured — read before you trust it<": ">어떻게 측정했는지 — 믿기 전에 읽어보세요<",
+    ">Universe:<": ">대상 종목:<",
+    ">Signal counting:<": ">신호 집계 방식:<",
+    "only a fresh crossing above the score threshold counts as one signal — a stock staying \"Favorable\" for a week isn't counted 7 times.":
+        "점수 기준선을 새로 넘어선 순간만 신호 1건으로 셉니다. 한 종목이 일주일 내내 \"Favorable\"이어도 7번으로 세지 않습니다.",
+    ">Benchmark:<": ">벤치마크:<",
+    ", not its average over the whole period. This matters: a buy-the-dip rule fires after selloffs, and the market's own bounce after a selloff is better than its return on a random day. Measured the loose way, the edge looks about 40% larger than it is. The honest comparison is the one shown above.":
+        " 기준으로 측정한 값이며, 전체 기간 평균이 아닙니다. 이게 중요한 이유는, 눌림목 매수 규칙은 하락 뒤에 신호가 뜨는데 하락 뒤 시장의 반등은 아무 날이나 잡았을 때보다 원래 좋기 때문입니다. 느슨하게 측정하면 우위가 실제보다 약 40% 커 보입니다. 위에 표시된 것이 정직한 비교입니다.",
+    "the S&amp;P figure is its return over ": "S&amp;P 수치는 ",
+    ">the same windows the strategy actually traded<": ">전략이 실제로 진입한 것과 같은 구간<",
+    ">Costs:<": ">비용:<",
+    "every signal is charged a 0.10% round trip for spread and slippage before anything is averaged, and a trade that made less than that is not counted as a win. Taxes are not modelled.":
+        "평균을 내기 전에 모든 신호에 스프레드·슬리피지 명목으로 왕복 0.10% 비용을 부과하며, 그보다 적게 번 거래는 승리로 세지 않습니다. 세금은 반영하지 않았습니다.",
+    ">Survivorship bias:<": ">생존 편향:<",
+    "this uses today's index membership applied to the past 2 years. Stocks removed from these indices during that window (delisted, acquired, or dropped for poor performance) aren't included, which flatters results by an amount that cannot be measured without historical index membership data we don't have. Assume the real numbers are lower than these.":
+        "오늘 기준 지수 구성 종목을 과거 2년에 적용한 것입니다. 그 기간에 지수에서 빠진 종목(상장폐지, 인수, 부진으로 제외)은 포함되지 않아 결과가 실제보다 좋게 나옵니다. 과거 지수 구성 데이터가 없으면 그 크기를 측정할 수 없으므로, 실제 수치는 이보다 낮다고 가정하세요.",
+    ">Overlapping windows:<": ">구간 중첩:<",
+    "signals fire close together, so the 30/60/90-day windows overlap heavily. The observation counts are not independent samples, and the averages carry more uncertainty than a raw \"n\" suggests.":
+        "신호가 가까운 시점에 몰려서 발생하므로 30/60/90일 구간이 크게 겹칩니다. 관측 수는 독립 표본이 아니며, 평균값은 표시된 n이 시사하는 것보다 불확실성이 큽니다.",
+    ">Out-of-sample check:<": ">Out-of-sample 검증:<",
+    ">Recomputed periodically, not per-visit:<": ">방문할 때마다가 아니라 주기적으로 재계산:<",
+    "normally about once a week, though a server restart can also trigger a one-off recompute if there's no cached result yet. Either way the universe covered doesn't change; the numbers only move because new price data came in.":
+        "보통 주 1회 정도이며, 캐시된 결과가 없는 상태에서 서버가 재시작되면 한 번 더 계산될 수 있습니다. 어느 쪽이든 대상 종목은 바뀌지 않고, 숫자는 새 가격 데이터가 들어와서만 움직입니다.",
+    "not available yet — check back after the first computation finishes.": "아직 준비되지 않았습니다 — 첫 계산이 끝난 뒤 다시 확인해주세요.",
+    "not available yet.": "아직 준비되지 않았습니다.",
+
+    # --- differentiation
+    ">WHY THIS IS DIFFERENT<": ">무엇이 다른가<",
+    "Most signal services show you a highlight reel.": "대부분의 시그널 서비스는 잘된 것만 모아 보여줍니다.",
+    "We show you the full validation — including the losses.": "QUANTIFY는 검증 전체를 보여줍니다 — 손실까지 포함해서.",
+    ">The usual approach<": ">흔한 방식<",
+    "A handful of cherry-picked win screenshots, no losing trades shown": "골라낸 수익 인증 몇 장, 손실 거래는 보여주지 않음",
+    "\"This stock is about to explode\" — hype with no disclosed methodology": "\"이 종목 곧 터진다\" — 방법론 공개 없는 과장",
+    "A black-box pick with no reasoning you can check": "검증할 수 없는 블랙박스 추천",
+    "Pay more for \"VIP\" or \"premium\" picks other subscribers don't see": "다른 구독자는 못 보는 \"VIP\"·\"프리미엄\" 추천에 추가 결제",
+    "Full backtest published on this page — wins and losses, in-sample and out-of-sample":
+        "이 페이지에 백테스트 전문 공개 — 수익과 손실, in-sample과 out-of-sample 모두",
+    "One entry rule, plainly disclosed: long-term uptrend, pulled back 10-25% from its recent high":
+        "진입 규칙 하나를 그대로 공개: 장기 상승 추세, 최근 고점 대비 10~25% 하락",
+    "Every pick ships with the AI's actual reasoning and the two failure modes it checked":
+        "모든 종목에 AI의 실제 판단 근거와 점검한 두 가지 실패 유형을 함께 제공",
+    "One plan. Every subscriber sees the same data, the same day.": "요금제 하나. 모든 구독자가 같은 날 같은 데이터를 봅니다.",
+
+    # --- features
+    ">Built on real data, not vibes<": ">감이 아니라 실제 데이터 위에<",
+    ">Live market data<": ">실시간 시장 데이터<",
+    "Real prices and volume from the actual market — no simulated or backfilled data.":
+        "실제 시장의 가격과 거래량 — 시뮬레이션이나 사후 보정 데이터 없음.",
+    "Every detected ticker gets a written quant review and explicit risk check, in plain English.":
+        "감지된 모든 종목에 서술형 퀀트 리뷰와 명시적인 리스크 점검을 쉬운 말로 제공합니다.",
+    "Distance from the 52-week high/low and 200-day trend, so you see where a stock actually sits.":
+        "52주 고점·저점 대비 거리와 200일 추세를 함께 보여줘서 종목의 현재 위치를 파악할 수 있습니다.",
+    ">Price alerts &amp; news<": ">가격 알림 &amp; 뉴스<",
+    "Set a target price and get emailed when it's hit, with live headlines next to the chart.":
+        "목표가를 설정하면 도달했을 때 이메일로 알려주고, 차트 옆에 실시간 헤드라인을 함께 보여줍니다.",
+
+    # --- final CTA + disclaimer
+    ">Know which one it is — before you buy, not after.<": ">사고 나서가 아니라, 사기 전에 구분하세요.<",
+    ">IMPORTANT<": ">중요<",
+    "QUANTIFY is an informational and educational tool. Nothing on this site is investment advice, a recommendation, or a solicitation to buy or sell any security. Scores, badges, and AI commentary reflect a mathematical model's output on the data available at the time and can be wrong. Markets involve risk, including loss of principal. Do your own research and consult a licensed financial advisor before making investment decisions.":
+        "QUANTIFY는 정보 제공 및 교육용 도구입니다. 이 사이트의 어떤 내용도 투자 조언이나 추천, 증권 매매 권유가 아닙니다. 점수, 배지, AI 코멘트는 그 시점에 이용 가능한 데이터에 대한 수학적 모델의 출력이며 틀릴 수 있습니다. 시장에는 원금 손실을 포함한 위험이 따릅니다. 투자 결정을 내리기 전에 직접 조사하고 허가받은 금융 전문가와 상담하세요.",
+    "QUANTIFY. — informational and educational only, not investment advice.": "QUANTIFY. — 정보 제공 및 교육 목적일 뿐, 투자 조언이 아닙니다.",
+
+    # --- pricing
+    ">SIMPLE PRICING<": ">단순한 가격<",
+    ">One plan. Everything included.<": ">요금제 하나. 전부 포함.<",
+    "No tiers to compare and nothing paywalled inside the app — every subscriber gets the full quant scanner, AI risk review, market view, and portfolio tools.":
+        "비교할 등급도 없고 앱 안에서 잠긴 기능도 없습니다. 모든 구독자가 퀀트 스캐너, AI 리스크 리뷰, 마켓 뷰, 포트폴리오 도구를 전부 사용합니다.",
+    "7-day free trial, then billed monthly. Cancel anytime.": "7일 무료 체험 후 매월 청구. 언제든 해지할 수 있습니다.",
+    "Full S&amp;P 500 + Nasdaq-100 quant scan, updated four times a day around the market open and close":
+        "S&amp;P 500 + 나스닥100 전체 퀀트 스캔, 장 시작과 마감 전후로 하루 네 번 갱신",
+    "AI risk review on every ticker that clears the quant bar": "퀀트 기준을 통과한 모든 종목에 대한 AI 리스크 리뷰",
+    "Live charts, technicals, and a market-wide heatmap": "실시간 차트, 기술적 지표, 시장 전체 히트맵",
+    "Watchlist, portfolio tracking, and price alerts": "관심종목, 포트폴리오 추적, 가격 알림",
+    "Backtest methodology published openly, in-sample and out-of-sample": "백테스트 방법론 전면 공개 (in-sample 및 out-of-sample)",
+    ">Start Free Trial<": ">무료 체험 시작<",
+    ">What happens after the trial?<": ">체험이 끝나면 어떻게 되나요?<",
+    "Your card is charged $9.99 when the 7-day trial ends, unless you cancel first from Settings. Cancel anytime — access continues through the end of whatever period you've already paid for.":
+        "7일 체험이 끝나면 설정에서 미리 해지하지 않는 한 카드로 $9.99가 청구됩니다. 언제든 해지할 수 있고, 이미 결제한 기간이 끝날 때까지는 계속 이용할 수 있습니다.",
+    ">Questions?<": ">궁금한 점이 있나요?<",
+    ">email us directly<": ">직접 이메일로 문의<",
+    "QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer. Nothing on this page or in the app is investment advice.":
+        "QUANTIFY는 정보 제공 및 교육용 도구이며, 허가받은 투자자문업자나 증권중개업자가 아닙니다. 이 페이지와 앱의 어떤 내용도 투자 조언이 아닙니다.",
+    "QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer.":
+        "QUANTIFY는 정보 제공 및 교육용 도구이며, 허가받은 투자자문업자나 증권중개업자가 아닙니다.",
+
+    # --- about
+    ">ABOUT<": ">소개<",
+    ">What QUANTIFY is — and isn't<": ">QUANTIFY가 무엇이고, 무엇이 아닌지<",
+    ">What it is<": ">무엇인가<",
+    ">What it isn't<": ">무엇이 아닌가<",
+    ">Why one strategy<": ">왜 전략이 하나뿐인가<",
+    "A quant scan of the S&amp;P 500 and Nasdaq-100, with an AI risk check layered on top. Built for people willing to do their own research, not people looking for someone to tell them what to buy.":
+        "S&amp;P 500과 나스닥100을 퀀트로 스캔하고 그 위에 AI 리스크 점검을 얹습니다. 무엇을 사라고 말해줄 사람을 찾는 분이 아니라, 스스로 조사할 의향이 있는 분을 위해 만들었습니다.",
+    "QUANTIFY is not a broker, not a licensed investment adviser, and not a signal service telling you when to buy or sell. It doesn't place trades, hold your money, or know your financial situation. It surfaces one specific pattern and flags risk around it — sizing, diversification, and the actual decision are entirely yours.":
+        "QUANTIFY는 증권사도, 허가받은 투자자문업자도, 매수·매도 시점을 알려주는 시그널 서비스도 아닙니다. 주문을 넣지 않고, 당신의 돈을 보관하지 않으며, 당신의 재무 상황을 알지 못합니다. 하나의 특정 패턴을 찾아내고 그 주변의 위험을 표시할 뿐이며, 비중 조절과 분산 투자, 실제 결정은 전적으로 당신의 몫입니다.",
+    "Most retail screening tools bury you in adjustable filters that are easy to overfit and hard to trust. QUANTIFY ships one entry rule at a time, validated against real out-of-sample data before it goes live, rather than a wall of knobs that look sophisticated but were never actually tested.":
+        "대부분의 개인용 스크리닝 도구는 조절 가능한 필터를 잔뜩 제공하는데, 이런 필터는 과적합되기 쉽고 신뢰하기 어렵습니다. QUANTIFY는 정교해 보이지만 실제로 검증된 적 없는 수많은 옵션 대신, 실제 out-of-sample 데이터로 검증한 진입 규칙을 한 번에 하나씩만 제공합니다.",
+
+    # --- auth
+    ">Welcome back<": ">다시 오셨네요<",
+    ">Log in to see today's detected tickers.<": ">오늘 감지된 종목을 보려면 로그인하세요.<",
+    ">Create your account<": ">계정 만들기<",
+    ">7-day free trial, then $9.99/month. Cancel anytime.<": ">7일 무료 체험 후 월 $9.99. 언제든 해지할 수 있습니다.<",
+    "Continue with Google": "Google로 계속하기",
+    ">10+ characters, with at least 1 letter and 1 number<": ">10자 이상, 영문 1자와 숫자 1자 이상 포함<",
+    ">Quant-detected stocks,<": ">퀀트가 찾아낸 종목,<",
+    ">AI risk-checked.<": ">AI가 리스크까지 점검.<",
+    "Live market data, never simulated": "실제 시장 데이터, 시뮬레이션 아님",
+    "Plain-language AI risk review on every pick": "모든 종목에 쉬운 말로 된 AI 리스크 리뷰",
+    "7-day trial, then $9.99/month": "7일 무료 체험 후 월 $9.99",
+    "A daily scan of the S&amp;P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk before it ever reaches your screen.":
+        "S&amp;P 500과 나스닥100을 매일 스캔하고, 화면에 표시되기 전에 AI가 급등 후 고점과 데드캣 바운스 위험을 교차 검증합니다.",
+    ">Didn't get a verification email?<": ">인증 메일을 받지 못하셨나요?<",
+    ">Resend verification email<": ">인증 메일 다시 보내기<",
+    "By creating an account you agree to our ": "계정을 만들면 다음에 동의하는 것으로 간주됩니다: ",
+
+    # --- FAQ
+    ">Frequently asked questions<": ">자주 묻는 질문<",
+    ">Is this financial advice?<": ">이것은 투자 조언인가요?<",
+    "No. QUANTIFY is an informational and educational tool. The quant score, badges, and AI commentary are a mathematical model's output on available data, and they can be wrong. Nothing here is a recommendation to buy or sell anything — consult a licensed financial advisor before making investment decisions.":
+        "아닙니다. QUANTIFY는 정보 제공 및 교육용 도구입니다. 퀀트 점수, 배지, AI 코멘트는 주어진 데이터에 대한 수학적 모델의 출력이며 틀릴 수 있습니다. 어떤 것도 매수·매도 추천이 아니며, 투자 결정을 내리기 전에 허가받은 금융 전문가와 상담하세요.",
+    ">What do the Favorable / Caution / Risk badges mean?<": ">Favorable / Caution / Risk 배지는 무슨 뜻인가요?<",
+    "<b>Favorable</b> means the AI's entry-timing check found the setup clean. <b>Caution</b> means it found some risk worth knowing about before you look closer. <b>Risk</b> means it found something that argues for skipping or waiting. None of the three is ever a buy or sell order — they're a starting point for your own research.":
+        "<b>Favorable</b>은 AI의 진입 타이밍 점검에서 문제가 발견되지 않았다는 뜻입니다. <b>Caution</b>은 더 자세히 보기 전에 알아둘 만한 위험이 있다는 뜻입니다. <b>Risk</b>는 건너뛰거나 기다릴 이유가 발견됐다는 뜻입니다. 셋 중 어느 것도 매수·매도 지시가 아니며, 본인의 조사를 시작하는 출발점일 뿐입니다.",
+    ">What's the strategy behind the scan?<": ">스캔의 근거가 되는 전략은 무엇인가요?<",
+    ">How often does the data update?<": ">데이터는 얼마나 자주 갱신되나요?<",
+    "The full S&amp;P 500 + Nasdaq-100 scan recomputes four times a day on trading days — before the open, at the open, about an hour in, and after the close — using a licensed market data feed.":
+        "S&amp;P 500 + 나스닥100 전체 스캔은 거래일마다 하루 네 번 다시 계산됩니다 — 장 시작 전, 장 시작 시점, 시작 후 약 1시간, 장 마감 후 — 정식 라이선스를 받은 시장 데이터 피드를 사용합니다.",
+    ">Can I run my own custom screener?<": ">직접 스크리너를 설정할 수 있나요?<",
+    "Not yet — today there's one validated strategy, and you can filter the results by badge and by index (S&amp;P 500 / Nasdaq-100). A configurable multi-strategy screener is on the roadmap.":
+        "아직은 아닙니다. 현재는 검증된 전략 하나가 있고, 결과를 배지와 지수(S&amp;P 500 / 나스닥100)로 필터링할 수 있습니다. 설정 가능한 다중 전략 스크리너는 로드맵에 있습니다.",
+    ">Is my payment information secure?<": ">결제 정보는 안전한가요?<",
+    "Yes. Billing is handled by Gumroad — QUANTIFY never sees or stores your card details.":
+        "네. 결제는 Gumroad가 처리하며, QUANTIFY는 카드 정보를 보거나 저장하지 않습니다.",
+    ">How do I cancel?<": ">어떻게 해지하나요?<",
+    "From Settings or the Subscription page once you're logged in. Cancelling stops future billing; you keep access through the end of the period you already paid for.":
+        "로그인 후 설정 또는 구독 페이지에서 해지할 수 있습니다. 해지하면 다음 청구가 중단되며, 이미 결제한 기간이 끝날 때까지는 계속 이용할 수 있습니다.",
+    # --- final six, several of which are split by inline links, so the anchor tags are
+    # part of the key rather than translating the fragments around them separately.
+    "Demo needs no signup \u00b7 trial is 7 days free, no credit card.":
+        "데모는 가입 없이 볼 수 있습니다 \u00b7 체험은 7일 무료, 카드 등록 없음.",
+    "See today's list, free for 7 days. Then $9.99/month. Takes under a minute to sign up.":
+        "오늘의 목록을 7일 동안 무료로 보세요. 이후 월 $9.99. 가입은 1분이면 끝납니다.",
+    "See the <a href=\"/faq\">FAQ</a>, or <a href=\"mailto:quantify.app.official@gmail.com\">email us directly</a>.":
+        "<a href=\"/faq\">자주 묻는 질문</a>을 보시거나 <a href=\"mailto:quantify.app.official@gmail.com\">직접 이메일로 문의</a>해 주세요.",
+    "One validated quant rule — a pullback in an established uptrend — run across 518 stocks, refreshed four times a day around the market open and close. Every ticker that clears the bar also gets an AI-written review checking for the specific ways that setup can fail (a blow-off top disguised as a pullback, a dead-cat bounce, a stock that's actually in a downtrend). The scoring and the backtest methodology behind it are published openly, in-sample and out-of-sample, not just cherry-picked results.":
+        "검증된 퀀트 규칙 하나 — 확립된 상승 추세에서의 눌림목 — 를 518개 종목에 적용하고, 장 시작과 마감 전후로 하루 네 번 갱신합니다. 기준을 통과한 모든 종목은 그 설정이 실패할 수 있는 구체적인 방식(눌림목으로 위장한 급등 후 고점, 데드캣 바운스, 실제로는 하락 추세인 종목)을 AI가 서술형으로 점검합니다. 점수 산출과 그 뒤의 백테스트 방법론은 골라낸 결과가 아니라 in-sample과 out-of-sample 모두 공개되어 있습니다.",
+    "<a href=\"/terms\">Terms</a> and <a href=\"/privacy\">Privacy Policy</a>":
+        "<a href=\"/terms\">이용약관</a> 및 <a href=\"/privacy\">개인정보처리방침</a>",
+    "home page</a>.": "홈페이지</a>에서 확인하세요.",
+    "See the full numbers on the <a href=\"/#proof\">": "전체 수치는 <a href=\"/#proof\">",
+}
+
+
+
+def translate_public(html: str, lang: str) -> str:
+    """Replace the English source strings above with their Korean equivalents.
+
+    Longest first, so a short key can never eat a fragment of a longer sentence that was
+    still waiting to be matched. Same find-and-replace approach as translate_body(), for
+    the same reason: these page bodies are full of JS template literals and turning them
+    into f-strings would mean escaping every brace in them.
+    """
+    if lang == "en":
+        return html
+    table = PUBLIC_KO if lang == "ko" else {}
+    if not table:
+        return html
+    ordered = sorted(table, key=len, reverse=True)
+
+    def _swap(chunk: str) -> str:
+        for src in ordered:
+            chunk = chunk.replace(src, table[src])
+        return chunk
+
+    out, pos = [], 0
+    for m in re.finditer(r"<(script|style)\b.*?</\1>", html, re.S | re.I):
+        out.append(_swap(html[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_swap(html[pos:]))
+    return "".join(out)
+
+
+def render_marketing_page(title: str, description: str, body_html: str, path: str = "",
+                          extra_head: str = "", lang: str = "en") -> HTMLResponse:
     url = f"https://quantify.trading{path}"
-    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. — {title}</title><meta name="description" content="{description}">{og_head(f"QUANTIFY. — {title}", description, path)}<link rel="canonical" href="{url}">{extra_head}<style>{MARKETING_CSS}</style></head><body>
-<header><div class="nav"><a class="logo" href="/">QUANTIFY<span>.</span></a><div class="navlinks">{_MARKETING_NAV}</div></div></header>
+    toggle = lang_toggle_html(lang, path or "/")
+    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. — {title}</title><meta name="description" content="{description}">{og_head(f"QUANTIFY. — {title}", description, path)}{hreflang_links(path or "/")}<link rel="canonical" href="{url}">{extra_head}<style>{MARKETING_CSS}
+.lang-toggle{{display:inline-block;padding:6px 12px;border:1px solid var(--border);border-radius:999px;color:var(--dim2,#525f59);font-size:13.5px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}}
+.lang-toggle:hover{{border-color:var(--green);color:var(--green)}}
+.lang-toggle.app{{border-color:var(--sb-border,#232b2f);color:var(--sb-text,#9aa7ac);padding:5px 10px;font-size:12.5px}}
+.lang-toggle.app:hover{{border-color:var(--green);color:var(--green)}}
+</style></head><body>
+<header><div class="nav"><a class="logo" href="/">QUANTIFY<span>.</span></a><div class="navlinks">{_MARKETING_NAV}{toggle}</div></div></header>
 <main><div class="wrap">{body_html}</div></main>
 <footer>QUANTIFY. — informational and educational only, not investment advice.<br>
 <a href="/login">Log in</a> &middot; <a href="/signup">Sign up</a> &middot; <a href="/pricing">Pricing</a> &middot; <a href="/faq">FAQ</a> &middot; <a href="/about">About</a> &middot; <a href="/terms">Terms</a> &middot; <a href="/privacy">Privacy</a>
 </footer>
-</body></html>''')
+</body></html>''', lang))
 
 
 @app.get("/pricing", response_class=HTMLResponse)
-async def pricing_page():
+async def pricing_page(request: Request):
     body = """
 <div class="eyebrow">SIMPLE PRICING</div>
 <h1>One plan. Everything included.</h1>
@@ -5407,11 +5896,11 @@ async def pricing_page():
 <p>See the <a href="/faq">FAQ</a>, or <a href="mailto:quantify.app.official@gmail.com">email us directly</a>.</p>
 <div class="disclaimer">QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer. Nothing on this page or in the app is investment advice.</div>
 """
-    return render_marketing_page("Pricing", "QUANTIFY pricing: $9.99/month after a 7-day free trial, one plan, everything included.", body, path="/pricing")
+    return render_marketing_page("Pricing", "QUANTIFY pricing: $9.99/month after a 7-day free trial, one plan, everything included.", body, path="/pricing", lang=resolve_lang(request, get_logged_in_user(request)))
 
 
 @app.get("/faq", response_class=HTMLResponse)
-async def faq_page():
+async def faq_page(request: Request):
     faq_items = [
         ("Is this financial advice?", "No. QUANTIFY is an informational and educational tool. The quant score, badges, and AI commentary are a mathematical model's output on available data, and they can be wrong. Nothing here is a recommendation to buy or sell anything — consult a licensed financial advisor before making investment decisions."),
         ("What do the Favorable / Caution / Risk badges mean?", "<b>Favorable</b> means the AI's entry-timing check found the setup clean. <b>Caution</b> means it found some risk worth knowing about before you look closer. <b>Risk</b> means it found something that argues for skipping or waiting. None of the three is ever a buy or sell order — they're a starting point for your own research."),
@@ -5434,11 +5923,11 @@ async def faq_page():
         ],
     }
     extra_head = f'<script type="application/ld+json">{json.dumps(faq_jsonld)}</script>'
-    return render_marketing_page("FAQ", "Frequently asked questions about QUANTIFY: pricing, the strategy, data updates, and cancellation.", body, path="/faq", extra_head=extra_head)
+    return render_marketing_page("FAQ", "Frequently asked questions about QUANTIFY: pricing, the strategy, data updates, and cancellation.", body, path="/faq", extra_head=extra_head, lang=resolve_lang(request, get_logged_in_user(request)))
 
 
 @app.get("/about", response_class=HTMLResponse)
-async def about_page():
+async def about_page(request: Request):
     body = """
 <div class="eyebrow">ABOUT</div>
 <h1>What QUANTIFY is — and isn't</h1>
@@ -5451,7 +5940,7 @@ async def about_page():
 <p>Most retail screening tools bury you in adjustable filters that are easy to overfit and hard to trust. QUANTIFY ships one entry rule at a time, validated against real out-of-sample data before it goes live, rather than a wall of knobs that look sophisticated but were never actually tested.</p>
 <div class="disclaimer">QUANTIFY is an informational and educational tool. Nothing on this page or in the app is investment advice. Questions: <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</div>
 """
-    return render_marketing_page("About", "What QUANTIFY is and isn't — one validated quant strategy with an AI risk check, not investment advice.", body, path="/about")
+    return render_marketing_page("About", "What QUANTIFY is and isn't — one validated quant strategy with an AI risk check, not investment advice.", body, path="/about", lang=resolve_lang(request, get_logged_in_user(request)))
 
 
 LEGAL_CSS = """
@@ -5494,6 +5983,9 @@ header,.panel{background:var(--panel);border:1px solid var(--border)}
 .side-link svg{flex-shrink:0}
 .side-link:hover{background:var(--sb-hover);color:var(--sb-text-active)}
 .side-link.active{background:var(--green);color:#ffffff;border-color:var(--green)}
+.lang-toggle{display:inline-block;padding:5px 10px;border:1px solid var(--sb-border);border-radius:999px;color:var(--sb-text);font-size:12.5px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}
+.lang-toggle:hover{border-color:var(--green);color:var(--green)}
+
 .side-spacer{flex:1;min-height:8px}
 header{padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-radius:10px}
 .brand{font-weight:700;font-size:19px;color:var(--head);text-decoration:none;letter-spacing:.2px}
@@ -5590,8 +6082,10 @@ def _render_sidebar(active_nav: str, lang: str = "en") -> str:
         return f'<a class="{cls}" href="{href}"{extra}>{_SIDEBAR_ICONS[key]}<span>{t(label_key, lang)}</span></a>'
     top = "".join(link(key, href, label_key) for key, href, label_key in _APP_SHELL_NAV_LINKS)
     bottom = "".join(link(key, href, label_key, extra) for key, href, label_key, extra in _SIDEBAR_BOTTOM_LINKS)
+    switch = ('<div style="padding:8px 12px 4px">'
+              + lang_toggle_html(lang, "/terminal", style="app") + '</div>')
     return (f'<nav class="sidebar"><a class="side-brand" href="/terminal">QUANTIFY<span>.</span></a>'
-            f'{top}<div class="side-spacer"></div>{bottom}</nav>')
+            f'{top}<div class="side-spacer"></div>{switch}{bottom}</nav>')
 
 
 def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "",
@@ -5746,6 +6240,7 @@ async def google_callback(request: Request, code: Optional[str] = None, state: O
         conn.commit()
     conn.close()
 
+    await asyncio.to_thread(adopt_browser_language, request, email)
     token = create_session(email)
     res = RedirectResponse("/terminal", status_code=303)
     res.set_cookie("session_user", token, httponly=True, secure=bool(os.getenv("RENDER")), samesite="lax", max_age=SESSION_TTL)
@@ -5797,16 +6292,17 @@ async def accept_disclaimer(request: Request, agree: Optional[str] = Form(None))
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(error: Optional[str] = None, msg: Optional[str] = None):
+async def login_page(request: Request, error: Optional[str] = None, msg: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     msg = html_lib.escape(msg) if msg else ''
     form = f'''<div class="card"><h2>Welcome back</h2><div class="subtitle">Log in to see today's detected tickers.</div><div class="error">{error}</div><div class="ok">{msg}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/login" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="current-password"><button>Log in</button></form><div class="links"><a href="/signup">Create an account</a><a href="/forgot-password">Forgot password?</a></div><details><summary>Didn't get a verification email?</summary><form action="/api/auth/resend-verification" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><button>Resend verification email</button></form></details></div>'''
     return render_auth_page("QUANTIFY. Log in", form, path="/login",
-                            description="Log in to QUANTIFY — the daily quant scan of the S&P 500 and Nasdaq-100, AI risk-checked.")
+                            description="Log in to QUANTIFY — the daily quant scan of the S&P 500 and Nasdaq-100, AI risk-checked.",
+                            lang=resolve_lang(request))
 
 
 @app.post("/api/auth/login")
-async def login(email: str = Form(...), password: str = Form(...)):
+async def login(request: Request, email: str = Form(...), password: str = Form(...)):
     email = email.strip().lower()
     if _is_locked_out(LOGIN_ATTEMPTS, email, LOGIN_MAX_ATTEMPTS):
         return RedirectResponse("/login?error=Too+many+failed+attempts.+Try+again+later.", status_code=303)
@@ -5852,6 +6348,7 @@ async def login(email: str = Form(...), password: str = Form(...)):
         return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
 
     _clear_attempts(LOGIN_ATTEMPTS, email)
+    await asyncio.to_thread(adopt_browser_language, request, email)
     token = create_session(email)
     res = RedirectResponse("/terminal", status_code=303)
     res.set_cookie(
@@ -5866,10 +6363,10 @@ async def login(email: str = Form(...), password: str = Form(...)):
 
 
 @app.get("/signup", response_class=HTMLResponse)
-async def signup_page(error: Optional[str] = None):
+async def signup_page(request: Request, error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
     form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">7-day free trial, then $9.99/month. Cancel anytime.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="new-password"><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
-    return render_auth_page("QUANTIFY. Sign up", form, path="/signup")
+    return render_auth_page("QUANTIFY. Sign up", form, path="/signup", lang=resolve_lang(request))
 
 
 VERIFY_TOKEN_TTL = 24 * 3600
@@ -5917,6 +6414,7 @@ async def signup(request: Request, email: str = Form(...), password: str = Form(
         return RedirectResponse("/signup?error=Database+error",status_code=303)
 
     asyncio.create_task(asyncio.to_thread(_log_event, EVENT_SIGNUP, visitor_id, channel, email))
+    await asyncio.to_thread(adopt_browser_language, request, email)
     if not await asyncio.to_thread(send_verification_email, request, email, token):
         return RedirectResponse("/login?msg=Account+created.+Verification+email+could+not+be+sent+-+contact+support.",status_code=303)
     return RedirectResponse("/check-email?email="+urllib.parse.quote(email),status_code=303)
@@ -6787,6 +7285,9 @@ header,.panel{{background:var(--panel);border:1px solid var(--border)}}
 .side-link svg{{flex-shrink:0}}
 .side-link:hover{{background:var(--sb-hover);color:var(--sb-text-active)}}
 .side-link.active{{background:var(--green);color:#ffffff;border-color:var(--green)}}
+.lang-toggle{{display:inline-block;padding:5px 10px;border:1px solid var(--sb-border);border-radius:999px;color:var(--sb-text);font-size:12.5px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}}
+.lang-toggle:hover{{border-color:var(--green);color:var(--green)}}
+
 .side-spacer{{flex:1;min-height:8px}}
 @media(max-width:900px){{
   body{{padding-left:12px;padding-bottom:70px}}
@@ -6972,7 +7473,7 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
   .sortbar select{{min-width:calc(50% - 3px)}}
 }}
 </style></head><body>
-{_render_sidebar("scanner")}
+{_render_sidebar("scanner", lang)}
 <header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Set an alert or add to portfolio</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now">
 <div class="action-group">
 <span class="action-group-label">Price alert</span>
@@ -7115,6 +7616,23 @@ window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('wel
         ('placeholder="Entry price $"', f'placeholder="{t("entry_price_placeholder", lang)}"'),
         (">Save to Portfolio</button>", f">{t('save_to_portfolio_btn', lang)}</button>"),
         (">Manage alerts<", f">{t('manage_alerts_link', lang)}<"),
+        (">Price alert</span>", f">{t('act_price_alert', lang)}</span>"),
+        (">Add to portfolio</span>", f">{t('act_add_portfolio', lang)}</span>"),
+        ("Leave entry price blank to use today's scan price. Not sure how many shares?", t("act_portfolio_hint", lang)),
+        (">Position sizing calculator</a>", f">{t('act_sizing_link', lang)}</a>"),
+        ("&#9733; Set an alert or add to portfolio", f"&#9733; {t('act_toggle', lang)}"),
+        ('aria-label="Score breakdown radar"', f'aria-label="{t("score_radar_alt", lang)}"'),
+        ('title="Track this ticker without deciding anything right now"', f'title="{t("tip_track_ticker", lang)}"'),
+        ('title="Alert when price rises to/above, or falls to/below, the target"', f'title="{t("tip_alert_dir", lang)}"'),
+        ('title="Get an email when the price reaches this value"', f'title="{t("tip_target", lang)}"'),
+        ('title="Email me when the price hits my target"', f'title="{t("tip_set_alert", lang)}"'),
+        ('title="View or cancel your existing price alerts"', f'title="{t("tip_manage_alerts", lang)}"'),
+        ('title="How many shares you own or are tracking"', f'title="{t("tip_shares", lang)}"'),
+        ('title="What you paid \u2014 defaults to today\'s scan price if left blank"', f'title="{t("tip_entry", lang)}"'),
+        ('title="Add this ticker to My Portfolio"', f'title="{t("tip_save_portfolio", lang)}"'),
+        ('title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter"',
+         f'title="{t("tip_ai_refresh", lang)}"'),
+        ("<div class=\"notice\">No scan data yet.</div>", f'<div class="notice">{t("no_scan_data", lang)}</div>'),
         (">SMA 20<", f">{t('sma20', lang)}<"),
         (">SMA 50<", f">{t('sma50', lang)}<"),
         (">SMA 200<", f">{t('sma200', lang)}<"),
@@ -7187,7 +7705,12 @@ loadMarketSummary();loadHeatmap();setInterval(()=>{loadMarketSummary();loadHeatm
         ('value="universe">Index<', f'value="universe">{t("opt_index", lang)}<'),
         ('value="sector">Sector<', f'value="sector">{t("opt_sector", lang)}<'),
         (">Loading...<", f">{t('loading', lang)}<"),
-    ])
+            ("<div class=\"notice\">No scan data yet \u2014 check back after the next scan.</div>", f'<div class="notice">{t("no_scan_data_check", lang)}</div>'),
+        ("<div class=\"notice\">Could not load the heatmap.</div>", f'<div class="notice">{t("heatmap_failed", lang)}</div>'),
+        ("AI summary is being prepared for today&#39;s scan \u2014 check back after the next cycle.", t("ai_summary_pending", lang)),
+        ("'Not yet reviewed'", f"'{t('not_yet_reviewed', lang)}'"),
+        (">Cleared Quant Bar<", f">{t('cleared_quant_bar', lang)}<"),
+])
     return render_app_shell(t("nav_market", lang), "market", body, lang=lang, theme=get_user_theme(user))
 
 
@@ -7229,7 +7752,7 @@ async def backtest_page(request: Request):
     lang = get_user_lang(user)
     body = """
 <section class="panel"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
-<section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">%%BT_METHOD%% See the <a href="/faq" style="color:var(--head);text-decoration:underline">FAQ</a> for more.</p></section>
+<section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">%%BT_METHOD%% %%BT_FAQ%%</p></section>
 <script>
 async function load(){try{const r=await fetch('/api/backtest-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${h}-Day Forward Return</h4>
 <div class="backtest-row"><span>Strategy avg</span><b class="${cls(v.strategy?.avg_return_pct)}">${fmtPct(v.strategy?.avg_return_pct)}</b></div>
@@ -7244,7 +7767,8 @@ load();
     # translate_body() no-ops for English, so a placeholder that has no English source
     # text in the template has to be filled here rather than through the list below --
     # otherwise an English visitor sees the raw %%BT_METHOD%% marker.
-    body = body.replace("%%BT_METHOD%%", t("backtest_methodology_body", lang))
+    body = (body.replace("%%BT_METHOD%%", t("backtest_methodology_body", lang))
+                .replace("%%BT_FAQ%%", t("faq_more", lang)))
     body = translate_body(body, lang, [
         (">Strategy Performance <", f">{t('strategy_performance', lang)} <"),
         ("(real historical replay, not a guarantee of future results)", t("strategy_performance_hint", lang)),
