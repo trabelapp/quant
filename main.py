@@ -5350,56 +5350,6 @@ LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-
 </script>
 <style>
 :root{--bg:#ffffff;--panel:#ffffff;--panel2:#f6f8f7;--border:#e1e6e3;--text:#3a4440;--head:#12201a;--dim:#7a8781;--dim2:#525f59;--green:#0e8a5f;--green-bright:#17a374;--green-soft:#e6f5ee;--red:#c8402c;--orange:#a8660a;--blue:#1f5fbf;--teal:#0a8f83}
-/* The quick-signup widget below flips the whole page to this palette the instant Join
-   is pressed -- a live preview of the product's own dark terminal, not a generic
-   "loading" state. Paired with the curated transition list below so the var-driven
-   colors glide there together instead of the widget alone changing.
-
-   That list is deliberately NOT a bare `*` -- transitioning every node on the page
-   (including ones whose color never actually changes) is what made the first version
-   of this feel janky: dozens of idle transitions running at once, and the sticky
-   header's own backdrop-filter blur fighting a background-color transition underneath
-   it produced a visible flash. The header's background below snaps instantly for that
-   reason; everything the reader is actually looking at glides. */
-/* bg sits well below panel/panel2 -- the first pass had all three within a few RGB
-   points of each other, so the card and its input all but disappeared into the page. */
-:root.dark-flip{--bg:#050806;--panel:#101a15;--panel2:#17241d;--border:#28392f;--text:#aebdb6;--head:#f3fbf7;--dim:#75897f;--dim2:#9db3a8;--green:#22c98d;--green-bright:#3fe3a4;--green-soft:#123328;--red:#ff6b57;--orange:#ffb454;--blue:#5aa8ff;--teal:#2fe0c9}
-.dark-flip header{background:rgba(5,8,6,.92)}
-.dark-flip .btn-ghost{background:var(--panel)}
-.dark-flip .eyebrow{border-color:#3a2f18;background:#1c170f;color:#e2b567}
-body.quick-transition,
-body.quick-transition section,
-body.quick-transition .hero,
-body.quick-transition h1,
-body.quick-transition .sub,
-body.quick-transition .eyebrow,
-body.quick-transition .qs-card,
-body.quick-transition .qs-input-wrap,
-body.quick-transition .qs-check-box,
-body.quick-transition .qs-join-btn,
-body.quick-transition .qs-continue,
-body.quick-transition .cta-note,
-body.quick-transition .mock,
-body.quick-transition .mock-bar,
-body.quick-transition .mock-col,
-body.quick-transition .mock-h,
-body.quick-transition .badge-ok,
-body.quick-transition .badge-warn,
-body.quick-transition .badge-danger,
-body.quick-transition .btn-ghost,
-body.quick-transition .navlinks a.muted,
-body.quick-transition .step,
-body.quick-transition .feature,
-body.quick-transition .proof-card,
-body.quick-transition .diff-col,
-body.quick-transition footer
-{transition:background-color .5s cubic-bezier(.16,1,.3,1),color .5s cubic-bezier(.16,1,.3,1),border-color .5s cubic-bezier(.16,1,.3,1)}
-/* The one moment of flourish: a ring pulses out from the card exactly as the palette
-   lands, so the change reads as something that just happened here, not a theme
-   setting that silently flipped underneath the reader. */
-body.quick-transition .qs-card{animation:qsCardPulse .6s cubic-bezier(.16,1,.3,1)}
-@keyframes qsCardPulse{0%{box-shadow:0 0 0 0 rgba(34,201,141,.45),0 20px 50px -30px rgba(18,32,26,.2)}70%{box-shadow:0 0 0 16px rgba(34,201,141,0),0 20px 50px -30px rgba(18,32,26,.2)}100%{box-shadow:0 0 0 0 rgba(34,201,141,0),0 20px 50px -30px rgba(18,32,26,.2)}}
-@media(prefers-reduced-motion:reduce){body.quick-transition .qs-card{animation:none}}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font:18px/1.75 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:var(--green);text-decoration:underline}
@@ -5461,16 +5411,6 @@ h1 .hl{color:var(--green)}
 .qs-join-btn:hover{background:var(--green-bright)}
 .qs-status{min-height:20px;font-size:13.5px;color:var(--red);margin-top:10px;font-weight:600}
 .qs-status.qs-ok{color:var(--green)}
-.qs-step-terms{margin-top:18px;padding-top:18px;border-top:1px solid var(--border)}
-/* A distinct bordered box for the agreement, like the input above it -- a checkbox
-   floating loose in plain text reads as an afterthought; boxed, it reads as the next
-   thing to fill in. */
-.qs-check-box{display:flex;align-items:flex-start;gap:10px;font-size:14px;color:var(--dim2);cursor:pointer;line-height:1.6;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px}
-.qs-check-box input{width:18px;height:18px;margin-top:1px;accent-color:var(--green);flex-shrink:0}
-.qs-check-box a{color:var(--green);font-weight:600}
-.qs-continue{display:inline-flex;align-items:center;gap:6px;background:var(--green);border:none;color:#fff;font-weight:800;font-size:14px;letter-spacing:.5px;text-transform:uppercase;padding:13px 22px;border-radius:10px;cursor:pointer;font-family:inherit;width:100%;justify-content:center}
-.qs-continue:hover{background:var(--green-bright)}
-.qs-continue .qs-cursor{color:#fff;font-size:15px;margin-right:0}
 .qs-shake{animation:qsShake .4s ease}
 @keyframes qsShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
 @media(prefers-reduced-motion:reduce){.qs-shake{animation:none}}
@@ -5654,14 +5594,6 @@ footer a{color:var(--dim2);text-decoration:underline}
 <button type="submit" class="qs-join-btn">%%QS_JOIN_LABEL%%</button>
 </div>
 <div class="qs-status" id="qsStatus1" aria-live="polite"></div>
-</form>
-<form id="qsTermsForm" class="qs-step qs-step-terms" novalidate hidden>
-<label class="qs-check-box">
-<input type="checkbox" id="qsAgree">
-<span>%%QS_TERMS_TEXT%%</span>
-</label>
-<button type="submit" class="qs-continue">%%QS_CONTINUE_LABEL%% <span class="qs-cursor" aria-hidden="true">_</span></button>
-<div class="qs-status" id="qsStatus2" aria-live="polite"></div>
 </form>
 <noscript><a class="btn btn-signup" href="/signup">Get Started Free</a></noscript>
 </div>
@@ -5858,33 +5790,24 @@ if(stickyCta&&heroSection){
   }
 }
 
-// Hero quick-signup: type an email, press Enter, get a live session; check a box,
-// press Enter again, land in the real terminal. Each step is its own <form> so the
-// browser's native "press Enter to submit" (and a phone's Go/Done key, which fires a
-// real submit rather than a synthesizable Enter keydown) both drive it for free --
-// novalidate on both forms means our own status line always runs instead of a native
-// validation popup interrupting the flow.
+// Hero quick-signup: type an email, press Enter (or click Join), land signed in. One
+// form, one submit, one destination -- an earlier version added a second in-page step
+// (a terms checkbox, its own Enter-to-continue) plus a full-page dark/light theme flip
+// timed to the request; the extra step didn't reliably read as "press Enter again here"
+// and the flip added a failure mode of its own for no real benefit. The account still
+// needs the disclaimer accepted before /terminal will render, so on success this sends
+// the browser there -- a real page, a real submit button, nothing custom to get wrong.
 (function(){
   const QS_TEXT=%%QS_JSON%%;
   const emailForm=document.getElementById('qsEmailForm');
-  const termsForm=document.getElementById('qsTermsForm');
   const emailInput=document.getElementById('qsEmail');
-  const agreeBox=document.getElementById('qsAgree');
   const status1=document.getElementById('qsStatus1');
-  const status2=document.getElementById('qsStatus2');
   const card=document.getElementById('qsCard');
-  if(!emailForm||!termsForm)return;
+  if(!emailForm)return;
 
   const EMAIL_RE=/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
   let busy=false;
 
-  function flipToNight(){
-    document.body.classList.add('quick-transition');
-    document.documentElement.classList.add('dark-flip');
-  }
-  function undoFlip(){
-    document.documentElement.classList.remove('dark-flip');
-  }
   function shake(el){
     el.classList.remove('qs-shake');
     void el.offsetWidth; // restart the animation if it's already mid-shake
@@ -5907,7 +5830,6 @@ if(stickyCta&&heroSection){
     }
     busy=true;
     emailInput.readOnly=true;
-    flipToNight();
     setStatus(status1,QS_TEXT.creating,false);
     try{
       const res=await fetch('/api/quick-signup',{
@@ -5920,62 +5842,17 @@ if(stickyCta&&heroSection){
       if(!res.ok){
         busy=false;
         emailInput.readOnly=false;
-        undoFlip();
         const msg=data.existing?QS_TEXT.existing+' <a href="/login" style="color:inherit">'+QS_TEXT.login+'</a>':(data.error||QS_TEXT.generic);
         status1.innerHTML=msg;
         status1.classList.remove('qs-ok');
         return;
       }
       setStatus(status1,QS_TEXT.ready,true);
-      termsForm.hidden=false;
-      busy=false; // this step is done -- the terms form's own submit needs the flag clear
-      requestAnimationFrame(()=>{
-        termsForm.classList.add('qs-step-in');
-        agreeBox.focus();
-      });
+      window.location.href='/accept-disclaimer';
     }catch(err){
       busy=false;
       emailInput.readOnly=false;
-      undoFlip();
       setStatus(status1,QS_TEXT.network,false);
-    }
-  });
-
-  // A checkbox alone doesn't trigger implicit form submission on Enter the way a text
-  // input does -- the visible "Press Enter to continue" button gives the form a submit
-  // control either way, this just makes Enter-while-the-checkbox-is-focused reliable
-  // across browsers rather than depending on that edge case.
-  agreeBox.addEventListener('keydown',function(e){
-    if(e.key==='Enter'){
-      e.preventDefault();
-      if(termsForm.requestSubmit)termsForm.requestSubmit();
-      else termsForm.dispatchEvent(new Event('submit',{cancelable:true}));
-    }
-  });
-
-  termsForm.addEventListener('submit',async function(e){
-    e.preventDefault();
-    if(busy)return;
-    if(!agreeBox.checked){
-      shake(termsForm);
-      setStatus(status2,QS_TEXT.checkBox,false);
-      return;
-    }
-    busy=true;
-    setStatus(status2,'',false);
-    try{
-      const res=await fetch('/api/accept-disclaimer',{
-        method:'POST',
-        headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        credentials:'same-origin',
-        body:'agree=on',
-      });
-      // Follows the 303 itself, so res.url is wherever the server actually decided to
-      // send us (normally /terminal?welcome=1) rather than an address we assume.
-      window.location.href=res.url||'/terminal?welcome=1';
-    }catch(err){
-      busy=false;
-      setStatus(status2,QS_TEXT.network,false);
     }
   });
 })();
@@ -6266,16 +6143,15 @@ def _landing_cta_copy(lang: str = "en") -> dict:
 
 def _quick_signup_copy(lang: str = "en") -> dict:
     """Copy for the hero's inline signup widget. %%QS_JSON%% carries the status strings
-    the widget's own JS swaps in as the two-step flow runs (validation error, "creating
-    your account", the terms nudge...) -- one dict, read once client-side, instead of a
-    placeholder per message."""
+    the widget's own JS swaps in as the single submit runs (validation error, "creating
+    your account"...) -- one dict, read once client-side, instead of a placeholder per
+    message."""
     ko = lang == "ko"
     js_text = {
         "invalid": "올바른 이메일 주소를 입력하세요." if ko else "Enter a valid email address.",
         "creating": "계정을 만드는 중…" if ko else "Creating your account…",
-        "ready": "가입 완료." if ko else "You're in.",
+        "ready": "가입 완료 — 계속 진행 중…" if ko else "You're in — continuing…",
         "existing": "이미 가입된 이메일입니다." if ko else "That email already has an account.",
-        "checkBox": "계속하려면 체크박스를 선택하세요." if ko else "Check the box to continue.",
         "generic": "문제가 발생했습니다. 다시 시도해주세요." if ko else "Something went wrong. Try again.",
         "network": "네트워크 오류 — 다시 시도해주세요." if ko else "Network error — please try again.",
         "login": "로그인" if ko else "Log in",
@@ -6284,18 +6160,12 @@ def _quick_signup_copy(lang: str = "en") -> dict:
         return {
             "%%QS_LABEL%%": "이메일을 입력하고 Quantify에 가입하세요.",
             "%%QS_JOIN_LABEL%%": "가입",
-            "%%QS_TERMS_TEXT%%": ('<a href="/terms" target="_blank" rel="noopener">이용약관</a> 및 '
-                                  '<a href="/privacy" target="_blank" rel="noopener">개인정보처리방침</a>에 동의합니다.'),
-            "%%QS_CONTINUE_LABEL%%": "계속하려면 Enter를 누르세요",
             "%%QS_NOTE%%": "Enter · 7일 무료 체험 · 신용카드 불필요 · 비밀번호 불필요",
             "%%QS_JSON%%": json.dumps(js_text),
         }
     return {
         "%%QS_LABEL%%": "Enter your email and join Quantify.",
         "%%QS_JOIN_LABEL%%": "Join",
-        "%%QS_TERMS_TEXT%%": ('I agree to the <a href="/terms" target="_blank" rel="noopener">Terms</a> and '
-                              '<a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.'),
-        "%%QS_CONTINUE_LABEL%%": "Press Enter to continue",
         "%%QS_NOTE%%": "Press Enter · 7-day free trial · no credit card · no password needed",
         "%%QS_JSON%%": json.dumps(js_text),
     }
