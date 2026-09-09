@@ -5320,10 +5320,11 @@ async def change_password(request: Request, current_password: str = Form(...), n
 LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="google-site-verification" content="ijDMR9nIE6oGHc1hocnPovy0BwrxRdGBL3DvWNy6OZI" />
-<title>QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked</title>
-<meta name="description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
-<meta property="og:title" content="QUANTIFY. — Quant-Detected Stocks, AI Risk-Checked">
-<meta property="og:description" content="A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only — never a buy or sell signal.">
+%%FAVICON%%
+<title>QUANTIFY | AI-Powered Quant Screener &amp; Risk Analysis</title>
+<meta name="description" content="S&amp;P 500 &amp; Nasdaq 518개 종목 전수 조사. 단 3초 만에 AI가 찾아낸 반등 기대주와 리스크 분석 결과를 확인하세요.">
+<meta property="og:title" content="QUANTIFY | AI-Powered Quant Screener &amp; Risk Analysis">
+<meta property="og:description" content="S&amp;P 500 &amp; Nasdaq 518개 종목 전수 조사. 단 3초 만에 AI가 찾아낸 반등 기대주와 리스크 분석 결과를 확인하세요.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://quantify.trading/">
 <meta property="og:site_name" content="QUANTIFY.">
@@ -5336,7 +5337,7 @@ LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-
 "@type": "SoftwareApplication",
 "name": "QUANTIFY",
 "url": "https://quantify.trading/",
-"description": "A daily quant scan of the S&P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk. Informational only, never a buy or sell signal.",
+"description": "S&P 500 & Nasdaq 518개 종목 전수 조사. 단 3초 만에 AI가 찾아낸 반등 기대주와 리스크 분석 결과를 확인하세요.",
 "applicationCategory": "FinanceApplication",
 "operatingSystem": "Web",
 "offers": {
@@ -5823,7 +5824,7 @@ def render_auth_page(title: str, form_html: str, path: str = "",
                      lang: str = "en") -> HTMLResponse:
     og = og_head(title, description, path) + (hreflang_links(path) if path else "")
     toggle = lang_toggle_html(lang, path or "/login")
-    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>{og}<style>{BASE_CSS}
+    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>{title}</title>{og}<style>{BASE_CSS}
 .lang-toggle{{display:inline-block;padding:6px 12px;border:1px solid var(--border);border-radius:999px;color:var(--dim2,#525f59);font-size:13.5px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}}
 .lang-toggle:hover{{border-color:var(--green);color:var(--green)}}
 .lang-toggle.app{{border-color:var(--sb-border,#232b2f);color:var(--sb-text,#9aa7ac);padding:5px 10px;font-size:12.5px}}
@@ -6085,6 +6086,7 @@ async def landing(request: Request):
     for placeholder, value in _landing_cta_copy(lang).items():
         html = html.replace(placeholder, value)
     html = (html.replace("%%OG_IMAGE%%", _og_image_tags())
+                .replace("%%FAVICON%%", FAVICON_LINKS_HTML)
                 .replace("%%LANG_TOGGLE%%", lang_toggle_html(lang, "/"))
                 .replace("%%HREFLANG%%", hreflang_links("/"))
                 .replace("%%LANG%%", lang))
@@ -6566,7 +6568,7 @@ def render_marketing_page(title: str, description: str, body_html: str, path: st
                           extra_head: str = "", lang: str = "en") -> HTMLResponse:
     url = f"https://quantify.trading{path}"
     toggle = lang_toggle_html(lang, path or "/")
-    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. — {title}</title><meta name="description" content="{description}">{og_head(f"QUANTIFY. — {title}", description, path)}{hreflang_links(path or "/")}<link rel="canonical" href="{url}">{extra_head}<style>{MARKETING_CSS}
+    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>QUANTIFY. — {title}</title><meta name="description" content="{description}">{og_head(f"QUANTIFY. — {title}", description, path)}{hreflang_links(path or "/")}<link rel="canonical" href="{url}">{extra_head}<style>{MARKETING_CSS}
 .lang-toggle{{display:inline-block;padding:6px 12px;border:1px solid var(--border);border-radius:999px;color:var(--dim2,#525f59);font-size:13.5px;font-weight:700;text-decoration:none;line-height:1;white-space:nowrap}}
 .lang-toggle:hover{{border-color:var(--green);color:var(--green)}}
 .lang-toggle.app{{border-color:var(--sb-border,#232b2f);color:var(--sb-text,#9aa7ac);padding:5px 10px;font-size:12.5px}}
@@ -6683,7 +6685,7 @@ def render_legal_page(title: str, updated: str, body_html: str, path: str = "",
     notice = LEGAL_GOVERNING_NOTICE_KO if lang == "ko" else ""
     updated_label = "최종 수정일" if lang == "ko" else "Last updated"
     back_label = "&larr; 홈으로" if lang == "ko" else "&larr; Back to home"
-    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{og}{hreflang_links(path or "/")}<style>{LEGAL_CSS}
+    return HTMLResponse(translate_public(f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>QUANTIFY. {title}</title>{og}{hreflang_links(path or "/")}<style>{LEGAL_CSS}
 .governing{{background:#fbf9f2;border:1px solid #ecdcb8;border-radius:10px;padding:14px 18px;font-size:14px;line-height:1.7;color:#5a5344;margin:0 0 26px}}
 .governing a{{color:#0e8a5f}}
 .legalhead{{display:flex;align-items:center;gap:12px;flex-wrap:wrap}}
@@ -6824,7 +6826,7 @@ def _render_sidebar(active_nav: str, lang: str = "en", demo: bool = False) -> st
 
 def render_app_shell(title: str, active_nav: str, body_html: str, extra_head: str = "",
                      lang: str = "en", theme: str = "light") -> HTMLResponse:
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>QUANTIFY. {title}</title>{extra_head}<style>{APP_SHELL_CSS}
 {DARK_THEME_VARS}</style></head><body>
 {_render_sidebar(active_nav, lang)}
 <header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a></header>
@@ -7728,6 +7730,58 @@ Nothing here is a recommendation to buy or sell any security.</div>'''
 
 
 # -----------------------------------------------------------------------------
+# Favicon
+# -----------------------------------------------------------------------------
+# Every <head> block in the app links here so the browser tab, bookmarks, and Google's
+# search-result favicon all show the same mark instead of a generic globe. Served from
+# the repo like the OG image below -- no image library needed at runtime.
+FAVICON_ICO_FILE = Path(__file__).resolve().parent / "static" / "favicon.ico"
+FAVICON_PNG_FILE = Path(__file__).resolve().parent / "static" / "favicon-32.png"
+APPLE_TOUCH_ICON_FILE = Path(__file__).resolve().parent / "static" / "apple-touch-icon.png"
+_FAVICON_ICO_BYTES: Optional[bytes] = None
+_FAVICON_PNG_BYTES: Optional[bytes] = None
+_APPLE_TOUCH_ICON_BYTES: Optional[bytes] = None
+try:
+    _FAVICON_ICO_BYTES = FAVICON_ICO_FILE.read_bytes()
+    _FAVICON_PNG_BYTES = FAVICON_PNG_FILE.read_bytes()
+    _APPLE_TOUCH_ICON_BYTES = APPLE_TOUCH_ICON_FILE.read_bytes()
+except Exception as _favicon_err:
+    print(f"[favicon] icon files not found under {FAVICON_ICO_FILE.parent} ({_favicon_err}) — favicon routes will 404", flush=True)
+
+# One constant dropped into every page's <head> -- a favicon fixed in one place instead
+# of retyped per template can't drift or go missing from a page someone adds later.
+FAVICON_LINKS_HTML = (
+    '<link rel="icon" href="/favicon.ico" sizes="any">'
+    '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">'
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+)
+
+
+@app.get("/favicon.ico")
+async def favicon_ico():
+    if not _FAVICON_ICO_BYTES:
+        return Response(status_code=404)
+    return Response(content=_FAVICON_ICO_BYTES, media_type="image/x-icon",
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
+@app.get("/favicon-32.png")
+async def favicon_png():
+    if not _FAVICON_PNG_BYTES:
+        return Response(status_code=404)
+    return Response(content=_FAVICON_PNG_BYTES, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
+@app.get("/apple-touch-icon.png")
+async def apple_touch_icon():
+    if not _APPLE_TOUCH_ICON_BYTES:
+        return Response(status_code=404)
+    return Response(content=_APPLE_TOUCH_ICON_BYTES, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
+# -----------------------------------------------------------------------------
 # Open Graph preview image
 # -----------------------------------------------------------------------------
 # A real screenshot of the live product, not an illustration -- the whole point of the
@@ -7866,7 +7920,7 @@ def render_terminal_page(*, user: str, avatar_letter: str, theme: str, lang: str
                         '<a href="/logout" class="danger-text">Log out</a></div></div>')
         demo_bar = ""
         demo_cta = ""
-    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{page_title}</title>{head_extra}<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
+    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>{page_title}</title>{head_extra}<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--border2:#ececec;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a;--grid-line:#eef1ef;
 --sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327;--sb-danger:#e57373}}
 html[data-theme="dark"]{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--border2:#181818;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--red:#ef5350;--orange:#ff9800;--grid-line:#161616}}
@@ -8491,7 +8545,7 @@ async def portfolio_page(request: Request):
     lang = get_user_lang(user)
     theme = get_user_theme(user)
     user = html_lib.escape(user)
-    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Portfolio</title><style>{DARK_THEME_VARS}
+    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>QUANTIFY. Portfolio</title><style>{DARK_THEME_VARS}
 
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
@@ -8625,7 +8679,7 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
                        else 'Your free trial has ended — that\'s why you were sent here. Subscribe below to get back into the scanner and AI reports.')
         reason_banner = f'<div class="reason-banner">{banner_text}</div>'
 
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Subscription</title><style>{DARK_THEME_VARS}
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>QUANTIFY. Subscription</title><style>{DARK_THEME_VARS}
 
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--orange:#a8660a}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
@@ -8660,7 +8714,7 @@ async def contact_page(request: Request, msg: Optional[str] = None, error: Optio
     user = html_lib.escape(user)
     msg = html_lib.escape(msg) if msg else ''
     error = html_lib.escape(error) if error else ''
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Contact</title><style>{DARK_THEME_VARS}
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>QUANTIFY. Contact</title><style>{DARK_THEME_VARS}
 
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
@@ -8833,7 +8887,7 @@ async def settings_page(request: Request):
         f'<label>{t("confirm_password", lang)}</label><input type="password" id="delete_password">'
     )
     user = html_lib.escape(user)
-    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Settings</title><style>{DARK_THEME_VARS}
+    return HTMLResponse(f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>QUANTIFY. Settings</title><style>{DARK_THEME_VARS}
 
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:14px}}
