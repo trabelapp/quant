@@ -546,6 +546,20 @@ def init_db():
             UNIQUE(record_date, ticker, list_type)
         );
         CREATE INDEX IF NOT EXISTS idx_track_record_list ON track_record(list_type, id);
+        -- Every write to users.subscription_status goes through log_subscription_change()
+        -- first, so a report like "it says active but the page shows trial ended" has an
+        -- actual timeline to check instead of two live reads taken minutes apart that
+        -- can't tell you what happened in between.
+        CREATE TABLE IF NOT EXISTS subscription_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            old_status TEXT,
+            new_status TEXT NOT NULL,
+            source TEXT NOT NULL,
+            detail TEXT,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscription_audit_email ON subscription_audit(email, id);
         CREATE TABLE IF NOT EXISTS user_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
@@ -1040,6 +1054,23 @@ def has_active_access(email: str) -> bool:
         return True
     trial_ends_at = row["trial_ends_at"]
     return bool(trial_ends_at and time.time() < trial_ends_at)
+
+
+def set_subscription_status(conn, email: str, new_status: str, source: str, detail: str = "") -> int:
+    """The only place that should ever write users.subscription_status. Every call
+    records the transition to subscription_audit first -- old value, new value, which
+    code path made the change, and when -- so "it read active a minute ago and now the
+    page shows trial ended" has an actual timeline instead of two live reads that can't
+    explain what happened between them. Returns the UPDATE's rowcount."""
+    old = conn.execute("SELECT subscription_status FROM users WHERE email=?", (email,)).fetchone()
+    old_status = old["subscription_status"] if old else None
+    cur = conn.execute("UPDATE users SET subscription_status=? WHERE email=?", (new_status, email))
+    if cur.rowcount:
+        conn.execute(
+            "INSERT INTO subscription_audit(email,old_status,new_status,source,detail,created_at) VALUES(?,?,?,?,?,?)",
+            (email, old_status, new_status, source, detail, time.time()),
+        )
+    return cur.rowcount
 
 # -----------------------------------------------------------------------------
 # Universe loading
@@ -3721,7 +3752,8 @@ async def gumroad_reconcile_scheduler():
                 data = await asyncio.to_thread(_gumroad_api_get, f"/subscribers/{row['gumroad_subscription_id']}", {})
                 sub = (data or {}).get("subscribers") or {}
                 if sub and (sub.get("status") != "alive" or sub.get("ended_at")):
-                    conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (row["email"],))
+                    set_subscription_status(conn, row["email"], "expired", "gumroad_reconcile",
+                                            f"subscriber_id={row['gumroad_subscription_id']} status={sub.get('status')} ended_at={sub.get('ended_at')}")
                     conn.commit()
                     downgraded += 1
             conn.close()
@@ -4510,6 +4542,14 @@ async def api_admin_user_status(email: str, token: Optional[str] = None):
         "SELECT email,expires_at FROM sessions WHERE lower(trim(email))=lower(trim(?)) "
         "ORDER BY expires_at DESC LIMIT 10", (email,)
     ).fetchall()
+    # Every write to subscription_status now goes through set_subscription_status(),
+    # which logs here first -- this is what actually answers "it said active a minute
+    # ago, why does it say trial ended now": every transition, who made it, and when,
+    # instead of two live reads with no visibility into what happened between them.
+    audit_rows = conn.execute(
+        "SELECT old_status,new_status,source,detail,created_at FROM subscription_audit "
+        "WHERE lower(trim(email))=lower(trim(?)) ORDER BY id DESC LIMIT 20", (email,)
+    ).fetchall()
     conn.close()
     now = time.time()
     sessions_info = [{
@@ -4517,10 +4557,16 @@ async def api_admin_user_status(email: str, token: Optional[str] = None):
         "matches_users_row_exactly": bool(row and s["email"] == row["email"]),
         "expired": s["expires_at"] <= now,
     } for s in session_rows]
+    audit_info = [{
+        "when": datetime.fromtimestamp(a["created_at"]).isoformat(),
+        "old_status": a["old_status"], "new_status": a["new_status"],
+        "source": a["source"], "detail": a["detail"],
+    } for a in audit_rows]
     if not row:
         return {"found": False, "email": cleaned,
                 "loose_matches": [r["email"] for r in loose_matches],
                 "sessions_pointing_here": sessions_info,
+                "subscription_history": audit_info,
                 "note": "No QUANTIFY account with this exact email. If they paid, the email "
                         "typed at checkout doesn't match the email they signed up with. If "
                         "loose_matches shows a similar-looking email, that's almost certainly it."}
@@ -4530,6 +4576,7 @@ async def api_admin_user_status(email: str, token: Optional[str] = None):
     d["has_active_access"] = has_active_access(row["email"])
     d["loose_matches"] = [r["email"] for r in loose_matches]
     d["sessions_pointing_here"] = sessions_info
+    d["subscription_history"] = audit_info
     d["trial_ends_at_readable"] = (datetime.fromtimestamp(d["trial_ends_at"]).isoformat()
                                    if d.get("trial_ends_at") else None)
     return d
@@ -4545,10 +4592,10 @@ async def api_admin_grant_access(email: str = Form(...), token: Optional[str] = 
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     email = email.strip().lower()
     conn = db()
-    cur = conn.execute("UPDATE users SET subscription_status='active' WHERE email=?", (email,))
+    rowcount = set_subscription_status(conn, email, "active", "admin_grant")
     conn.commit()
     conn.close()
-    if not cur.rowcount:
+    if not rowcount:
         return JSONResponse({"error": f"No account found for {email}"}, status_code=404)
     return {"ok": True, "email": email, "subscription_status": "active"}
 
@@ -9102,16 +9149,16 @@ async def lemonsqueezy_webhook(request: Request):
             sub_status = "active" if ls_status in ("active", "on_trial") else (ls_status or "active")
             was_active = (conn.execute("SELECT subscription_status FROM users WHERE email=?",
                                        (email,)).fetchone() or {"subscription_status": None})["subscription_status"] == "active"
-            cur = conn.execute(
-                "UPDATE users SET subscription_status=?,ls_customer_id=?,ls_subscription_id=? WHERE email=?",
-                (sub_status, str(attrs.get("customer_id", "")), str(data.get("id", "")), email),
-            )
+            conn.execute("UPDATE users SET ls_customer_id=?,ls_subscription_id=? WHERE email=?",
+                        (str(attrs.get("customer_id", "")), str(data.get("id", "")), email))
+            rowcount = set_subscription_status(conn, email, sub_status, "lemonsqueezy_webhook",
+                                               f"event={event_name} ls_status={ls_status}")
             # subscription_updated fires on every renewal too; only the transition into
             # active is a conversion, or the count would climb every billing cycle.
-            if sub_status == "active" and not was_active and cur.rowcount:
+            if sub_status == "active" and not was_active and rowcount:
                 asyncio.create_task(asyncio.to_thread(_log_payment_event, email))
         elif event_name in ("subscription_cancelled", "subscription_expired"):
-            conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
+            set_subscription_status(conn, email, "expired", "lemonsqueezy_webhook", f"event={event_name}")
         conn.commit()
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] LemonSqueezy webhook DB update failed: {exc}", flush=True)
@@ -9143,24 +9190,42 @@ async def gumroad_webhook(request: Request):
     conn = db()
     try:
         if resource_name == "refund" or refunded:
-            # Downgrading access on an unverified ping is the safe direction to
-            # err in (worst case a legitimate subscriber has to re-subscribe),
-            # unlike granting it, so this doesn't need API verification.
-            cur = conn.execute("UPDATE users SET subscription_status='expired' WHERE email=?", (email,))
-            conn.commit()
-            if cur.rowcount == 0:
-                print(f"[gumroad] Refund ping for {email} matched no QUANTIFY account.", flush=True)
+            # This used to downgrade on the ping's own say-so with no API check at all --
+            # reasoned as "the safe direction to err in", but that reasoning only holds if
+            # the ping is genuinely about a refund. Gumroad's Ping is unsigned and this
+            # form field is attacker- and test-tool-controlled, so an unverified ping
+            # (a stale retry, a dashboard test ping, anything carrying refunded=true for
+            # this email) could silently expire a real, paying subscriber with no trace.
+            # Verify against the sale API the same way the grant path already does before
+            # actually taking access away.
+            verified_refund = False
+            detail = f"sale_id={sale_id or '(none)'}"
+            if sale_id:
+                data = await asyncio.to_thread(_gumroad_api_get, f"/sales/{sale_id}", {})
+                sale = (data or {}).get("sale") or {}
+                verified_email = (sale.get("email") or "").strip().lower()
+                verified_refund = bool(verified_email and verified_email == email
+                                       and (sale.get("refunded") or sale.get("ended") or sale.get("cancelled")))
+                detail += f" verified_email={verified_email or '(lookup failed)'} refunded={sale.get('refunded')} ended={sale.get('ended')} cancelled={sale.get('cancelled')}"
+            if verified_refund:
+                rowcount = set_subscription_status(conn, email, "expired", "gumroad_webhook_refund", detail)
+                conn.commit()
+                if not rowcount:
+                    print(f"[gumroad] Verified refund for {email} matched no QUANTIFY account.", flush=True)
+            else:
+                print(f"[gumroad] Refund/refunded ping for {email} could not be verified ({detail}) — ignored, "
+                      f"not downgrading. Nightly reconciliation will still catch a genuinely ended subscription.", flush=True)
         elif resource_name == "sale" and sale_id:
             data = await asyncio.to_thread(_gumroad_api_get, f"/sales/{sale_id}", {})
             sale = (data or {}).get("sale") or {}
             verified_email = (sale.get("email") or "").strip().lower()
             if verified_email and verified_email == email and not sale.get("ended") and not sale.get("cancelled"):
-                cur = conn.execute(
-                    "UPDATE users SET subscription_status='active',gumroad_subscription_id=? WHERE email=?",
-                    (str(sale.get("subscription_id") or ""), email),
-                )
+                conn.execute("UPDATE users SET gumroad_subscription_id=? WHERE email=?",
+                            (str(sale.get("subscription_id") or ""), email))
+                rowcount = set_subscription_status(conn, email, "active", "gumroad_webhook_sale",
+                                                   f"sale_id={sale_id} subscription_id={sale.get('subscription_id')}")
                 conn.commit()
-                if cur.rowcount == 0:
+                if not rowcount:
                     print(f"[gumroad] Verified sale for {email} (sale_id={sale_id}) matched no QUANTIFY account "
                           f"— the buyer needs to sign up on QUANTIFY with this exact email.", flush=True)
                 else:
