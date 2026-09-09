@@ -3897,7 +3897,12 @@ async def post_daily_tweet(force: bool = False) -> dict:
             return {"skipped": "TWITTER_* credentials not configured", "would_post": text}
         post_id = await asyncio.to_thread(post_tweet, text)
         if not post_id:
-            return {"error": "post_tweet failed -- see server logs"}
+            # Composing the post never depends on the API call, so a failed post
+            # (wrong credentials, a processor outage, an account that isn't paying for
+            # write access right now) still hands back the exact text -- posting it by
+            # hand from the X app takes a few seconds and costs nothing, so a failure
+            # here never means starting over.
+            return {"error": "post_tweet failed -- see server logs", "ticker": ticker, "text": text}
         conn.execute(
             "INSERT INTO social_posts(platform,post_date,ticker,post_text,post_id,posted_at) "
             "VALUES('x',?,?,?,?,?) ON CONFLICT(platform,post_date) DO NOTHING",
