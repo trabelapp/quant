@@ -57,6 +57,25 @@ LEMONSQUEEZY_CHECKOUT_URL = os.getenv("LEMONSQUEEZY_CHECKOUT_URL", "")
 LEMONSQUEEZY_WEBHOOK_SECRET = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
 GUMROAD_CHECKOUT_URL = os.getenv("GUMROAD_CHECKOUT_URL", "")
 GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
+
+
+def _checkout_url_for(email: str) -> str:
+    """Pre-fills the checkout's email field with the QUANTIFY account's own email.
+
+    Both webhooks only grant access when the email on the sale matches an account
+    exactly, and a bare checkout link left the buyer to type whatever email they
+    normally use for purchases -- often not the one they happened to sign up to
+    QUANTIFY with. A real payment then never activates anything, silently, and the
+    buyer is stuck bouncing between /subscription and /terminal with no idea why.
+    Pre-filling doesn't force the field (a buyer can still edit it), but it fixes the
+    default for everyone who doesn't."""
+    if GUMROAD_CHECKOUT_URL:
+        sep = "&" if "?" in GUMROAD_CHECKOUT_URL else "?"
+        return f"{GUMROAD_CHECKOUT_URL}{sep}email={urllib.parse.quote(email)}"
+    if LEMONSQUEEZY_CHECKOUT_URL:
+        sep = "&" if "?" in LEMONSQUEEZY_CHECKOUT_URL else "?"
+        return f"{LEMONSQUEEZY_CHECKOUT_URL}{sep}checkout%5Bemail%5D={urllib.parse.quote(email)}"
+    return ""
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
 POLYGON_BASE_URL = "https://api.polygon.io"
 SITE_URL = os.getenv("SITE_URL", "https://quantify.trading")
@@ -4456,6 +4475,55 @@ async def backtest_summary(request: Request):
 
 def _require_admin_token(token: Optional[str]):
     return bool(ADMIN_TOKEN) and bool(token) and hmac.compare_digest(token, ADMIN_TOKEN)
+
+
+@app.get("/api/admin/user-status")
+async def api_admin_user_status(email: str, token: Optional[str] = None):
+    """Read-only diagnostic for exactly the failure mode where a real payment never
+    reaches the account: the checkout email a buyer types doesn't have to match the
+    email they're logged into QUANTIFY with, and both webhooks intentionally refuse to
+    grant access on anything they can't verify -- so a mismatch (or a missing
+    GUMROAD_ACCESS_TOKEN / LEMONSQUEEZY_WEBHOOK_SECRET) fails silently from the buyer's
+    side. This is the fastest way to tell, without shell access to the database, whether
+    a given email exists at all and what its current status is."""
+    if not _require_admin_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    email = email.strip().lower()
+    conn = db()
+    row = conn.execute(
+        "SELECT email,subscription_status,trial_ends_at,disclaimer_accepted_at,created_at,"
+        "gumroad_subscription_id,ls_subscription_id,ls_customer_id,auth_provider "
+        "FROM users WHERE email=?", (email,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {"found": False, "email": email,
+                "note": "No QUANTIFY account with this exact email. If they paid, the email "
+                        "typed at checkout doesn't match the email they signed up with."}
+    d = dict(row)
+    d["found"] = True
+    d["has_active_access"] = has_active_access(email)
+    d["trial_ends_at_readable"] = (datetime.fromtimestamp(d["trial_ends_at"]).isoformat()
+                                   if d.get("trial_ends_at") else None)
+    return d
+
+
+@app.post("/api/admin/grant-access")
+async def api_admin_grant_access(email: str = Form(...), token: Optional[str] = Form(None)):
+    """Manual remedy for the same failure mode: a verified real payment whose webhook
+    never matched an account (wrong email at checkout, or the processor's token/secret
+    wasn't configured on Render when the sale happened). Sets subscription_status
+    directly rather than waiting on a processor's webhook to eventually reconcile."""
+    if not _require_admin_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    email = email.strip().lower()
+    conn = db()
+    cur = conn.execute("UPDATE users SET subscription_status='active' WHERE email=?", (email,))
+    conn.commit()
+    conn.close()
+    if not cur.rowcount:
+        return JSONResponse({"error": f"No account found for {email}"}, status_code=404)
+    return {"ok": True, "email": email, "subscription_status": "active"}
 
 
 @app.get("/api/admin/run-batch")
@@ -8879,7 +8947,7 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
         else:
             checkout_html = f'<p>{"결제 취소나 관리는" if ko else "To cancel or manage billing,"} <a href="/contact">{"문의하기" if ko else "contact us"}</a>.</p>'
     else:
-        checkout_url = GUMROAD_CHECKOUT_URL or LEMONSQUEEZY_CHECKOUT_URL
+        checkout_url = _checkout_url_for(user)
         if checkout_url:
             checkout_html = f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">{t("subscribe_btn", lang)}</a>'
         else:
