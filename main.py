@@ -5350,6 +5350,16 @@ LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-
 </script>
 <style>
 :root{--bg:#ffffff;--panel:#ffffff;--panel2:#f6f8f7;--border:#e1e6e3;--text:#3a4440;--head:#12201a;--dim:#7a8781;--dim2:#525f59;--green:#0e8a5f;--green-bright:#17a374;--green-soft:#e6f5ee;--red:#c8402c;--orange:#a8660a;--blue:#1f5fbf;--teal:#0a8f83}
+/* The quick-signup widget below flips the whole page to this palette the instant Enter
+   is pressed on the email step -- a live preview of the product's own dark terminal,
+   not a generic "loading" state. Paired with body.quick-transition's universal
+   transition rule further down so every var-driven color on the page glides there
+   together instead of the widget alone changing. */
+:root.dark-flip{--bg:#0a0f0c;--panel:#0d1310;--panel2:#111a15;--border:#1f2b25;--text:#aebdb6;--head:#f3fbf7;--dim:#75897f;--dim2:#9db3a8;--green:#22c98d;--green-bright:#3fe3a4;--green-soft:#123328;--red:#ff6b57;--orange:#ffb454;--blue:#5aa8ff;--teal:#2fe0c9}
+.dark-flip header{background:rgba(10,15,12,.92)}
+.dark-flip .btn-ghost{background:var(--panel)}
+.dark-flip .eyebrow{border-color:#3a2f18;background:#1c170f;color:#e2b567}
+body.quick-transition,body.quick-transition *{transition:background-color .8s cubic-bezier(.4,0,.2,1),color .8s cubic-bezier(.4,0,.2,1),border-color .8s cubic-bezier(.4,0,.2,1),box-shadow .8s ease!important}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font:18px/1.75 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:var(--green);text-decoration:underline}
@@ -5381,6 +5391,43 @@ h1 .hl{color:var(--green)}
 .sub{color:var(--dim2);font-size:21px;line-height:1.6;max-width:660px;margin:0 auto 38px}
 .cta-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
 .cta-note{font-size:14px;color:var(--dim)}
+/* Replaces the old two-button row: the whole point is one live thing to type into
+   instead of two buttons competing for a click (see the note above .cta-link -- same
+   lesson, taken further). */
+.qs-card{max-width:560px;margin:0 auto 14px;text-align:left;background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:30px 32px;box-shadow:0 20px 50px -30px rgba(18,32,26,.2)}
+.qs-label{font-size:19px;font-weight:800;color:var(--head);line-height:1.4;letter-spacing:-.2px;margin-bottom:16px}
+.qs-step{transition:opacity .35s ease}
+.qs-input-row{display:flex;gap:10px}
+.qs-input-wrap{display:inline-flex;align-items:center;gap:4px;background:var(--panel2);border:1.5px solid var(--border);border-radius:10px;padding:0 6px 0 14px;flex:1;min-width:0;transition:border-color .2s,box-shadow .2s}
+.qs-input-wrap:focus-within{border-color:var(--green);box-shadow:0 0 0 4px var(--green-soft)}
+.qs-input{flex:1;min-width:0;border:none;background:transparent;outline:none;font:700 17px/1 'SF Mono','JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;color:var(--green);padding:14px 0}
+.qs-input::placeholder{color:var(--dim);font-weight:600;opacity:.5}
+.qs-cursor{font:700 17px/1 'SF Mono','JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;color:var(--green);animation:qsBlink 1s steps(1) infinite;margin-right:2px}
+@keyframes qsBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@media(prefers-reduced-motion:reduce){.qs-cursor{animation:none}}
+.qs-join-btn{background:var(--green);color:#fff;border:none;padding:0 26px;font-size:14px;font-weight:800;letter-spacing:1px;text-transform:uppercase;border-radius:10px;cursor:pointer;flex-shrink:0;transition:background .15s;font-family:inherit}
+.qs-join-btn:hover{background:var(--green-bright)}
+.qs-status{min-height:20px;font-size:13.5px;color:var(--red);margin-top:10px;font-weight:600}
+.qs-status.qs-ok{color:var(--green)}
+.qs-step-terms{margin-top:18px;padding-top:18px;border-top:1px solid var(--border)}
+/* A distinct bordered box for the agreement, like the input above it -- a checkbox
+   floating loose in plain text reads as an afterthought; boxed, it reads as the next
+   thing to fill in. */
+.qs-check-box{display:flex;align-items:flex-start;gap:10px;font-size:14px;color:var(--dim2);cursor:pointer;line-height:1.6;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.qs-check-box input{width:18px;height:18px;margin-top:1px;accent-color:var(--green);flex-shrink:0}
+.qs-check-box a{color:var(--green);font-weight:600}
+.qs-continue{display:inline-flex;align-items:center;gap:6px;background:var(--green);border:none;color:#fff;font-weight:800;font-size:14px;letter-spacing:.5px;text-transform:uppercase;padding:13px 22px;border-radius:10px;cursor:pointer;font-family:inherit;width:100%;justify-content:center}
+.qs-continue:hover{background:var(--green-bright)}
+.qs-continue .qs-cursor{color:#fff;font-size:15px;margin-right:0}
+.qs-shake{animation:qsShake .4s ease}
+@keyframes qsShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+@media(prefers-reduced-motion:reduce){.qs-shake{animation:none}}
+@media(max-width:640px){
+  .qs-card{padding:22px 20px}
+  .qs-label{font-size:17px}
+  .qs-input-row{flex-direction:column}
+  .qs-join-btn{padding:13px;width:100%}
+}
 .mock{max-width:940px;margin:68px auto 0;border:1px solid var(--border);border-radius:16px;background:var(--panel);text-align:left;box-shadow:0 30px 70px -30px rgba(18,32,26,.25);overflow:hidden}
 .mock-bar{display:flex;gap:6px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--panel2)}
 .mock-dot{width:10px;height:10px;border-radius:50%;background:#d7ddd9}
@@ -5544,11 +5591,29 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div class="eyebrow hero-in hero-in-1">%%EYEBROW%%</div>
 <h1 class="hero-in hero-in-2">Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?</h1>
 <p class="sub hero-in hero-in-3">A daily quant scan of the S&amp;P 500 and Nasdaq-100, with an AI second pass that checks every hit for blow-off-top and dead-cat-bounce risk.</p>
-<div class="cta-row hero-in hero-in-4">
-<a class="btn btn-hero" href="/demo">%%HERO_CTA%%</a>
-<a class="btn btn-signup" href="/signup">Get Started Free</a>
+<div class="qs-card hero-in hero-in-4" id="qsCard">
+<div class="qs-label">%%QS_LABEL%%</div>
+<form id="qsEmailForm" class="qs-step" novalidate>
+<div class="qs-input-row">
+<span class="qs-input-wrap">
+<input id="qsEmail" name="email" type="email" class="qs-input" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="you@email.com" autofocus>
+<span class="qs-cursor" aria-hidden="true">_</span>
+</span>
+<button type="submit" class="qs-join-btn">%%QS_JOIN_LABEL%%</button>
 </div>
-<div class="cta-note hero-in hero-in-5">Demo needs no signup · trial is 7 days free, no credit card.</div>
+<div class="qs-status" id="qsStatus1" aria-live="polite"></div>
+</form>
+<form id="qsTermsForm" class="qs-step qs-step-terms" novalidate hidden>
+<label class="qs-check-box">
+<input type="checkbox" id="qsAgree">
+<span>%%QS_TERMS_TEXT%%</span>
+</label>
+<button type="submit" class="qs-continue">%%QS_CONTINUE_LABEL%% <span class="qs-cursor" aria-hidden="true">_</span></button>
+<div class="qs-status" id="qsStatus2" aria-live="polite"></div>
+</form>
+<noscript><a class="btn btn-signup" href="/signup">Get Started Free</a></noscript>
+</div>
+<div class="cta-note hero-in hero-in-5">%%QS_NOTE%%</div>
 
 <div class="mock" data-reveal>
 <div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
@@ -5740,6 +5805,128 @@ if(stickyCta&&heroSection){
     new IntersectionObserver((entries)=>{entries.forEach(e=>stickyCta.classList.toggle('show',!e.isIntersecting))}).observe(heroSection);
   }
 }
+
+// Hero quick-signup: type an email, press Enter, get a live session; check a box,
+// press Enter again, land in the real terminal. Each step is its own <form> so the
+// browser's native "press Enter to submit" (and a phone's Go/Done key, which fires a
+// real submit rather than a synthesizable Enter keydown) both drive it for free --
+// novalidate on both forms means our own status line always runs instead of a native
+// validation popup interrupting the flow.
+(function(){
+  const QS_TEXT=%%QS_JSON%%;
+  const emailForm=document.getElementById('qsEmailForm');
+  const termsForm=document.getElementById('qsTermsForm');
+  const emailInput=document.getElementById('qsEmail');
+  const agreeBox=document.getElementById('qsAgree');
+  const status1=document.getElementById('qsStatus1');
+  const status2=document.getElementById('qsStatus2');
+  const card=document.getElementById('qsCard');
+  if(!emailForm||!termsForm)return;
+
+  const EMAIL_RE=/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
+  let busy=false;
+
+  function flipToNight(){
+    document.body.classList.add('quick-transition');
+    document.documentElement.classList.add('dark-flip');
+  }
+  function undoFlip(){
+    document.documentElement.classList.remove('dark-flip');
+  }
+  function shake(el){
+    el.classList.remove('qs-shake');
+    void el.offsetWidth; // restart the animation if it's already mid-shake
+    el.classList.add('qs-shake');
+  }
+  function setStatus(el,text,ok){
+    el.textContent=text;
+    el.classList.toggle('qs-ok',!!ok);
+  }
+
+  emailForm.addEventListener('submit',async function(e){
+    e.preventDefault();
+    if(busy)return;
+    const email=emailInput.value.trim();
+    if(!EMAIL_RE.test(email)){
+      shake(card);
+      setStatus(status1,QS_TEXT.invalid,false);
+      emailInput.focus();
+      return;
+    }
+    busy=true;
+    emailInput.readOnly=true;
+    flipToNight();
+    setStatus(status1,QS_TEXT.creating,false);
+    try{
+      const res=await fetch('/api/quick-signup',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        credentials:'same-origin',
+        body:'email='+encodeURIComponent(email),
+      });
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok){
+        busy=false;
+        emailInput.readOnly=false;
+        undoFlip();
+        const msg=data.existing?QS_TEXT.existing+' <a href="/login" style="color:inherit">'+QS_TEXT.login+'</a>':(data.error||QS_TEXT.generic);
+        status1.innerHTML=msg;
+        status1.classList.remove('qs-ok');
+        return;
+      }
+      setStatus(status1,QS_TEXT.ready,true);
+      termsForm.hidden=false;
+      busy=false; // this step is done -- the terms form's own submit needs the flag clear
+      requestAnimationFrame(()=>{
+        termsForm.classList.add('qs-step-in');
+        agreeBox.focus();
+      });
+    }catch(err){
+      busy=false;
+      emailInput.readOnly=false;
+      undoFlip();
+      setStatus(status1,QS_TEXT.network,false);
+    }
+  });
+
+  // A checkbox alone doesn't trigger implicit form submission on Enter the way a text
+  // input does -- the visible "Press Enter to continue" button gives the form a submit
+  // control either way, this just makes Enter-while-the-checkbox-is-focused reliable
+  // across browsers rather than depending on that edge case.
+  agreeBox.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){
+      e.preventDefault();
+      if(termsForm.requestSubmit)termsForm.requestSubmit();
+      else termsForm.dispatchEvent(new Event('submit',{cancelable:true}));
+    }
+  });
+
+  termsForm.addEventListener('submit',async function(e){
+    e.preventDefault();
+    if(busy)return;
+    if(!agreeBox.checked){
+      shake(termsForm);
+      setStatus(status2,QS_TEXT.checkBox,false);
+      return;
+    }
+    busy=true;
+    setStatus(status2,'',false);
+    try{
+      const res=await fetch('/api/accept-disclaimer',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        credentials:'same-origin',
+        body:'agree=on',
+      });
+      // Follows the 303 itself, so res.url is wherever the server actually decided to
+      // send us (normally /terminal?welcome=1) rather than an address we assume.
+      window.location.href=res.url||'/terminal?welcome=1';
+    }catch(err){
+      busy=false;
+      setStatus(status2,QS_TEXT.network,false);
+    }
+  });
+})();
 </script>
 </body></html>"""
 
@@ -6025,6 +6212,43 @@ def _landing_cta_copy(lang: str = "en") -> dict:
     }
 
 
+def _quick_signup_copy(lang: str = "en") -> dict:
+    """Copy for the hero's inline signup widget. %%QS_JSON%% carries the status strings
+    the widget's own JS swaps in as the two-step flow runs (validation error, "creating
+    your account", the terms nudge...) -- one dict, read once client-side, instead of a
+    placeholder per message."""
+    ko = lang == "ko"
+    js_text = {
+        "invalid": "올바른 이메일 주소를 입력하세요." if ko else "Enter a valid email address.",
+        "creating": "계정을 만드는 중…" if ko else "Creating your account…",
+        "ready": "가입 완료." if ko else "You're in.",
+        "existing": "이미 가입된 이메일입니다." if ko else "That email already has an account.",
+        "checkBox": "계속하려면 체크박스를 선택하세요." if ko else "Check the box to continue.",
+        "generic": "문제가 발생했습니다. 다시 시도해주세요." if ko else "Something went wrong. Try again.",
+        "network": "네트워크 오류 — 다시 시도해주세요." if ko else "Network error — please try again.",
+        "login": "로그인" if ko else "Log in",
+    }
+    if ko:
+        return {
+            "%%QS_LABEL%%": "이메일을 입력하고 Quantify에 가입하세요.",
+            "%%QS_JOIN_LABEL%%": "가입",
+            "%%QS_TERMS_TEXT%%": ('<a href="/terms" target="_blank" rel="noopener">이용약관</a> 및 '
+                                  '<a href="/privacy" target="_blank" rel="noopener">개인정보처리방침</a>에 동의합니다.'),
+            "%%QS_CONTINUE_LABEL%%": "계속하려면 Enter를 누르세요",
+            "%%QS_NOTE%%": "Enter · 7일 무료 체험 · 신용카드 불필요 · 비밀번호 불필요",
+            "%%QS_JSON%%": json.dumps(js_text),
+        }
+    return {
+        "%%QS_LABEL%%": "Enter your email and join Quantify.",
+        "%%QS_JOIN_LABEL%%": "Join",
+        "%%QS_TERMS_TEXT%%": ('I agree to the <a href="/terms" target="_blank" rel="noopener">Terms</a> and '
+                              '<a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.'),
+        "%%QS_CONTINUE_LABEL%%": "Press Enter to continue",
+        "%%QS_NOTE%%": "Press Enter · 7-day free trial · no credit card · no password needed",
+        "%%QS_JSON%%": json.dumps(js_text),
+    }
+
+
 def _safe_next(raw: Optional[str]) -> str:
     """Only ever redirect back to a path on this site. A bare "/" prefix is not enough:
     "//evil.com" and "/\\evil.com" are both read as protocol-relative URLs by browsers."""
@@ -6084,6 +6308,8 @@ async def landing(request: Request):
     html = (LANDING_HTML.replace("%%PROOF_CARDS%%", cards).replace("%%PROOF_NOTE%%", note)
             .replace("%%VALIDATION_NOTE%%", validation_note).replace("%%UNIVERSE_NOTE%%", universe_note))
     for placeholder, value in _landing_cta_copy(lang).items():
+        html = html.replace(placeholder, value)
+    for placeholder, value in _quick_signup_copy(lang).items():
         html = html.replace(placeholder, value)
     html = (html.replace("%%OG_IMAGE%%", _og_image_tags())
                 .replace("%%FAVICON%%", FAVICON_LINKS_HTML)
@@ -7118,6 +7344,70 @@ def send_verification_email(request: Request, email: str, token: str) -> bool:
         f"This link expires in 24 hours. If you didn't sign up, you can ignore this email."
     )
     return send_email_notification(email, "[QUANTIFY.] Verify your email", body)
+
+
+@app.post("/api/quick-signup")
+async def quick_signup(request: Request, email: str = Form(...)):
+    """The landing-page hero's one-field signup: type an email, press Enter, land in a
+    live session -- no password to invent, no inbox to check first. Modeled on the
+    Google OAuth path below (immediate is_active=1, a random password so the account is
+    still fully recoverable through forgot-password, a session set directly) rather than
+    the classic /signup form, since the whole point is skipping the wait that path has.
+
+    The trade-off is real and worth stating plainly: the classic form's email-verification
+    step was incidentally the only friction standing between a bot and a fresh trial.
+    Removing it for zero-friction signup leans on the same rate limiter as that form, plus
+    claim_trial()'s canonical-email dedup, to keep the abuse surface from growing further.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    if _is_locked_out(SIGNUP_ATTEMPTS, client_ip, SIGNUP_MAX_ATTEMPTS):
+        return JSONResponse({"error": "Too many signups from this network. Try again later."}, status_code=429)
+    _register_failed_attempt(SIGNUP_ATTEMPTS, client_ip)
+    email = email.strip().lower()
+    if not validate_email(email):
+        return JSONResponse({"error": "Enter a valid email address."}, status_code=400)
+
+    channel = getattr(request.state, "qtfy_channel", None)
+    visitor_id = getattr(request.state, "qtfy_visitor_id", None)
+    password_hash, salt = await asyncio.to_thread(make_password_hash, secrets.token_urlsafe(32))
+    trial_ends_at = await asyncio.to_thread(claim_trial, email)
+    conn = db()
+    try:
+        conn.execute(
+            # pref_theme starts 'dark' -- the hero just glided the whole landing page to
+            # its dark palette as this account was created, so the terminal it lands in
+            # a moment later should carry that look forward instead of snapping to light.
+            "INSERT INTO users(email,password_hash,salt,is_active,created_at,trial_ends_at,pref_theme,signup_utm_source,auth_provider) VALUES(?,?,?,1,?,?,'dark',?,'quick')",
+            (email, password_hash, salt, time.time(), trial_ends_at, channel),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return JSONResponse({"error": "That email already has an account.", "existing": True}, status_code=409)
+    except Exception as e:
+        conn.close()
+        print(f"[Error: {type(e).__name__}] Quick signup error: {e}")
+        return JSONResponse({"error": "Something went wrong. Try again."}, status_code=500)
+    conn.close()
+
+    asyncio.create_task(asyncio.to_thread(_log_event, EVENT_SIGNUP, visitor_id, channel, email))
+    await asyncio.to_thread(adopt_browser_language, request, email)
+
+    # Best-effort and non-blocking: lets them set a real password and recover the account
+    # from another device later, but access here never waits on it the way /signup does.
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    conn2 = db()
+    conn2.execute("UPDATE users SET verify_token_hash=?,verify_expires=? WHERE email=?",
+                 (token_hash, time.time() + VERIFY_TOKEN_TTL, email))
+    conn2.commit(); conn2.close()
+    asyncio.create_task(asyncio.to_thread(send_verification_email, request, email, token))
+
+    session_token = create_session(email)
+    response = JSONResponse({"ok": True})
+    response.set_cookie("session_user", session_token, httponly=True,
+                        secure=bool(os.getenv("RENDER")), samesite="lax", max_age=SESSION_TTL)
+    return response
 
 
 @app.post("/api/auth/signup")
