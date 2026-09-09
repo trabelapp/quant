@@ -5428,7 +5428,13 @@ section:nth-of-type(even){background:var(--panel2)}
 .eyebrow{display:inline-block;font-size:14px;font-weight:700;color:var(--orange);border:1px solid #ecdcb8;background:#fbf3e4;padding:7px 16px;border-radius:20px;letter-spacing:.3px;margin-bottom:26px}
 h1{color:var(--head);font-size:58px;font-weight:800;line-height:1.15;letter-spacing:-1.5px;max-width:880px;margin:0 auto 24px;text-wrap:balance}
 h1 .hl{color:var(--green)}
-.hero-cursor{color:var(--green);animation:qsBlink 1s steps(1) infinite;margin-left:2px}
+/* Drawn as a bar rather than set as literal underscore text -- a font's own "_" glyph
+   sits at an inconsistent height and thickness across browsers, which reads as crude at
+   this size. var(--head) instead of a fixed color so it stays part of the headline's own
+   ink in both themes -- black on the light page now, and it turns white with the rest of
+   the text if the hero ever flips dark, rather than going invisible or mismatched. */
+.hero-cursor{display:inline-block;width:.56em;height:.1em;min-height:4px;border-radius:2px;background:var(--head);vertical-align:.05em;margin-left:.16em;animation:heroCursorBlink 1.1s ease-in-out infinite}
+@keyframes heroCursorBlink{0%,100%{opacity:1}50%{opacity:0}}
 .sub{color:var(--dim2);font-size:21px;line-height:1.6;max-width:660px;margin:0 auto 38px}
 .cta-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
 .cta-note{font-size:14px;color:var(--dim)}
@@ -5630,7 +5636,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 
 <section class="hero" style="border-top:none">
 <div class="eyebrow hero-in hero-in-1">%%EYEBROW%%</div>
-<h1 class="hero-in hero-in-2">Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?<span class="hero-cursor" aria-hidden="true">_</span></h1>
+<h1 class="hero-in hero-in-2">Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?<span class="hero-cursor" aria-hidden="true"></span></h1>
 <p class="sub hero-in hero-in-3">A daily quant scan of the S&amp;P 500 and Nasdaq-100, with an AI second pass that checks every hit for blow-off-top and dead-cat-bounce risk.</p>
 <div class="qs-card hero-in hero-in-4" id="qsCard">
 <div class="qs-label">%%QS_LABEL%%</div>
