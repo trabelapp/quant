@@ -5350,16 +5350,56 @@ LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-
 </script>
 <style>
 :root{--bg:#ffffff;--panel:#ffffff;--panel2:#f6f8f7;--border:#e1e6e3;--text:#3a4440;--head:#12201a;--dim:#7a8781;--dim2:#525f59;--green:#0e8a5f;--green-bright:#17a374;--green-soft:#e6f5ee;--red:#c8402c;--orange:#a8660a;--blue:#1f5fbf;--teal:#0a8f83}
-/* The quick-signup widget below flips the whole page to this palette the instant Enter
-   is pressed on the email step -- a live preview of the product's own dark terminal,
-   not a generic "loading" state. Paired with body.quick-transition's universal
-   transition rule further down so every var-driven color on the page glides there
-   together instead of the widget alone changing. */
-:root.dark-flip{--bg:#0a0f0c;--panel:#0d1310;--panel2:#111a15;--border:#1f2b25;--text:#aebdb6;--head:#f3fbf7;--dim:#75897f;--dim2:#9db3a8;--green:#22c98d;--green-bright:#3fe3a4;--green-soft:#123328;--red:#ff6b57;--orange:#ffb454;--blue:#5aa8ff;--teal:#2fe0c9}
-.dark-flip header{background:rgba(10,15,12,.92)}
+/* The quick-signup widget below flips the whole page to this palette the instant Join
+   is pressed -- a live preview of the product's own dark terminal, not a generic
+   "loading" state. Paired with the curated transition list below so the var-driven
+   colors glide there together instead of the widget alone changing.
+
+   That list is deliberately NOT a bare `*` -- transitioning every node on the page
+   (including ones whose color never actually changes) is what made the first version
+   of this feel janky: dozens of idle transitions running at once, and the sticky
+   header's own backdrop-filter blur fighting a background-color transition underneath
+   it produced a visible flash. The header's background below snaps instantly for that
+   reason; everything the reader is actually looking at glides. */
+/* bg sits well below panel/panel2 -- the first pass had all three within a few RGB
+   points of each other, so the card and its input all but disappeared into the page. */
+:root.dark-flip{--bg:#050806;--panel:#101a15;--panel2:#17241d;--border:#28392f;--text:#aebdb6;--head:#f3fbf7;--dim:#75897f;--dim2:#9db3a8;--green:#22c98d;--green-bright:#3fe3a4;--green-soft:#123328;--red:#ff6b57;--orange:#ffb454;--blue:#5aa8ff;--teal:#2fe0c9}
+.dark-flip header{background:rgba(5,8,6,.92)}
 .dark-flip .btn-ghost{background:var(--panel)}
 .dark-flip .eyebrow{border-color:#3a2f18;background:#1c170f;color:#e2b567}
-body.quick-transition,body.quick-transition *{transition:background-color .8s cubic-bezier(.4,0,.2,1),color .8s cubic-bezier(.4,0,.2,1),border-color .8s cubic-bezier(.4,0,.2,1),box-shadow .8s ease!important}
+body.quick-transition,
+body.quick-transition section,
+body.quick-transition .hero,
+body.quick-transition h1,
+body.quick-transition .sub,
+body.quick-transition .eyebrow,
+body.quick-transition .qs-card,
+body.quick-transition .qs-input-wrap,
+body.quick-transition .qs-check-box,
+body.quick-transition .qs-join-btn,
+body.quick-transition .qs-continue,
+body.quick-transition .cta-note,
+body.quick-transition .mock,
+body.quick-transition .mock-bar,
+body.quick-transition .mock-col,
+body.quick-transition .mock-h,
+body.quick-transition .badge-ok,
+body.quick-transition .badge-warn,
+body.quick-transition .badge-danger,
+body.quick-transition .btn-ghost,
+body.quick-transition .navlinks a.muted,
+body.quick-transition .step,
+body.quick-transition .feature,
+body.quick-transition .proof-card,
+body.quick-transition .diff-col,
+body.quick-transition footer
+{transition:background-color .5s cubic-bezier(.16,1,.3,1),color .5s cubic-bezier(.16,1,.3,1),border-color .5s cubic-bezier(.16,1,.3,1)}
+/* The one moment of flourish: a ring pulses out from the card exactly as the palette
+   lands, so the change reads as something that just happened here, not a theme
+   setting that silently flipped underneath the reader. */
+body.quick-transition .qs-card{animation:qsCardPulse .6s cubic-bezier(.16,1,.3,1)}
+@keyframes qsCardPulse{0%{box-shadow:0 0 0 0 rgba(34,201,141,.45),0 20px 50px -30px rgba(18,32,26,.2)}70%{box-shadow:0 0 0 16px rgba(34,201,141,0),0 20px 50px -30px rgba(18,32,26,.2)}100%{box-shadow:0 0 0 0 rgba(34,201,141,0),0 20px 50px -30px rgba(18,32,26,.2)}}
+@media(prefers-reduced-motion:reduce){body.quick-transition .qs-card{animation:none}}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font:18px/1.75 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:var(--green);text-decoration:underline}
@@ -5388,6 +5428,7 @@ section:nth-of-type(even){background:var(--panel2)}
 .eyebrow{display:inline-block;font-size:14px;font-weight:700;color:var(--orange);border:1px solid #ecdcb8;background:#fbf3e4;padding:7px 16px;border-radius:20px;letter-spacing:.3px;margin-bottom:26px}
 h1{color:var(--head);font-size:58px;font-weight:800;line-height:1.15;letter-spacing:-1.5px;max-width:880px;margin:0 auto 24px;text-wrap:balance}
 h1 .hl{color:var(--green)}
+.hero-cursor{color:var(--green);animation:qsBlink 1s steps(1) infinite;margin-left:2px}
 .sub{color:var(--dim2);font-size:21px;line-height:1.6;max-width:660px;margin:0 auto 38px}
 .cta-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
 .cta-note{font-size:14px;color:var(--dim)}
@@ -5404,7 +5445,7 @@ h1 .hl{color:var(--green)}
 .qs-input::placeholder{color:var(--dim);font-weight:600;opacity:.5}
 .qs-cursor{font:700 17px/1 'SF Mono','JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;color:var(--green);animation:qsBlink 1s steps(1) infinite;margin-right:2px}
 @keyframes qsBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
-@media(prefers-reduced-motion:reduce){.qs-cursor{animation:none}}
+@media(prefers-reduced-motion:reduce){.qs-cursor,.hero-cursor{animation:none}}
 .qs-join-btn{background:var(--green);color:#fff;border:none;padding:0 26px;font-size:14px;font-weight:800;letter-spacing:1px;text-transform:uppercase;border-radius:10px;cursor:pointer;flex-shrink:0;transition:background .15s;font-family:inherit}
 .qs-join-btn:hover{background:var(--green-bright)}
 .qs-status{min-height:20px;font-size:13.5px;color:var(--red);margin-top:10px;font-weight:600}
@@ -5589,7 +5630,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 
 <section class="hero" style="border-top:none">
 <div class="eyebrow hero-in hero-in-1">%%EYEBROW%%</div>
-<h1 class="hero-in hero-in-2">Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?</h1>
+<h1 class="hero-in hero-in-2">Is this dip worth buying?<br>Or is it a <span class="hl">falling knife</span>?<span class="hero-cursor" aria-hidden="true">_</span></h1>
 <p class="sub hero-in hero-in-3">A daily quant scan of the S&amp;P 500 and Nasdaq-100, with an AI second pass that checks every hit for blow-off-top and dead-cat-bounce risk.</p>
 <div class="qs-card hero-in hero-in-4" id="qsCard">
 <div class="qs-label">%%QS_LABEL%%</div>
