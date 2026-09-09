@@ -4016,12 +4016,16 @@ async def daily_tweet_scheduler():
 
 @app.get("/api/admin/post-tweet-now")
 @app.post("/api/admin/post-tweet-now")
-async def api_admin_post_tweet_now(force: bool = True, token: Optional[str] = None,
+async def api_admin_post_tweet_now(force: bool = False, token: Optional[str] = None,
                                    token_form: Optional[str] = Form(None, alias="token")):
     """Manual trigger for the daily X post -- mainly for testing TWITTER_* credentials
-    right after adding them, without waiting for the next scheduled slot. force=true
-    (the default here) re-sends even if today's post already went out; pass
-    force=false to just check what WOULD be posted without bypassing that guard."""
+    right after adding them, without waiting for the next scheduled slot.
+
+    force defaults to false: a plain GET (a browser reload, a link clicked twice, the
+    URL sitting in a bookmark or shared to see the result) has to be safe to repeat --
+    it did NOT used to be, defaulting to force=true meant every reload of this page
+    posted a genuine duplicate. Pass &force=true explicitly to actually re-send a post
+    that already went out today."""
     if not _require_admin_token(token or token_form):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return await post_daily_tweet(force=force)
@@ -4029,9 +4033,11 @@ async def api_admin_post_tweet_now(force: bool = True, token: Optional[str] = No
 
 @app.get("/api/admin/post-bluesky-now")
 @app.post("/api/admin/post-bluesky-now")
-async def api_admin_post_bluesky_now(force: bool = True, token: Optional[str] = None,
+async def api_admin_post_bluesky_now(force: bool = False, token: Optional[str] = None,
                                      token_form: Optional[str] = Form(None, alias="token")):
-    """Same as the X trigger above, for BLUESKY_HANDLE / BLUESKY_APP_PASSWORD."""
+    """Same as the X trigger above, for BLUESKY_HANDLE / BLUESKY_APP_PASSWORD. force
+    defaults to false for the same reason -- reloading this page must never duplicate
+    a real post; pass &force=true to deliberately re-send today's post."""
     if not _require_admin_token(token or token_form):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return await post_daily_bluesky(force=force)
