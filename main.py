@@ -1898,6 +1898,7 @@ UI_STRINGS = {
     "active_subscription": {"en": "Active Subscription", "ko": "구독 중"},
     "active_sub_thanks": {"en": "Your subscription is active. Thanks for supporting QUANTIFY.", "ko": "구독이 활성화되어 있습니다. QUANTIFY를 이용해주셔서 감사합니다."},
     "trial_ended_badge": {"en": "Trial Ended", "ko": "체험 기간 종료"},
+    "cancelled_badge": {"en": "Subscription Cancelled", "ko": "구독 취소됨"},
     "subscribe_btn": {"en": "Subscribe", "ko": "구독하기"},
     "paid_plans_soon": {"en": "Paid plans coming soon", "ko": "유료 플랜 준비 중"},
     "cancel_subscription_btn": {"en": "Cancel Subscription", "ko": "구독 취소"},
@@ -9018,6 +9019,14 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
     trial_active = bool(sub_status != "cancelled" and trial_ends_at and time.time() < trial_ends_at)
     if sub_status == "active":
         plan_html = f'<span class="badge">{t("active_subscription", lang)}</span><p>{t("active_sub_thanks", lang)}</p>'
+    elif sub_status == "cancelled":
+        # A voluntary cancellation is a different outcome from a trial simply running
+        # out, and showing the same "your trial has ended, subscribe now" warning badge
+        # right after someone confirms they want to leave reads as ignoring what they
+        # just did -- exactly the kind of pressure a clean cancel flow should not apply.
+        cancelled_desc = ("스캐너와 AI 리뷰 이용이 종료되었습니다. 언제든 다시 구독할 수 있습니다." if ko
+                          else "Access to the scanner and AI reports has ended. You can subscribe again anytime.")
+        plan_html = f'<span class="badge">{t("cancelled_badge", lang)}</span><p>{cancelled_desc}</p>'
     elif trial_active:
         days_label = f'{days_left}일 남음' if ko else f'{days_left} day{"s" if days_left != 1 else ""} left'
         trial_desc = (f'모든 계정은 {TRIAL_DAYS}일 무료 체험 기간 동안 전체 기능을 이용할 수 있습니다. 체험 종료 후에도 계속 이용하려면 아래에서 구독하세요.' if ko
@@ -9069,7 +9078,11 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
             checkout_html = f'<div class="subscribe-btn disabled">{t("paid_plans_soon", lang)}</div>'
 
     reason_banner = ""
-    if reason == "trial_ended" and sub_status != "active":
+    if reason == "trial_ended" and sub_status not in ("active", "cancelled"):
+        # Excludes a just-cancelled account for the same reason the badge above does --
+        # "your trial has ended" is simply false for someone who had a working
+        # subscription seconds ago and chose to leave; the cancelled badge already says
+        # the real thing that happened.
         banner_text = ('무료 체험이 종료되어 이 페이지로 이동되었습니다. 스캐너와 AI 리뷰를 다시 이용하려면 아래에서 구독하세요.' if ko
                        else 'Your free trial has ended — that\'s why you were sent here. Subscribe below to get back into the scanner and AI reports.')
         reason_banner = f'<div class="reason-banner">{banner_text}</div>'
@@ -9112,7 +9125,14 @@ async function cancelSubscription(){{
   try{{
     const r=await fetch('/api/subscription/cancel',{{method:'POST'}});
     const d=await r.json();
-    if(r.ok){{msg.className='msg ok';msg.textContent=d.message;btn.remove()}}
+    if(r.ok){{
+      // The "Active Subscription" badge above was rendered before this request ran --
+      // leaving it on screen next to a "cancelled" message is exactly the confusing,
+      // nothing-actually-happened state that made this look broken. Reload so the
+      // whole page reflects the account's real, current status in one consistent view.
+      msg.className='msg ok';msg.textContent=d.message;
+      setTimeout(()=>location.reload(),900);
+    }}
     else{{msg.className='msg err';msg.textContent=d.error||{json.dumps(t("cancel_subscription_error", lang))};btn.disabled=false}}
   }}catch(e){{msg.className='msg err';msg.textContent={json.dumps(t("cancel_subscription_error", lang))};btn.disabled=false}}
 }}
