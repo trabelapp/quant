@@ -5433,8 +5433,8 @@ h1 .hl{color:var(--green)}
    this size. var(--head) instead of a fixed color so it stays part of the headline's own
    ink in both themes -- black on the light page now, and it turns white with the rest of
    the text if the hero ever flips dark, rather than going invisible or mismatched. */
-.hero-cursor{display:inline-block;width:.56em;height:.1em;min-height:4px;border-radius:2px;background:var(--head);vertical-align:.05em;margin-left:.16em;animation:heroCursorBlink 1.1s ease-in-out infinite}
-@keyframes heroCursorBlink{0%,100%{opacity:1}50%{opacity:0}}
+.hero-cursor{display:inline-block;width:.56em;height:.1em;min-height:4px;background:var(--head);vertical-align:.05em;margin-left:.16em;animation:heroCursorBlink 1s steps(1) infinite}
+@keyframes heroCursorBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
 .sub{color:var(--dim2);font-size:21px;line-height:1.6;max-width:660px;margin:0 auto 38px}
 .cta-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
 .cta-note{font-size:14px;color:var(--dim)}
@@ -5451,6 +5451,11 @@ h1 .hl{color:var(--green)}
 .qs-input::placeholder{color:var(--dim);font-weight:600;opacity:.5}
 .qs-cursor{font:700 17px/1 'SF Mono','JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;color:var(--green);animation:qsBlink 1s steps(1) infinite;margin-right:2px}
 @keyframes qsBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+/* The moment the field is focused or has anything typed into it, the browser's own text
+   caret is already blinking at the exact character position -- this decorative one next
+   to it stops being an invitation to type and starts being a second, unsynced cursor
+   sitting still while the real one moves. Idle and empty only. */
+.qs-input:focus ~ .qs-cursor,.qs-input:not(:placeholder-shown) ~ .qs-cursor{display:none}
 @media(prefers-reduced-motion:reduce){.qs-cursor,.hero-cursor{animation:none}}
 .qs-join-btn{background:var(--green);color:#fff;border:none;padding:0 26px;font-size:14px;font-weight:800;letter-spacing:1px;text-transform:uppercase;border-radius:10px;cursor:pointer;flex-shrink:0;transition:background .15s;font-family:inherit}
 .qs-join-btn:hover{background:var(--green-bright)}
