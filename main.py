@@ -1052,6 +1052,11 @@ def has_active_access(email: str) -> bool:
         return False
     if row["subscription_status"] == "active":
         return True
+    # An explicit cancellation always denies immediately, even if trial_ends_at happens
+    # to still be in the future -- the self-service cancel flow tells the person access
+    # ends right away, so it has to, not "until whatever the original trial window was."
+    if row["subscription_status"] == "cancelled":
+        return False
     trial_ends_at = row["trial_ends_at"]
     return bool(trial_ends_at and time.time() < trial_ends_at)
 
@@ -1895,6 +1900,10 @@ UI_STRINGS = {
     "trial_ended_badge": {"en": "Trial Ended", "ko": "체험 기간 종료"},
     "subscribe_btn": {"en": "Subscribe", "ko": "구독하기"},
     "paid_plans_soon": {"en": "Paid plans coming soon", "ko": "유료 플랜 준비 중"},
+    "cancel_subscription_btn": {"en": "Cancel Subscription", "ko": "구독 취소"},
+    "cancel_subscription_confirm": {"en": "Cancel your subscription? This ends access to the scanner and AI reports immediately.",
+                                    "ko": "구독을 취소할까요? 스캐너와 AI 리포트 이용이 즉시 종료됩니다."},
+    "cancel_subscription_error": {"en": "Could not cancel right now. Please try again.", "ko": "지금은 취소할 수 없습니다. 다시 시도해주세요."},
     "contact_us": {"en": "Contact Us", "ko": "문의하기"},
     "your_message": {"en": "Your message", "ko": "메시지"},
     "message_placeholder": {"en": "Bug report, feedback, question — anything.", "ko": "버그 제보, 피드백, 질문 등 무엇이든 남겨주세요."},
@@ -9003,7 +9012,10 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
     user_esc = html_lib.escape(user)
     ko = lang == "ko"
 
-    trial_active = bool(trial_ends_at and time.time() < trial_ends_at)
+    # A cancellation always denies immediately (see has_active_access) regardless of
+    # trial_ends_at, so this page has to agree -- otherwise a cancelled account could
+    # read "Free Trial, N days left" here while /terminal is already blocking it.
+    trial_active = bool(sub_status != "cancelled" and trial_ends_at and time.time() < trial_ends_at)
     if sub_status == "active":
         plan_html = f'<span class="badge">{t("active_subscription", lang)}</span><p>{t("active_sub_thanks", lang)}</p>'
     elif trial_active:
@@ -9029,7 +9041,18 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
         elif row and row["ls_subscription_id"]:
             checkout_html = (f'<p>{"결제 취소나 관리는 Lemon Squeezy 구매 영수증 이메일의 \'Manage Subscription\' 링크를 이용하세요." if ko else "To cancel or manage billing, use the \"Manage Subscription\" link in your Lemon Squeezy purchase receipt email."}</p>')
         else:
-            checkout_html = f'<p>{"결제 취소나 관리는" if ko else "To cancel or manage billing,"} <a href="/contact">{"문의하기" if ko else "contact us"}</a>.</p>'
+            # No processor subscription ID on file means there's no external recurring
+            # charge this account could still be billed for -- access was granted
+            # directly (e.g. a manual admin grant). Making someone contact support to
+            # turn off something that was never an external subscription in the first
+            # place is exactly the friction cancellation regulations (FTC click-to-
+            # cancel, and equivalents elsewhere) exist to prohibit: it must be at least
+            # as easy to cancel as it was to subscribe. This is self-service instead.
+            cancel_copy = ("계정에 연결된 결제 구독 정보가 없습니다 — 즉시 취소할 수 있습니다." if ko
+                          else "No billing subscription is on file for this account — you can cancel immediately.")
+            checkout_html = (f'<p>{cancel_copy}</p>'
+                            f'<button type="button" class="cancel-btn" onclick="cancelSubscription()">{t("cancel_subscription_btn", lang)}</button>'
+                            f'<div class="msg" id="cancelMsg"></div>')
     else:
         checkout_url = _checkout_url_for(user)
         if checkout_url:
@@ -9070,13 +9093,69 @@ p{{color:var(--text);font-size:15.5px;line-height:1.75;margin-top:16px}}
 .reason-banner{{max-width:560px;margin:0 auto 14px;background:#fbf1e0;border:1px solid #ecdcb8;color:var(--orange);padding:14px 18px;border-radius:10px;font-size:14.5px;font-weight:600;line-height:1.6}}
 .email-warning{{margin-top:12px;font-size:13px;color:var(--dim);text-align:center;line-height:1.6}}
 .email-warning b{{color:var(--head)}}
+.cancel-btn{{display:block;width:100%;margin-top:6px;background:transparent;color:var(--red);border:1.5px solid var(--red);padding:13px;border-radius:8px;font-weight:700;font-size:15px;cursor:pointer;font-family:inherit}}
+.cancel-btn:hover{{background:rgba(200,64,44,.08)}}
+.cancel-btn:disabled{{opacity:.6;cursor:default}}
+.msg{{font-size:13.5px;min-height:18px;margin-top:10px;text-align:center}}
+.msg.ok{{color:var(--green)}}.msg.err{{color:var(--red)}}
 </style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">{t("page_subscription", lang)} · {user_esc}</span><a class="back" href="/portfolio">{t("nav_portfolio", lang)}</a><a class="back" href="/settings">{t("nav_settings", lang)}</a><a class="back" href="/contact">{t("nav_contact", lang)}</a><a class="back" href="/terminal">{t("back_to_terminal", lang)}</a></div></header>
 <div class="wrap">{reason_banner}<div class="card">
 <h2>{t("current_plan", lang)}</h2>
 {plan_html}
 {checkout_html}
 </div></div>
+<script>
+async function cancelSubscription(){{
+  if(!confirm({json.dumps(t("cancel_subscription_confirm", lang))}))return;
+  const btn=document.querySelector('.cancel-btn');const msg=document.getElementById('cancelMsg');
+  btn.disabled=true;msg.className='msg';msg.textContent='';
+  try{{
+    const r=await fetch('/api/subscription/cancel',{{method:'POST'}});
+    const d=await r.json();
+    if(r.ok){{msg.className='msg ok';msg.textContent=d.message;btn.remove()}}
+    else{{msg.className='msg err';msg.textContent=d.error||{json.dumps(t("cancel_subscription_error", lang))};btn.disabled=false}}
+  }}catch(e){{msg.className='msg err';msg.textContent={json.dumps(t("cancel_subscription_error", lang))};btn.disabled=false}}
+}}
+</script>
 </body></html>''')
+
+
+@app.post("/api/subscription/cancel")
+async def api_cancel_subscription(request: Request):
+    """Genuine self-service cancellation for the one case where "contact us" was the
+    only option: an account with subscription_status='active' but no processor
+    subscription ID on file (a manual admin grant, or any account that reached 'active'
+    without a recurring external charge behind it). Requiring a support email to turn
+    that off is exactly what cancellation regulations (the FTC's click-to-cancel
+    provisions, and equivalents elsewhere) prohibit -- cancelling must be at least as
+    easy as subscribing.
+
+    Deliberately refuses to touch an account that DOES have a Gumroad or Lemon Squeezy
+    subscription ID: flipping our own flag there would stop QUANTIFY access while the
+    external recurring charge keeps billing them, which is worse than what it replaces.
+    Those accounts still go to the processor's own self-service page (already linked on
+    this page, no support contact needed there either) -- that is the correct place to
+    stop the actual charge."""
+    user = get_logged_in_user(request)
+    if not user:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    conn = db()
+    row = conn.execute(
+        "SELECT subscription_status,gumroad_subscription_id,ls_subscription_id FROM users WHERE email=?", (user,)
+    ).fetchone()
+    if not row or row["subscription_status"] != "active":
+        conn.close()
+        return JSONResponse({"error": "No active subscription to cancel."}, status_code=400)
+    if row["gumroad_subscription_id"] or row["ls_subscription_id"]:
+        conn.close()
+        return JSONResponse({"error": "This account bills through a payment processor -- cancel there so the "
+                                      "charge itself stops, using the link on this page."}, status_code=409)
+    set_subscription_status(conn, user, "cancelled", "self_service_cancel")
+    conn.commit()
+    conn.close()
+    lang = get_user_lang(user)
+    message = ("구독이 취소되었습니다." if lang == "ko" else "Your subscription has been cancelled.")
+    return {"ok": True, "message": message}
 
 
 @app.get("/contact", response_class=HTMLResponse)
