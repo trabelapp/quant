@@ -9023,7 +9023,15 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
     else:
         checkout_url = _checkout_url_for(user)
         if checkout_url:
-            checkout_html = f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">{t("subscribe_btn", lang)}</a>'
+            # The checkout email is pre-filled with this account's own address, but a
+            # buyer can still edit it -- and access only ever activates on an exact
+            # match, silently otherwise. Saying so plainly, next to the button, is the
+            # cheapest way to keep someone from typing whatever email they normally use
+            # for purchases out of habit.
+            email_warning = (f'결제 화면의 이메일이 <b>{user_esc}</b>인지 꼭 확인하세요 — 다른 이메일로 결제하면 이 계정에는 반영되지 않습니다.' if ko
+                            else f'Make sure the email at checkout is <b>{user_esc}</b> — paying with a different email won\'t activate this account.')
+            checkout_html = (f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">{t("subscribe_btn", lang)}</a>'
+                            f'<p class="email-warning">{email_warning}</p>')
         else:
             checkout_html = f'<div class="subscribe-btn disabled">{t("paid_plans_soon", lang)}</div>'
 
@@ -9050,6 +9058,8 @@ p{{color:var(--text);font-size:15.5px;line-height:1.75;margin-top:16px}}
 .subscribe-btn{{display:block;text-align:center;margin-top:20px;background:var(--green);color:#ffffff;padding:14px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px}}
 .subscribe-btn.disabled{{background:var(--panel2);color:var(--dim);border:1px solid var(--border);cursor:default}}
 .reason-banner{{max-width:560px;margin:0 auto 14px;background:#fbf1e0;border:1px solid #ecdcb8;color:var(--orange);padding:14px 18px;border-radius:10px;font-size:14.5px;font-weight:600;line-height:1.6}}
+.email-warning{{margin-top:12px;font-size:13px;color:var(--dim);text-align:center;line-height:1.6}}
+.email-warning b{{color:var(--head)}}
 </style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">{t("page_subscription", lang)} · {user_esc}</span><a class="back" href="/portfolio">{t("nav_portfolio", lang)}</a><a class="back" href="/settings">{t("nav_settings", lang)}</a><a class="back" href="/contact">{t("nav_contact", lang)}</a><a class="back" href="/terminal">{t("back_to_terminal", lang)}</a></div></header>
 <div class="wrap">{reason_banner}<div class="card">
 <h2>{t("current_plan", lang)}</h2>
@@ -9157,6 +9167,9 @@ async def lemonsqueezy_webhook(request: Request):
             # active is a conversion, or the count would climb every billing cycle.
             if sub_status == "active" and not was_active and rowcount:
                 asyncio.create_task(asyncio.to_thread(_log_payment_event, email))
+            elif sub_status == "active" and not rowcount:
+                asyncio.create_task(asyncio.to_thread(
+                    _notify_unmatched_payment, "Lemon Squeezy", email, f"event={event_name}"))
         elif event_name in ("subscription_cancelled", "subscription_expired"):
             set_subscription_status(conn, email, "expired", "lemonsqueezy_webhook", f"event={event_name}")
         conn.commit()
@@ -9165,6 +9178,22 @@ async def lemonsqueezy_webhook(request: Request):
     finally:
         conn.close()
     return {"ok": True}
+
+
+def _notify_unmatched_payment(processor: str, paid_email: str, detail: str):
+    """A verified, real payment that matches no QUANTIFY account used to just print to
+    stdout and wait for the buyer to notice their access never activated and reach out
+    -- which, for anyone who doesn't happen to check, never happens; the money is taken
+    and nobody at QUANTIFY knows there's a person to help. This puts it in the
+    operator's inbox the moment it happens instead."""
+    if not SENDER_EMAIL:
+        return
+    body = (f"A verified {processor} payment from {paid_email} did not match any QUANTIFY account.\n\n"
+           f"{detail}\n\n"
+           f"Likely cause: they're logged into QUANTIFY (or paid) with a different email than "
+           f"the one on this sale. Look them up with /api/admin/user-status?email=... using every "
+           f"email they might use, and grant-access to whichever account they're actually using.")
+    send_email_notification(CONTACT_NOTIFY_EMAIL, f"[QUANTIFY] Unmatched {processor} payment: {paid_email}", body)
 
 
 @app.post("/api/gumroad/webhook")
@@ -9228,6 +9257,8 @@ async def gumroad_webhook(request: Request):
                 if not rowcount:
                     print(f"[gumroad] Verified sale for {email} (sale_id={sale_id}) matched no QUANTIFY account "
                           f"— the buyer needs to sign up on QUANTIFY with this exact email.", flush=True)
+                    asyncio.create_task(asyncio.to_thread(
+                        _notify_unmatched_payment, "Gumroad", email, f"sale_id={sale_id}"))
                 else:
                     print(f"[gumroad] Granted active access to {email} (sale_id={sale_id})", flush=True)
                     asyncio.create_task(asyncio.to_thread(_log_payment_event, email))
