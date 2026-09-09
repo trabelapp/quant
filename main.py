@@ -4488,21 +4488,48 @@ async def api_admin_user_status(email: str, token: Optional[str] = None):
     a given email exists at all and what its current status is."""
     if not _require_admin_token(token):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    email = email.strip().lower()
+    cleaned = email.strip().lower()
     conn = db()
     row = conn.execute(
         "SELECT email,subscription_status,trial_ends_at,disclaimer_accepted_at,created_at,"
         "gumroad_subscription_id,ls_subscription_id,ls_customer_id,auth_provider "
-        "FROM users WHERE email=?", (email,)
+        "FROM users WHERE email=?", (cleaned,)
     ).fetchone()
+    # Case/whitespace-loose match too -- an exact match on the cleaned string can still
+    # miss the actual row if the account (or its session) was created before some
+    # normalization existed and carries a stray space, a different case, or a lookalike
+    # character a human wouldn't notice reading it.
+    loose_matches = conn.execute(
+        "SELECT email FROM users WHERE lower(trim(email))=lower(trim(?))", (email,)
+    ).fetchall()
+    # Every session currently pointing at this account, and the exact email string each
+    # one carries -- get_logged_in_user() reads THIS value, not what you typed above, so
+    # a session whose stored email doesn't byte-for-byte match users.email is precisely
+    # the failure mode where the diagnostic says "active" and /terminal still bounces.
+    session_rows = conn.execute(
+        "SELECT email,expires_at FROM sessions WHERE lower(trim(email))=lower(trim(?)) "
+        "ORDER BY expires_at DESC LIMIT 10", (email,)
+    ).fetchall()
     conn.close()
+    now = time.time()
+    sessions_info = [{
+        "email": s["email"], "email_repr": repr(s["email"]),
+        "matches_users_row_exactly": bool(row and s["email"] == row["email"]),
+        "expired": s["expires_at"] <= now,
+    } for s in session_rows]
     if not row:
-        return {"found": False, "email": email,
+        return {"found": False, "email": cleaned,
+                "loose_matches": [r["email"] for r in loose_matches],
+                "sessions_pointing_here": sessions_info,
                 "note": "No QUANTIFY account with this exact email. If they paid, the email "
-                        "typed at checkout doesn't match the email they signed up with."}
+                        "typed at checkout doesn't match the email they signed up with. If "
+                        "loose_matches shows a similar-looking email, that's almost certainly it."}
     d = dict(row)
     d["found"] = True
-    d["has_active_access"] = has_active_access(email)
+    d["email_repr"] = repr(row["email"])
+    d["has_active_access"] = has_active_access(row["email"])
+    d["loose_matches"] = [r["email"] for r in loose_matches]
+    d["sessions_pointing_here"] = sessions_info
     d["trial_ends_at_readable"] = (datetime.fromtimestamp(d["trial_ends_at"]).isoformat()
                                    if d.get("trial_ends_at") else None)
     return d
