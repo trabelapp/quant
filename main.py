@@ -4582,15 +4582,25 @@ async def api_admin_user_status(email: str, token: Optional[str] = None):
     return d
 
 
+@app.get("/api/admin/grant-access")
 @app.post("/api/admin/grant-access")
-async def api_admin_grant_access(email: str = Form(...), token: Optional[str] = Form(None)):
+async def api_admin_grant_access(request: Request, email: Optional[str] = None, token: Optional[str] = None,
+                                 email_form: Optional[str] = Form(None, alias="email"),
+                                 token_form: Optional[str] = Form(None, alias="token")):
     """Manual remedy for the same failure mode: a verified real payment whose webhook
     never matched an account (wrong email at checkout, or the processor's token/secret
     wasn't configured on Render when the sale happened). Sets subscription_status
-    directly rather than waiting on a processor's webhook to eventually reconcile."""
+    directly rather than waiting on a processor's webhook to eventually reconcile.
+
+    Takes GET query params as well as POST form fields -- pasting a URL into a browser
+    address bar is the path most people actually have available, same as the read-only
+    diagnostic above; curl works too but shouldn't be the only way in."""
+    email = (email or email_form or "").strip().lower()
+    token = token or token_form
     if not _require_admin_token(token):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    email = email.strip().lower()
+    if not email:
+        return JSONResponse({"error": "email is required"}, status_code=400)
     conn = db()
     rowcount = set_subscription_status(conn, email, "active", "admin_grant")
     conn.commit()
