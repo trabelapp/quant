@@ -4691,7 +4691,13 @@ async def backtest_summary(request: Request):
 
 
 def _require_admin_token(token: Optional[str]):
-    return bool(ADMIN_TOKEN) and bool(token) and hmac.compare_digest(token, ADMIN_TOKEN)
+    # hmac.compare_digest raises TypeError on a non-ASCII str (e.g. someone pastes a
+    # placeholder with Korean text still in it instead of a real token) -- comparing as
+    # bytes instead accepts any input safely and still gets the same constant-time
+    # comparison, rather than 500ing an admin endpoint over a copy-paste mistake.
+    if not ADMIN_TOKEN or not token:
+        return False
+    return hmac.compare_digest(token.encode("utf-8"), ADMIN_TOKEN.encode("utf-8"))
 
 
 @app.get("/api/admin/user-status")
