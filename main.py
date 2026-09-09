@@ -1769,6 +1769,29 @@ UI_STRINGS = {
     "scan_previous_day": {"en": "Showing the last completed scan ({date}) — today's is still being reviewed.",
                            "ko": "마지막으로 완료된 스캔({date})을 보여주는 중입니다 — 오늘 스캔은 아직 검토 중입니다."},
     "no_scan_data_check": {"en": "No scan data yet — check back after the next scan.", "ko": "아직 스캔 데이터가 없습니다 — 다음 스캔 후 다시 확인해주세요."},
+    # /demo renders this same terminal, so its handful of signup lines are the only
+    # strings on the page that the app itself never shows.
+    "demo_bar": {"en": "<b>Live Demo</b> — this is the real QUANTIFY terminal running on today's actual scan. You are seeing the top {shown} of {total} detected tickers.",
+                 "ko": "<b>라이브 데모</b> — 오늘 실제 스캔으로 돌아가는 진짜 QUANTIFY 터미널입니다. 감지된 {total}개 종목 중 상위 {shown}개를 보고 계십니다."},
+    "demo_bar_cta": {"en": "Create a free account", "ko": "무료 계정 만들기"},
+    "demo_bar_cta_tail": {"en": "to open the rest, set alerts, and track a portfolio.",
+                          "ko": "— 나머지 종목 열람, 알림 설정, 포트폴리오 추적이 열립니다."},
+    "demo_disclaimer": {"en": "Informational only, not investment advice.",
+                        "ko": "정보 제공 목적일 뿐, 투자 조언이 아닙니다."},
+    "demo_cta_title": {"en": "This is the whole product — not a preview of it.",
+                       "ko": "미리보기가 아니라, 이게 제품 전부입니다."},
+    "demo_cta_body": {"en": "Open all {total} detected tickers, set price alerts, and track your portfolio.",
+                      "ko": "감지된 {total}개 종목을 모두 열어보고, 가격 알림을 설정하고, 포트폴리오를 추적하세요."},
+    "demo_start_trial": {"en": "Start Free Trial", "ko": "무료 체험 시작"},
+    "demo_start_trial_long": {"en": "Start Free Trial — 7 Days Free", "ko": "무료 체험 시작 — 7일 무료"},
+    "demo_no_card": {"en": "No credit card required.", "ko": "신용카드가 필요 없습니다."},
+    "demo_login": {"en": "Log in", "ko": "로그인"},
+    "demo_showing": {"en": "showing {shown} of {total} detected", "ko": "감지된 {total}개 중 {shown}개 표시"},
+    "demo_locked_ticker": {"en": "This ticker is part of the full scan. Sign up free to open it.",
+                           "ko": "이 종목은 전체 스캔에 포함되어 있습니다. 무료 가입하면 열어볼 수 있습니다."},
+    "demo_gate": {"en": "{what} is part of the full version — opening signup...",
+                  "ko": "{what}은(는) 정식 버전 기능입니다 — 가입 페이지로 이동합니다..."},
+    "demo_sidebar_locked": {"en": "Sign up free to open this", "ko": "무료 가입하면 열 수 있습니다"},
     "heatmap_failed": {"en": "Could not load the heatmap.", "ko": "히트맵을 불러오지 못했습니다."},
     "ai_summary_pending": {"en": "AI summary is being prepared for today's scan — check back after the next cycle.",
                             "ko": "오늘 스캔에 대한 AI 요약을 준비하는 중입니다 — 다음 주기 후 다시 확인해주세요."},
@@ -4164,15 +4187,83 @@ def display_scan_date(conn) -> Optional[str]:
     return partial or (rows[0]["scan_date"] if rows else None)
 
 
-@app.get("/api/scan")
-async def api_scan(request: Request):
+# -----------------------------------------------------------------------------
+# Public demo access
+#
+# /demo renders the exact terminal page -- same markup, same CSS, same JS -- so that
+# what a visitor sees before signing up is the product and not a mock-up of it. The
+# only thing that changes is where its fetches point: every terminal API is mounted a
+# second time under /api/demo/, and on that path the account checks are replaced by a
+# whitelist of the handful of tickers the demo itself lists. So the demo path can never
+# return more than the public page already shows, and `demo` comes from the request's
+# own URL rather than a parameter a caller could set.
+# -----------------------------------------------------------------------------
+DEMO_TICKER_LIMIT = 8
+_DEMO_TICKERS_TTL = 300.0
+_DEMO_TICKERS_CACHE: dict = {"at": 0.0, "tickers": [], "total": 0}
+
+
+def demo_tickers() -> tuple[list[str], int]:
+    """The tickers /demo may open, plus how many the real scan found today.
+
+    Ordered exactly like the terminal's default sort so the demo list is the top of
+    the same list a subscriber sees, not a separate curated set.
+    """
+    now = time.time()
+    if now - _DEMO_TICKERS_CACHE["at"] < _DEMO_TICKERS_TTL and _DEMO_TICKERS_CACHE["tickers"]:
+        return list(_DEMO_TICKERS_CACHE["tickers"]), _DEMO_TICKERS_CACHE["total"]
+    conn = db()
+    try:
+        scan_date = display_scan_date(conn)
+        if not scan_date:
+            return [], 0
+        rows = conn.execute("""
+            SELECT ticker, ROUND((alpha_score+timing_score)/2.0,1) AS overall_score
+            FROM daily_scans
+            WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL
+              AND (alpha_score+timing_score)/2.0 >= ?
+            ORDER BY overall_score DESC
+        """, (scan_date, OVERALL_SCORE_THRESHOLD)).fetchall()
+    finally:
+        conn.close()
+    tickers = [r["ticker"] for r in rows[:DEMO_TICKER_LIMIT]]
+    _DEMO_TICKERS_CACHE.update({"at": now, "tickers": tickers, "total": len(rows)})
+    return list(tickers), len(rows)
+
+
+def is_demo_request(request: Request) -> bool:
+    return request.url.path.startswith("/api/demo/")
+
+
+def api_access_error(request: Request, ticker: Optional[str] = None,
+                     require_disclaimer: bool = True) -> Optional[JSONResponse]:
+    """Account gate for a terminal API, or the demo whitelist when called on /api/demo/.
+
+    Returns None when the request may proceed, otherwise the response to send back.
+    """
+    if is_demo_request(request):
+        if ticker is not None and ticker not in set(demo_tickers()[0]):
+            return JSONResponse(
+                {"error": "This ticker is part of the full scan. Sign up free to open it.",
+                 "demo_locked": True}, status_code=403)
+        return None
     user = get_logged_in_user(request)
     if not user:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if not disclaimer_accepted(user):
+    if require_disclaimer and not disclaimer_accepted(user):
         return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
     if not has_active_access(user):
-        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
+    return None
+
+
+@app.get("/api/demo/scan")
+@app.get("/api/scan")
+async def api_scan(request: Request):
+    blocked = api_access_error(request)
+    if blocked is not None:
+        return blocked
+    demo = is_demo_request(request)
     conn = db()
     # Every figure below describes the same day, so the count in the header can never
     # belong to a different scan than the list under it.
@@ -4206,8 +4297,17 @@ async def api_scan(request: Request):
         d["sparkline"] = sparkline
         d["sector"] = (SECTOR_CACHE.get(d["ticker"]) or {}).get("sector")
         signals.append(d)
+    demo_locked = 0
+    if demo:
+        # The demo shows the top of the same ranked list, not a different one; the rest
+        # is what an account unlocks, and the page says how many are being held back.
+        allowed = set(demo_tickers()[0])
+        shown = [s for s in signals if s["ticker"] in allowed]
+        demo_locked = len(signals) - len(shown)
+        signals = shown
     return {"scanned_count": scanned_count, "universe_count": len(UNIVERSE),
             "quant_pass_count": len(rows), "last_updated": last_updated,
+            "demo": demo, "demo_locked": demo_locked,
             "scan_date": scan_date,
             # True while a newer scan exists but is still being AI-scored. The list below
             # is the last finished day, and the page says so instead of implying the
@@ -4217,13 +4317,13 @@ async def api_scan(request: Request):
             "signals": signals}
 
 
+@app.get("/api/demo/heatmap")
 @app.get("/api/heatmap")
 async def api_heatmap(request: Request):
-    user = get_logged_in_user(request)
-    if not user:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if not has_active_access(user):
-        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
+    blocked = api_access_error(request, require_disclaimer=False)
+    if blocked is not None:
+        return blocked
+    demo = is_demo_request(request)
     conn = db()
     rows = conn.execute("""
         SELECT ticker,universe,change_pct,alpha_score,quant_pass,timing_verdict FROM daily_scans
@@ -4240,19 +4340,27 @@ async def api_heatmap(request: Request):
         # just enough to make the heatmap read as size-weighted rather than a flat grid.
         d["cap_tier"] = 1 if cap and cap >= 200e9 else 2 if cap and cap >= 10e9 else 3
         tiles.append(d)
+    if demo:
+        # The grid itself is just today's price moves, which are public either way. The
+        # quant score is the product, so it comes off every tile the demo can't open.
+        allowed = set(demo_tickers()[0])
+        for d in tiles:
+            if d["ticker"] not in allowed:
+                d["alpha_score"] = None
+                d["timing_verdict"] = None
+                d["locked"] = True
     return {"tiles": tiles}
 
 
+@app.get("/api/demo/score-history")
 @app.get("/api/score-history")
 async def api_score_history(request: Request, ticker: str = "AAPL"):
-    user = get_logged_in_user(request)
-    if not user:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if not has_active_access(user):
-        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
     ticker = normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
+    blocked = api_access_error(request, ticker=ticker, require_disclaimer=False)
+    if blocked is not None:
+        return blocked
     conn = db()
     rows = conn.execute("""
         SELECT captured_at,price,alpha_score FROM scan_history
@@ -4272,9 +4380,12 @@ async def api_universe(request: Request, refresh: bool = False):
             "nasdaq100": len(UNIVERSE_META["nasdaq100"]), "combined": len(UNIVERSE)}}
 
 
+@app.get("/api/demo/market-indices")
 @app.get("/api/market-indices")
 async def api_market_indices(request: Request):
-    if not get_logged_in_user(request):
+    # Index closes are the same two public series for everyone and are already cached,
+    # so the demo gets them unrestricted -- there is nothing here to withhold.
+    if not is_demo_request(request) and not get_logged_in_user(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     async def series_for(symbol):
@@ -4676,20 +4787,17 @@ async def api_batch_status(request: Request, token: Optional[str] = None):
     return dict(BATCH_STATUS)
 
 
+@app.get("/api/demo/terminal-data-fast")
 @app.get("/api/terminal-data-fast")
 async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: str = "1d"):
-    user = get_logged_in_user(request)
-    if not user:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if not disclaimer_accepted(user):
-        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
-    if not has_active_access(user):
-        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     ticker = normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     if timeframe not in ("1h", "1d", "1wk", "1mo"):
         return JSONResponse({"error": "Invalid timeframe"}, status_code=400)
+    blocked = api_access_error(request, ticker=ticker)
+    if blocked is not None:
+        return blocked
     df, earnings = await asyncio.gather(download_stock(ticker, timeframe), get_earnings(ticker))
     if df is None or df.empty:
         # The in-memory historical cache doesn't survive a restart, so if yfinance has
@@ -4766,18 +4874,16 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         return {"fast": {"ticker": ticker, "data_ok": False, "error": f"Data processing error: {type(e).__name__}"}}
 
 
+@app.get("/api/demo/terminal-data-ai")
 @app.get("/api/terminal-data-ai")
 async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "Long-Term Momentum Pullback", language: str = "en"):
-    user = get_logged_in_user(request)
-    if not user:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if not disclaimer_accepted(user):
-        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
-    if not has_active_access(user):
-        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
     ticker=normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}",ticker):
         return JSONResponse({"error":"Invalid ticker"},status_code=400)
+    blocked = api_access_error(request, ticker=ticker)
+    if blocked is not None:
+        return blocked
+    demo = is_demo_request(request)
     if language not in LANGUAGE_NAMES:
         language = "en"
 
@@ -4788,6 +4894,12 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
                         FROM daily_scans WHERE scan_date=? AND ticker=?
                         ORDER BY id DESC LIMIT 1""",(today_str(),ticker)).fetchone()
 
+    if row is None and demo:
+        # Whitelisted tickers always have a row; if one somehow doesn't, the anonymous
+        # path stops here rather than falling into the download-and-insert branch below.
+        conn.close()
+        return {"ai": {"ai_report": None, "report_sections": None, "status": "PENDING",
+                       "quant_pass": 0, "news": [], "snowflake": None}}
     if row is None:
         # Ticker outside today's S&P 500 / Nasdaq-100 scan (e.g. manually searched) has no
         # daily_scans row at all, so there is nothing to hang an AI report on — it would
@@ -4827,7 +4939,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     # scan — never on-demand for an arbitrary lookup (watchlist ticker, manual search).
     # That keeps AI generation volume bounded to the small detected set instead of scaling
     # with how many tickers users happen to click on.
-    needs_regen = row is not None and row["price"] is not None and row["quant_pass"] == 1 and (
+    needs_regen = not demo and row is not None and row["price"] is not None and row["quant_pass"] == 1 and (
         row["ai_report"] is None or row["ai_mode"] != mode or (row["ai_language"] or "en") != language
         or row["ai_prompt_version"] != AI_PROMPT_VERSION
     )
@@ -6691,15 +6803,22 @@ _SIDEBAR_BOTTOM_LINKS = [
 ]
 
 
-def _render_sidebar(active_nav: str, lang: str = "en") -> str:
+def _render_sidebar(active_nav: str, lang: str = "en", demo: bool = False) -> str:
+    """The app's nav. On /demo it renders identically -- same links, same icons, same
+    active state -- but every destination that needs an account points at signup, so the
+    public page shows the real shell without dead-ending a visitor at a login redirect."""
     def link(key, href, label_key, extra=""):
         cls = "side-link active" if key == active_nav else "side-link"
+        if demo:
+            href, extra = ("/demo", "") if key == active_nav else ("/signup", f' title="{t("demo_sidebar_locked", lang)}"')
         return f'<a class="{cls}" href="{href}"{extra}>{_SIDEBAR_ICONS[key]}<span>{t(label_key, lang)}</span></a>'
     top = "".join(link(key, href, label_key) for key, href, label_key in _APP_SHELL_NAV_LINKS)
-    bottom = "".join(link(key, href, label_key, extra) for key, href, label_key, extra in _SIDEBAR_BOTTOM_LINKS)
+    bottom_links = [l for l in _SIDEBAR_BOTTOM_LINKS if not (demo and l[0] == "logout")]
+    bottom = "".join(link(key, href, label_key, extra) for key, href, label_key, extra in bottom_links)
     switch = ('<div style="padding:8px 12px 4px">'
-              + lang_toggle_html(lang, "/terminal", style="app") + '</div>')
-    return (f'<nav class="sidebar"><a class="side-brand" href="/terminal">QUANTIFY<span>.</span></a>'
+              + lang_toggle_html(lang, "/demo" if demo else "/terminal", style="app") + '</div>')
+    brand_href = "/" if demo else "/terminal"
+    return (f'<nav class="sidebar"><a class="side-brand" href="{brand_href}">QUANTIFY<span>.</span></a>'
             f'{top}<div class="side-spacer"></div>{switch}{bottom}</nav>')
 
 
@@ -7172,149 +7291,14 @@ async def verify_reset(email: str = Form(...), code: str = Form(...), new_passwo
     return RedirectResponse("/login?msg=Password+reset+successfully",status_code=303)
 
 # -----------------------------------------------------------------------------
-# Public demo (no login) -- lets a skeptical visitor verify the product is real
-# before being asked to create an account, instead of hitting the signup wall blind.
-# -----------------------------------------------------------------------------
-DEMO_AI_SECTION_LABELS = {
-    "quant_review": "Quant Review",
-    "supply_demand": "Supply/Demand",
-    "risk_review": "Risk Review",
-    "news_analysis": "News Analysis",
-    "timing_reason": "Timing Rationale",
-}
-
-DEMO_CSS = """
-:root{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--border2:#181818;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--red:#ef5350;--orange:#ff9800}
-*{box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:0 16px 40px;max-width:1280px;margin-left:auto;margin-right:auto}
-a{color:var(--green)}
-.topbar{display:flex;justify-content:space-between;align-items:center;padding:18px 4px;flex-wrap:wrap;gap:10px}
-.brand{font-weight:700;font-size:19px;color:var(--head);text-decoration:none;letter-spacing:.2px}
-.brand span{color:var(--dim)}
-.signup-btn{background:var(--green);color:#fff;padding:9px 16px;border-radius:7px;font-weight:700;text-decoration:none;font-size:14px}
-.panel{background:var(--panel);border:1px solid var(--border);padding:16px;border-radius:10px;overflow:hidden}
-h3{font-size:14px;color:var(--dim);border-bottom:1px solid var(--border);padding-bottom:10px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.4px;font-weight:700}
-h3 small{color:var(--dim);font-weight:normal;text-transform:none;font-size:12px}
-.intro-bar{margin-bottom:12px;line-height:1.6}
-.intro-bar b{color:var(--head)}
-.demo-grid{display:grid;grid-template-columns:330px 1fr;gap:12px;align-items:start}
-.list{max-height:640px;overflow:auto}
-.item{padding:12px;border-bottom:1px solid var(--border2);cursor:pointer;display:flex;justify-content:space-between;border-left:3px solid transparent}
-.item:hover,.item.active-item{background:var(--panel2)}
-.item.sig-favorable{border-left-color:var(--green)}
-.item.sig-caution{border-left-color:var(--orange)}
-.item.sig-risk{border-left-color:var(--red)}
-.badge{padding:4px 11px;border-radius:12px;font-weight:700;display:inline-block;font-size:13px}
-.badge-ok{background:rgba(38,166,154,.15);color:var(--green)}
-.badge-warn{background:rgba(255,152,0,.15);color:var(--orange)}
-.badge-danger{background:rgba(239,83,80,.15);color:var(--red)}
-.badge-pending{background:var(--panel2);color:var(--dim)}
-.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px}
-.metric{background:var(--panel2);border:1px solid var(--border);padding:10px;text-align:center;border-radius:7px}
-.metric>div:first-child{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.2px}
-.val{color:var(--head);font-weight:700;margin-top:5px;font-size:15px}
-.ai-tldr{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:12px 0;font-size:15px;line-height:1.65}
-.ai-tldr b{color:var(--head)}
-.section{margin-bottom:14px}
-.section b{color:var(--head);display:block;margin-bottom:5px;font-size:12.5px;text-transform:uppercase;letter-spacing:.3px}
-.notice{padding:14px;background:var(--panel2);border:1px solid var(--border);margin-bottom:10px;line-height:1.6;border-radius:8px}
-.action-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
-.action-btn{color:#fff;background:var(--green);border:1px solid var(--green);padding:9px 14px;border-radius:7px;font-weight:600;font-size:13.5px;text-decoration:none;display:inline-block}
-.action-btn.locked-btn{background:var(--panel2);color:var(--dim);border-color:var(--border)}
-.action-btn.locked-btn:hover{color:var(--head);border-color:var(--green)}
-.demo-cta{background:var(--panel2);border:1px solid var(--green);border-radius:10px;padding:26px;text-align:center;margin-top:16px}
-.demo-cta h2{color:var(--head);margin:0 0 8px;font-size:21px}
-.demo-cta p{color:var(--dim);margin:0 0 16px;font-size:14px}
-.demo-cta .action-btn{padding:12px 26px;font-size:15px}
-.demo-cta .cta-note{color:var(--dim);font-size:12.5px;margin-top:10px}
-@media(max-width:900px){.demo-grid{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}
-"""
-
-DEMO_JS = """
-function showDemoTicker(t){
-  document.querySelectorAll('.demo-detail').forEach(function(el){el.style.display='none'});
-  var d=document.getElementById('demo-detail-'+t);
-  if(d)d.style.display='block';
-  document.querySelectorAll('.item').forEach(function(el){el.classList.remove('active-item')});
-  var it=document.getElementById('demo-item-'+t);
-  if(it)it.classList.add('active-item');
-}
-"""
-
-
-def _demo_badge_class(verdict):
-    return {"Favorable": "badge-ok", "Caution": "badge-warn", "Risk": "badge-danger"}.get(verdict, "badge-pending")
-
-
-def _demo_sig_class(verdict):
-    return {"Favorable": "sig-favorable", "Caution": "sig-caution", "Risk": "sig-risk"}.get(verdict, "")
-
-
-def _demo_sparkline_svg(arr):
-    if not arr or len(arr) < 2:
-        return ""
-    w, h = 48, 18
-    mn, mx = min(arr), max(arr)
-    rng = (mx - mn) or 1
-    pts = " ".join(f"{(i / (len(arr) - 1) * w):.1f},{(h - ((v - mn) / rng * h)):.1f}" for i, v in enumerate(arr))
-    color = "#26a69a" if arr[-1] >= arr[0] else "#ef5350"
-    return f'<svg width="{w}" height="{h}" style="vertical-align:middle;flex-shrink:0"><polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5"/></svg>'
-
-
-def _demo_row_html(t):
-    ticker = html_lib.escape(t["ticker"])
-    change_pct = t["change_pct"]
-    change_str = f"{'+' if change_pct is not None and change_pct >= 0 else ''}{change_pct}"
-    return (
-        f'<div class="item {_demo_sig_class(t["timing_verdict"])}" id="demo-item-{ticker}" onclick="showDemoTicker(\'{ticker}\')">'
-        f'<b>{ticker}</b>'
-        f'<span style="display:flex;align-items:center;gap:6px">{_demo_sparkline_svg(t["sparkline"])}'
-        f'<span style="text-align:right">{t["price"]} · {change_str}%<br>'
-        f'<small>Score {t["overall_score"]} · <span class="badge {_demo_badge_class(t["timing_verdict"])}">{html_lib.escape(t["timing_verdict"] or "Analyzing")}</span></small></span></span>'
-        f'</div>'
-    )
-
-
-def _demo_detail_html(t, is_first):
-    ticker = html_lib.escape(t["ticker"])
-    high52 = f'{t["pct_from_52w_high"]}%' if t["pct_from_52w_high"] is not None else "N/A"
-    low52 = f'{t["pct_from_52w_low"]}%' if t["pct_from_52w_low"] is not None else "N/A"
-    trend = "N/A" if t["above_200d_sma"] is None else ("Uptrend" if t["above_200d_sma"] else "Downtrend")
-    volume = f'{t["volume_ratio"]}x avg' if t["volume_ratio"] is not None else "N/A"
-    sections = t["sections"] or {}
-    sections_html = "".join(
-        f'<div class="section"><b>{label}</b>{sections[key]}</div>'
-        for key, label in DEMO_AI_SECTION_LABELS.items() if sections.get(key)
-    ) or '<div class="notice">AI analysis unavailable for this ticker today.</div>'
-    verdict = t["timing_verdict"] or "Analyzing"
-    display = "block" if is_first else "none"
-    return f'''<div class="demo-detail" id="demo-detail-{ticker}" style="display:{display}">
-<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
-<h3 style="border:0;margin:0;padding:0">{ticker}</h3>
-<span class="badge {_demo_badge_class(t["timing_verdict"])}">{html_lib.escape(verdict)}</span>
-</div>
-<div class="action-bar">
-<a class="action-btn locked-btn" href="/signup" title="Sign up to use this">🔒 Set Alert</a>
-<a class="action-btn locked-btn" href="/signup" title="Sign up to use this">🔒 Add to Watchlist</a>
-<a class="action-btn locked-btn" href="/signup" title="Sign up to use this">🔒 Save to Portfolio</a>
-</div>
-<div class="metrics">
-<div class="metric"><div>RSI / MACD</div><div class="val">{t["rsi"]} / {t["macd"]}</div></div>
-<div class="metric"><div>52W High</div><div class="val">{high52}</div></div>
-<div class="metric"><div>52W Low</div><div class="val">{low52}</div></div>
-<div class="metric"><div>Trend</div><div class="val">{trend}</div></div>
-<div class="metric"><div>Volume</div><div class="val">{volume}</div></div>
-</div>
-<h3 style="margin-top:16px">AI Quant Report <small>(informational only, not investment advice)</small></h3>
-<div class="scroll">{sections_html}</div>
-</div>'''
-
-
-# -----------------------------------------------------------------------------
 # Public per-ticker pages (/stock/<TICKER>, /stocks) -- search-visible surface built
 # from the scan snapshot that's already stored. Read-only from daily_scans: no
 # external API call ever runs on one of these requests.
 # -----------------------------------------------------------------------------
+def _verdict_badge_class(verdict):
+    return {"Favorable": "badge-ok", "Caution": "badge-warn", "Risk": "badge-danger"}.get(verdict, "badge-pending")
+
+
 STOCK_PAGE_CSS = """
 .stock-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:6px}
 .stock-badge{padding:5px 14px;border-radius:14px;font-weight:700;font-size:14px;display:inline-block}
@@ -7470,7 +7454,7 @@ async def stock_page(ticker: str):
 
     verdict = d["timing_verdict"]
     score = d["overall_score"] if d["overall_score"] is not None else d["alpha_score"]
-    badge = (f'<span class="stock-badge {_demo_badge_class(verdict)}">{html_lib.escape(verdict)}</span>'
+    badge = (f'<span class="stock-badge {_verdict_badge_class(verdict)}">{html_lib.escape(verdict)}</span>'
              if verdict else '<span class="stock-badge badge-pending">Not on today\'s list</span>')
     updated_ts = d["ai_updated_at"] or d["created_at"]
     updated = (datetime.fromtimestamp(updated_ts, ZoneInfo("America/New_York")).strftime("%b %d, %Y at %I:%M %p ET")
@@ -7799,75 +7783,17 @@ def og_head(title: str, description: str, path: str = "") -> str:
 
 
 @app.get("/demo", response_class=HTMLResponse)
-async def demo_page():
-    conn = db()
-    # Same rule as the scanner: a day that is still being scored would otherwise show
-    # here as a handful of tickers, and this is the page a first-time visitor lands on.
-    latest_date = display_scan_date(conn)
-    rows = []
-    if latest_date:
-        rows = conn.execute("""
-            SELECT ticker,universe,price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,
-                   above_200d_sma,volume_ratio,timing_verdict,ai_report,
-                   ROUND((alpha_score+timing_score)/2.0,1) AS overall_score
-            FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL
-            ORDER BY overall_score DESC LIMIT 6
-        """, (latest_date,)).fetchall()
-    detected_total = conn.execute(
-        "SELECT COUNT(*) FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL",
-        (latest_date,),
-    ).fetchone()[0] if latest_date else 0
-    conn.close()
+async def demo_page(request: Request):
+    """The scanner terminal, public and read-only.
 
-    tickers = []
-    for r in rows:
-        d = dict(r)
-        sections = {}
-        if d.get("ai_report"):
-            try:
-                sections = json.loads(d["ai_report"])
-            except (json.JSONDecodeError, TypeError):
-                sections = {}
-        cached = CACHE["historical"].get(f"single:{d['ticker']}:1d")
-        sparkline = []
-        if cached is not None:
-            try:
-                sparkline = [round(float(v), 2) for v in normalize_series(cached["data"], "Close").dropna().tail(20)]
-            except Exception:
-                sparkline = []
-        tickers.append({**d, "sections": sections, "sparkline": sparkline})
-
-    if detected_total and detected_total > len(tickers):
-        scanner_caption = f"top {len(tickers)} of {detected_total} detected today"
-    else:
-        scanner_caption = f"{len(tickers)} real signals today"
-
-    if not tickers:
-        list_html = '<div class="notice">Demo is warming up — check back shortly.</div>'
-        detail_html = ""
-    else:
-        rows_html = [_demo_row_html(t) for t in tickers]
-        mid = len(tickers) // 2
-        rows_html.insert(mid, '<div class="notice">Like what you see? Get the full daily scan — 7-day free trial. <a href="/signup">Sign up</a></div>')
-        list_html = "".join(rows_html)
-        detail_html = "".join(_demo_detail_html(t, i == 0) for i, t in enumerate(tickers))
-
-    body = f'''<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY. Live Demo</title><meta name="description" content="See QUANTIFY's real, current scan results — score, indicators, and AI risk review — no signup required.">{og_head("QUANTIFY. Live Demo", "See QUANTIFY's real, current scan results — score, indicators, and AI risk review. No signup required.", "/demo")}<link rel="canonical" href="https://quantify.trading/demo"><style>{DEMO_CSS}</style></head><body>
-<div class="topbar"><a class="brand" href="/">QUANTIFY<span>.</span></a><a class="signup-btn" href="/signup">Sign up free</a></div>
-<div class="panel intro-bar"><b>Live Demo</b> — real results from today's scan (informational only, not investment advice). <a href="/signup">Create a free account</a> to unlock alerts, watchlist, and portfolio tracking.</div>
-<div class="demo-grid">
-<section class="panel"><h3>Market Scanner <small>({scanner_caption})</small></h3><div class="list">{list_html}</div></section>
-<section class="panel">{detail_html or '<div class="notice">No demo data yet — check back after the next scan.</div>'}</section>
-</div>
-<section class="panel demo-cta">
-<h2>Like what you see?</h2>
-<p>Get the full daily scan, real-time alerts, and portfolio tracking.</p>
-<a class="action-btn" href="/signup">Start Free Trial — 7 Days Free</a>
-<div class="cta-note">No credit card required.</div>
-</section>
-<script>{DEMO_JS}</script>
-</body></html>'''
-    return HTMLResponse(body)
+    This used to be a separate, simplified page built by hand -- a two-column list with
+    no chart, no score card and no sidebar -- so the thing a visitor evaluated was not
+    the thing they would get. It now renders the terminal itself; see
+    render_terminal_page for what a demo visitor can and cannot reach.
+    """
+    return HTMLResponse(render_terminal_page(
+        user="", avatar_letter="", theme="dark", lang=resolve_lang(request),
+        default_sort="overall_score", default_view="list", trial_ends_str="", demo=True))
 
 
 # -----------------------------------------------------------------------------
@@ -7886,10 +7812,61 @@ async def dashboard(request: Request):
     pref_default_view = prefs["pref_default_view"] if prefs and prefs["pref_default_view"] in ("list","heatmap") else "list"
     trial_ends_at = prefs["trial_ends_at"] if prefs else None
     trial_ends_str = datetime.fromtimestamp(trial_ends_at).strftime("%B %d, %Y") if trial_ends_at else ""
-    avatar_letter = html_lib.escape(user[0].upper()) if user else "?"
-    user=html_lib.escape(user)
-    lang = pref_language
-    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QUANTIFY.</title><script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
+    return HTMLResponse(render_terminal_page(
+        user=html_lib.escape(user),
+        avatar_letter=html_lib.escape(user[0].upper()),
+        theme=theme, lang=pref_language, default_sort=pref_default_sort,
+        default_view=pref_default_view, trial_ends_str=trial_ends_str, demo=False))
+
+
+def render_terminal_page(*, user: str, avatar_letter: str, theme: str, lang: str,
+                         default_sort: str, default_view: str, trial_ends_str: str,
+                         demo: bool) -> str:
+    """The scanner terminal, rendered once for both the app and the public demo.
+
+    /demo is this same page: identical markup, CSS and JS, so what a visitor evaluates
+    before signing up is the product itself. Only three things differ, and each is
+    computed here rather than duplicated into a parallel page -- the account chrome
+    (avatar menu vs. a signup button), where the fetches point (/api vs. /api/demo),
+    and a strip of signup copy above and below the grid.
+    """
+    pref_language = lang
+    pref_default_sort, pref_default_view = default_sort, default_view
+    api_root = "/api/demo" if demo else "/api"
+    api_root_js = json.dumps(api_root)
+    demo_js = "true" if demo else "false"
+    body_class = "demo-mode" if demo else ""
+    demo_text_js = json.dumps({k: t(k, lang) for k in ("demo_showing", "demo_gate")})
+    _, demo_total = demo_tickers() if demo else ("", 0)
+    if demo:
+        shown = str(min(DEMO_TICKER_LIMIT, demo_total) or DEMO_TICKER_LIMIT)
+        total = str(demo_total or DEMO_TICKER_LIMIT)
+        page_title = "QUANTIFY. Live Demo"
+        head_extra = (og_head("QUANTIFY. Live Demo",
+                              "See QUANTIFY's real, current scan results \u2014 score, indicators, and AI risk review. No signup required.",
+                              "/demo")
+                      + '<meta name="description" content="See QUANTIFY\'s real, current scan results \u2014 score, indicators, and AI risk review \u2014 no signup required.">'
+                      + '<link rel="canonical" href="https://quantify.trading/demo">')
+        header_right = (f'<a class="signup-btn" href="/signup">{t("demo_start_trial", lang)}</a>'
+                        f'<a class="login-link" href="/login">{t("demo_login", lang)}</a>')
+        demo_bar = ('<div class="demo-bar">'
+                    + t("demo_bar", lang).replace("{shown}", shown).replace("{total}", total)
+                    + f' <a href="/signup">{t("demo_bar_cta", lang)}</a> {t("demo_bar_cta_tail", lang)} '
+                    + f'<span class="demo-bar-note">{t("demo_disclaimer", lang)}</span></div>')
+        demo_cta = (f'<section class="demo-cta"><h2>{t("demo_cta_title", lang)}</h2>'
+                    + '<p>' + t("demo_cta_body", lang).replace("{total}", total) + '</p>'
+                    + f'<a class="signup-btn big" href="/signup">{t("demo_start_trial_long", lang)}</a>'
+                    + f'<div class="cta-note">{t("demo_no_card", lang)}</div></section>')
+    else:
+        page_title = "QUANTIFY."
+        head_extra = ""
+        header_right = (f'<div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button>'
+                        f'<div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div>'
+                        '<a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a>'
+                        '<a href="/logout" class="danger-text">Log out</a></div></div>')
+        demo_bar = ""
+        demo_cta = ""
+    html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{page_title}</title>{head_extra}<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--border2:#ececec;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a;--grid-line:#eef1ef;
 --sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327;--sb-danger:#e57373}}
 html[data-theme="dark"]{{--bg:#000000;--panel:#000000;--panel2:#0a0a0a;--border:#222222;--border2:#181818;--text:#a8a8a8;--head:#ffffff;--dim:#787878;--green:#26a69a;--red:#ef5350;--orange:#ff9800;--grid-line:#161616}}
@@ -7961,6 +7938,28 @@ header,.panel{{background:var(--panel);border:1px solid var(--border)}}
 header{{padding:12px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap;border-radius:10px}}
 .brand{{font-weight:700;font-size:19px;color:var(--head);text-decoration:none;letter-spacing:.2px}}
 .brand span{{color:var(--dim)}}
+/* Demo-only chrome. Everything else on this page is byte-identical between /terminal
+   and /demo -- these three rules are the whole visual difference. */
+.signup-btn{{background:var(--green);color:#fff;padding:9px 16px;border-radius:7px;font-weight:700;text-decoration:none;font-size:14px;white-space:nowrap}}
+.signup-btn.big{{padding:13px 28px;font-size:15.5px;display:inline-block}}
+.login-link{{color:var(--dim);text-decoration:none;font-size:13.5px;font-weight:600;padding:0 4px}}
+.login-link:hover{{color:var(--head)}}
+.demo-bar{{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px 16px;margin-bottom:12px;font-size:13.5px;line-height:1.6}}
+.demo-bar b{{color:var(--head)}}
+.demo-bar a{{color:var(--green);font-weight:700}}
+.demo-bar-note{{color:var(--dim);font-size:12px}}
+.demo-cta{{background:var(--panel2);border:1px solid var(--green);border-radius:10px;padding:26px;text-align:center;margin-top:12px}}
+.demo-cta h2{{color:var(--head);margin:0 0 8px;font-size:21px}}
+.demo-cta p{{color:var(--dim);margin:0 0 16px;font-size:14px}}
+.demo-cta .cta-note{{color:var(--dim);font-size:12.5px;margin-top:10px}}
+/* The demo bar sits above the grid, so the grid's viewport-height budget has to
+   shrink by the same amount or the bottom of the panels falls below the fold. The
+   allowance covers the bar at two or three wrapped lines; min-height keeps the panels
+   usable on a short window rather than letting them collapse. */
+body.demo-mode .grid{{height:calc(100vh - 200px);min-height:480px}}
+@media(max-width:900px){{body.demo-mode .grid{{height:auto;min-height:0}}}}
+.item.locked{{opacity:.55}}
+.heat-tile.locked{{opacity:.45}}
 .headerRight{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
 .userTag{{font-size:13px;color:var(--dim);margin-right:4px}}
 button,input,select{{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:9px 12px;font:14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;border-radius:7px}}
@@ -8113,9 +8112,9 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
   .metric{{padding:8px}}
   .sortbar select{{min-width:calc(50% - 3px)}}
 }}
-</style></head><body>
-{_render_sidebar("scanner", lang)}
-<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div id="scanAsOf" style="display:none;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;margin-bottom:8px"></div>
+</style></head><body class="{body_class}">
+{_render_sidebar("scanner", lang, demo=demo)}
+<header><a class="brand" href="{"/" if demo else "/terminal"}">QUANTIFY<span>.</span></a><div class="headerRight">{header_right}</div></header>{demo_bar}<div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div id="scanAsOf" style="display:none;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;margin-bottom:8px"></div>
 <div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel" id="detailPanel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Set an alert or add to portfolio</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now">
 <div class="action-group">
 <span class="action-group-label">Price alert</span>
@@ -8139,8 +8138,11 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 <div class="score-axes" id="scoreAxes"></div>
 <div class="score-note" id="scoreNote"></div>
 </div>
-<div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="scoreDrift" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange)"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>
+<div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="scoreDrift" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange)"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>{demo_cta}
 <div class="toast" id="toast"></div><script>
+const DEMO={demo_js};
+const API={api_root_js};
+const DEMO_TEXT={demo_text_js};
 const USER_LANGUAGE='{pref_language}';
 const SCORE_DETAIL_SHOW={json.dumps(t("score_detail_show", lang))};
 const SCORE_DETAIL_HIDE={json.dumps(t("score_detail_hide", lang))};
@@ -8157,6 +8159,7 @@ const TRIAL_ENDS_STR='{trial_ends_str}';
 const STRATEGY_MODE='Long-Term Momentum Pullback';
 let ticker='AAPL',tf='1d',chart,candle,volume,smaLines={{}},idxCharts={{}},bbLines={{}},currentView='list',lastSignals=[],lastUpdated=null;
 function showToast(msg,isErr,duration){{const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(isErr?' err':'');clearTimeout(window._toastTimer);window._toastTimer=setTimeout(()=>t.classList.remove('show'),duration||3500)}}
+function demoGate(what){{showToast(DEMO_TEXT.demo_gate.replace('{{what}}',what),false,2600);setTimeout(()=>{{location.href='/signup'}},1100)}}
 function toggleActionBar(){{document.getElementById('actionBar').classList.toggle('open')}}
 function openOnboarding(){{document.getElementById('onboardOverlay').classList.add('show')}}
 function closeOnboarding(){{document.getElementById('onboardOverlay').classList.remove('show');try{{localStorage.setItem('onboarded','1')}}catch(e){{}}}}
@@ -8166,7 +8169,7 @@ document.addEventListener('click',()=>{{const m=document.getElementById('avatarM
 function showView(v){{currentView=v;document.getElementById('tabList').classList.toggle('active',v==='list');document.getElementById('tabHeatmap').classList.toggle('active',v==='heatmap');document.getElementById('sortbar').style.display=v==='list'?'flex':'none';document.getElementById('list').style.display=v==='list'?'block':'none';document.getElementById('heatmap').style.display=v==='heatmap'?'flex':'none';if(v==='heatmap')loadHeatmap()}}
 function heatColor(chg){{if(chg==null)return '#333';const c=Math.max(-5,Math.min(5,chg));const t=(c+5)/10;const r=Math.round(239+(38-239)*t),g=Math.round(83+(166-83)*t),b=Math.round(80+(154-80)*t);return `rgb(${{r}},${{g}},${{b}})`}}
 function groupByUniverse(items){{const groups={{}};items.forEach(t=>{{const g=t.universe||'Other';(groups[g]=groups[g]||[]).push(t)}});return groups}}
-async function loadHeatmap(){{const el=document.getElementById('heatmap');const r=await fetch('/api/heatmap');const d=await r.json();if(!d.tiles?.length){{el.innerHTML='<div class="notice">No scan data yet.</div>';return}}const groups=groupByUniverse(d.tiles);el.innerHTML=Object.entries(groups).map(([g,items])=>`<div class="heat-group-header">${{g}} (${{items.length}})</div><div class="heat-grid">`+items.map(t=>`<div class="heat-tile" style="background:${{heatColor(t.change_pct)}}" title="${{t.ticker}} · ${{t.change_pct??'-'}}% · Alpha ${{t.alpha_score??'-'}}" onclick="showView('list');loadTicker('${{t.ticker}}')">${{t.ticker}}</div>`).join('')+'</div>').join('')}}
+async function loadHeatmap(){{const el=document.getElementById('heatmap');const r=await fetch(API+'/heatmap');const d=await r.json();if(!d.tiles?.length){{el.innerHTML='<div class="notice">No scan data yet.</div>';return}}const groups=groupByUniverse(d.tiles);el.innerHTML=Object.entries(groups).map(([g,items])=>`<div class="heat-group-header">${{g}} (${{items.length}})</div><div class="heat-grid">`+items.map(t=>`<div class="heat-tile${{t.locked?' locked':''}}" style="background:${{heatColor(t.change_pct)}}" title="${{t.ticker}} · ${{t.change_pct??'-'}}%${{t.locked?' · sign up to see the score':' · Alpha '+(t.alpha_score??'-')}}" onclick="${{t.locked?`demoGate('${{t.ticker}}')`:`showView('list');loadTicker('${{t.ticker}}')`}}">${{t.ticker}}</div>`).join('')+'</div>').join('')}}
 function sparklineSVG(arr){{if(!arr||arr.length<2)return '';const w=48,h=18;const min=Math.min(...arr),max=Math.max(...arr),range=(max-min)||1;const pts=arr.map((v,i)=>`${{(i/(arr.length-1)*w).toFixed(1)}},${{(h-((v-min)/range*h)).toFixed(1)}}`).join(' ');const color=arr[arr.length-1]>=arr[0]?'#26a69a':'#ef5350';return `<svg width="${{w}}" height="${{h}}" style="vertical-align:middle;flex-shrink:0"><polyline points="${{pts}}" fill="none" stroke="${{color}}" stroke-width="1.5"/></svg>`}}
 function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':'badge-pending'}}
 function renderEarnings(e){{const el=document.getElementById('earningsInfo');if(!e||(!e.last&&!e.next)){{el.innerText='Earnings: no data available';return}}const parts=[];if(e.last){{const beat=e.last.beat;const cls=beat===true?'beat':beat===false?'miss':'';const label=beat===true?'Beat':beat===false?'Miss':'Met';const surprise=e.last.surprise_pct!=null?` (${{label}} ${{e.last.surprise_pct>0?'+':''}}${{e.last.surprise_pct}}%)`:'';parts.push(`Last earnings <b>${{e.last.date}}</b>: EPS $${{e.last.eps_actual}} vs $${{e.last.eps_estimate??'-'}} est.<span class="${{cls}}">${{surprise}}</span>`)}}if(e.next){{parts.push(`Next earnings: <b>${{e.next.date}}</b>`)}}el.innerHTML=parts.join(' &middot; ')}}
@@ -8190,10 +8193,10 @@ function watchChartSize(el){{
   }}).observe(el);
 }}
 function init(){{const c=document.getElementById('chart');chart=LightweightCharts.createChart(c,{{width:c.clientWidth,height:c.clientHeight,layout:{{background:{{type:'solid',color:CHART_THEME.bg}},textColor:CHART_THEME.text}},grid:{{vertLines:{{color:CHART_THEME.grid}},horzLines:{{color:CHART_THEME.grid}}}},timeScale:{{timeVisible:false}}}});candle=chart.addCandlestickSeries({{upColor:CHART_THEME.up,downColor:CHART_THEME.down,borderUpColor:CHART_THEME.up,borderDownColor:CHART_THEME.down,wickUpColor:CHART_THEME.up,wickDownColor:CHART_THEME.down}});volume=chart.addHistogramSeries({{color:CHART_THEME.vol,priceFormat:{{type:'volume'}},priceScaleId:''}});volume.priceScale().applyOptions({{scaleMargins:{{top:.8,bottom:0}}}});smaLines.sma20=chart.addLineSeries({{color:CHART_THEME.sma20,lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma50=chart.addLineSeries({{color:CHART_THEME.sma50,lineWidth:1,priceLineVisible:false,lastValueVisible:false}});smaLines.sma200=chart.addLineSeries({{color:CHART_THEME.sma200,lineWidth:1,priceLineVisible:false,lastValueVisible:false}});bbLines.upper=chart.addLineSeries({{color:CHART_THEME.bb,lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});bbLines.lower=chart.addLineSeries({{color:CHART_THEME.bb,lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}});watchChartSize(c);window.onresize=()=>{{chart.resize(c.clientWidth,c.clientHeight);Object.entries(idxCharts).forEach(([k,ic])=>{{const el=document.getElementById('idx-'+k);if(el)ic.resize(el.clientWidth,el.clientHeight)}})}};['sp500','ndx'].forEach(k=>{{const el=document.getElementById('idx-'+k);const ic=LightweightCharts.createChart(el,{{width:el.clientWidth,height:el.clientHeight,layout:{{background:{{type:'solid',color:CHART_THEME.bg}},textColor:CHART_THEME.text,fontSize:9}},grid:{{vertLines:{{visible:false}},horzLines:{{visible:false}}}},rightPriceScale:{{visible:false}},timeScale:{{visible:false}},handleScroll:false,handleScale:false}});idxCharts[k]=ic;idxCharts[k+'_line']=ic.addLineSeries({{color:CHART_THEME.sma20,lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}})}})}}
-async function loadIndices(){{try{{const r=await fetch('/api/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;const boxEl=document.getElementById('idx-'+k);if(boxEl&&boxEl.clientWidth&&boxEl.clientHeight)idxCharts[k].resize(boxEl.clientWidth,boxEl.clientHeight);idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);idxCharts[k+'_line'].applyOptions({{color:chg>=0?'#26a69a':'#ef5350'}});const valEl=document.getElementById('idx-'+k+'-val');if(valEl)valEl.innerHTML=`${{last}} <span style="color:${{chg>=0?'#26a69a':'#ef5350'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
-async function loadScoreHistory(t){{const el=document.getElementById('scoretrend');try{{const r=await fetch(`/api/score-history?ticker=${{encodeURIComponent(t)}}`);const d=await r.json();const scores=(d.points||[]).map(p=>p.alpha_score).filter(v=>v!=null);if(scores.length<2){{el.innerHTML=scores.length?scores[scores.length-1].toFixed(1):'-';return}}el.innerHTML=sparklineSVG(scores)+' '+scores[scores.length-1].toFixed(1)}}catch(e){{el.innerText='-'}}}}
-async function autoScanOnOpen(){{try{{await fetch('/api/auto-scan',{{method:'POST'}});}}catch(e){{console.warn('auto-scan trigger failed',e)}};scan()}}
-function updateUcount(d){{document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:'';
+async function loadIndices(){{try{{const r=await fetch(API+'/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;const boxEl=document.getElementById('idx-'+k);if(boxEl&&boxEl.clientWidth&&boxEl.clientHeight)idxCharts[k].resize(boxEl.clientWidth,boxEl.clientHeight);idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);idxCharts[k+'_line'].applyOptions({{color:chg>=0?'#26a69a':'#ef5350'}});const valEl=document.getElementById('idx-'+k+'-val');if(valEl)valEl.innerHTML=`${{last}} <span style="color:${{chg>=0?'#26a69a':'#ef5350'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
+async function loadScoreHistory(t){{const el=document.getElementById('scoretrend');try{{const r=await fetch(API+`/score-history?ticker=${{encodeURIComponent(t)}}`);const d=await r.json();const scores=(d.points||[]).map(p=>p.alpha_score).filter(v=>v!=null);if(scores.length<2){{el.innerHTML=scores.length?scores[scores.length-1].toFixed(1):'-';return}}el.innerHTML=sparklineSVG(scores)+' '+scores[scores.length-1].toFixed(1)}}catch(e){{el.innerText='-'}}}}
+async function autoScanOnOpen(){{if(!DEMO){{try{{await fetch('/api/auto-scan',{{method:'POST'}});}}catch(e){{console.warn('auto-scan trigger failed',e)}}}};scan()}}
+function updateUcount(d){{document.getElementById('ucount').innerHTML=DEMO?' · '+DEMO_TEXT.demo_showing.replace('{{shown}}',(d.signals||[]).length).replace('{{total}}',d.quant_pass_count??0):(d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:'');
   const asOf=document.getElementById('scanAsOf');
   if(asOf){{
     if(d.showing_previous_day&&d.scan_date){{
@@ -8201,8 +8204,8 @@ function updateUcount(d){{document.getElementById('ucount').innerText=d.universe
       asOf.style.display='block';
     }}else{{asOf.style.display='none';}}
   }}}}
-async function scan(){{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
-async function pollForUpdates(){{try{{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
+async function scan(){{const r=await fetch(API+'/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
+async function pollForUpdates(){{try{{const r=await fetch(API+'/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
 
 // ---- Company snowflake ------------------------------------------------------------
 // Six fundamental axes, each a percentile against the ticker's own sector, so a wider
@@ -8277,11 +8280,11 @@ function renderSnowflake(sf){{
                         :`<div class="sf-foot">${{SF_TEXT.sf_no_data}}</div>`;
 }}
 
-async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';document.getElementById('aiTldr').style.display='none';document.getElementById('scoreDrift').style.display='none';document.getElementById('scoreCard').style.display='none';const fastPromise=fetch(`/api/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(`/api/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const sw=document.getElementById('staleWarning');if(d.fast.stale_as_of){{const asOfDate=new Date(d.fast.stale_as_of*1000);sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing last known data from ${{asOfDate.toLocaleString()}}.`}}else if(d.fast.stale_db_date){{sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing indicators from the last scan on ${{d.fast.stale_db_date}}. No chart available for this snapshot.`}}else{{sw.style.display='none'}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('portfolioPrice').value=d.fast.price??'';document.getElementById('portfolioShares').value='';renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();renderSnowflake(x.ai?.snowflake);const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';const reviewedNote=x.ai.updated_at?` <span style="color:var(--dim);font-size:11px" title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter">· AI reviewed ${{new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}})}}</span>`:'';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100${{reviewedNote}}`;const tldrEl=document.getElementById('aiTldr');const verdictPhrase={{Favorable:'looks like a reasonable entry point',Caution:'has some risk worth reading below',Risk:'looks risky right now'}}[x.ai.timing_verdict]||'has been reviewed';const trendPhrase=d.fast.above_200d_sma?'still in a long-term uptrend':'below its long-term trend';const pullbackPhrase=d.fast.pct_from_52w_high!=null?`, ${{Math.abs(d.fast.pct_from_52w_high)}}% off its 52-week high`:'';tldrEl.innerHTML=`<b>Bottom line:</b> ${{ticker}} ${{verdictPhrase}} — ${{trendPhrase}}${{pullbackPhrase}}. Score ${{x.ai.overall_score??'-'}}/100.<div class="tldr-next">Not a decision you need to make now — <b style="color:var(--head)">Set Alert</b> above to get emailed if it hits your price, or <b style="color:var(--head)">Save to Portfolio</b> to track it alongside your other picks.</div>`;tldrEl.style.display='block'}}else{{vEl.style.display='none';document.getElementById('aiTldr').style.display='none'}}const driftEl=document.getElementById('scoreDrift');if(x.ai?.scan_price&&d.fast?.price){{const drift=(d.fast.price-x.ai.scan_price)/x.ai.scan_price*100;if(Math.abs(drift)>=2){{const scanTimeStr=x.ai.updated_at?new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}}):'earlier today';driftEl.innerHTML=`⚠ This score was computed at $${{x.ai.scan_price}} (${{scanTimeStr}}) — price has moved ${{drift>=0?'+':''}}${{drift.toFixed(1)}}% since then, now $${{d.fast.price}}. The setup may no longer look the same.`;driftEl.style.display='block'}}else{{driftEl.style.display='none'}}}}else{{driftEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');const langMismatch=x.ai?.language&&x.ai.language!==x.ai.language_requested;const langNote=langMismatch?`<div class="notice" style="margin-bottom:8px;font-size:12px">Showing in ${{x.ai.language==='ko'?'Korean':'English'}} — today's AI usage limit was reached before this could be regenerated in your preferred language. It switches automatically once quota resets.</div>`:'';if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=langNote+Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=!x.ai?.quant_pass?'AI analysis only runs for tickers that clear the daily quant scan — this one did not make the list today.':(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':(x.ai?.quota_exhausted?"Today's AI usage limit has been reached, so this review couldn't be generated right now — a shared daily limit, unrelated to your language setting. It resumes automatically tomorrow.":'AI analysis is unavailable.'))}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
-async function setAlert(){{const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const dir=document.getElementById('targetDir').value;const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);f.append('direction',dir);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
-async function savePortfolio(){{const sharesInput=document.getElementById('portfolioShares').value.trim();const priceInput=document.getElementById('portfolioPrice').value.trim();let shares='';if(sharesInput!==''){{const n=parseFloat(sharesInput);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}let price='';if(priceInput!==''){{const p=parseFloat(priceInput);if(!isFinite(p)||p<=0){{showToast("Enter a positive entry price, or leave it blank to use today's scan price.",true);return}}price=p}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);if(price!=='')f.append('price',price);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
+async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';document.getElementById('aiTldr').style.display='none';document.getElementById('scoreDrift').style.display='none';document.getElementById('scoreCard').style.display='none';const fastPromise=fetch(API+`/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(API+`/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}if(DEMO&&fastRes.status===403){{aiPromise.catch(()=>{{}});return demoGate(ticker)}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const sw=document.getElementById('staleWarning');if(d.fast.stale_as_of){{const asOfDate=new Date(d.fast.stale_as_of*1000);sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing last known data from ${{asOfDate.toLocaleString()}}.`}}else if(d.fast.stale_db_date){{sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing indicators from the last scan on ${{d.fast.stale_db_date}}. No chart available for this snapshot.`}}else{{sw.style.display='none'}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('portfolioPrice').value=d.fast.price??'';document.getElementById('portfolioShares').value='';renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();renderSnowflake(x.ai?.snowflake);const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';const reviewedNote=x.ai.updated_at?` <span style="color:var(--dim);font-size:11px" title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter">· AI reviewed ${{new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}})}}</span>`:'';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100${{reviewedNote}}`;const tldrEl=document.getElementById('aiTldr');const verdictPhrase={{Favorable:'looks like a reasonable entry point',Caution:'has some risk worth reading below',Risk:'looks risky right now'}}[x.ai.timing_verdict]||'has been reviewed';const trendPhrase=d.fast.above_200d_sma?'still in a long-term uptrend':'below its long-term trend';const pullbackPhrase=d.fast.pct_from_52w_high!=null?`, ${{Math.abs(d.fast.pct_from_52w_high)}}% off its 52-week high`:'';tldrEl.innerHTML=`<b>Bottom line:</b> ${{ticker}} ${{verdictPhrase}} — ${{trendPhrase}}${{pullbackPhrase}}. Score ${{x.ai.overall_score??'-'}}/100.<div class="tldr-next">Not a decision you need to make now — <b style="color:var(--head)">Set Alert</b> above to get emailed if it hits your price, or <b style="color:var(--head)">Save to Portfolio</b> to track it alongside your other picks.</div>`;tldrEl.style.display='block'}}else{{vEl.style.display='none';document.getElementById('aiTldr').style.display='none'}}const driftEl=document.getElementById('scoreDrift');if(x.ai?.scan_price&&d.fast?.price){{const drift=(d.fast.price-x.ai.scan_price)/x.ai.scan_price*100;if(Math.abs(drift)>=2){{const scanTimeStr=x.ai.updated_at?new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}}):'earlier today';driftEl.innerHTML=`⚠ This score was computed at $${{x.ai.scan_price}} (${{scanTimeStr}}) — price has moved ${{drift>=0?'+':''}}${{drift.toFixed(1)}}% since then, now $${{d.fast.price}}. The setup may no longer look the same.`;driftEl.style.display='block'}}else{{driftEl.style.display='none'}}}}else{{driftEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');const langMismatch=x.ai?.language&&x.ai.language!==x.ai.language_requested;const langNote=langMismatch?`<div class="notice" style="margin-bottom:8px;font-size:12px">Showing in ${{x.ai.language==='ko'?'Korean':'English'}} — today's AI usage limit was reached before this could be regenerated in your preferred language. It switches automatically once quota resets.</div>`:'';if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=langNote+Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=!x.ai?.quant_pass?'AI analysis only runs for tickers that clear the daily quant scan — this one did not make the list today.':(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':(x.ai?.quota_exhausted?"Today's AI usage limit has been reached, so this review couldn't be generated right now — a shared daily limit, unrelated to your language setting. It resumes automatically tomorrow.":'AI analysis is unavailable.'))}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
+async function setAlert(){{if(DEMO)return demoGate('Price alerts');const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const dir=document.getElementById('targetDir').value;const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);f.append('direction',dir);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
+async function savePortfolio(){{if(DEMO)return demoGate('Portfolio tracking');const sharesInput=document.getElementById('portfolioShares').value.trim();const priceInput=document.getElementById('portfolioPrice').value.trim();let shares='';if(sharesInput!==''){{const n=parseFloat(sharesInput);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}let price='';if(priceInput!==''){{const p=parseFloat(priceInput);if(!isFinite(p)||p<=0){{showToast("Enter a positive entry price, or leave it blank to use today's scan price.",true);return}}price=p}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);if(price!=='')f.append('price',price);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 function changeTF(x){{tf=x;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tf===x));chart.timeScale().applyOptions({{timeVisible:x==='1h'}});loadTicker(ticker)}}
-window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'','/terminal')}}const qTicker=qp.get('ticker');if(qTicker){{history.replaceState(null,'','/terminal')}}let seenOnboarding=false;try{{seenOnboarding=localStorage.getItem('onboarded')==='1'}}catch(e){{}}if(!seenOnboarding)openOnboarding();document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();if(qTicker)setTimeout(()=>loadTicker(qTicker),300);setInterval(pollForUpdates,20000)}};
+window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('welcome')==='1'){{showToast(`Welcome! Your 7-day free trial has started${{TRIAL_ENDS_STR?' — ends '+TRIAL_ENDS_STR:''}}.`,false,8000);history.replaceState(null,'',DEMO?'/demo':'/terminal')}}const qTicker=qp.get('ticker');if(qTicker){{history.replaceState(null,'',DEMO?'/demo':'/terminal')}}let seenOnboarding=false;try{{seenOnboarding=localStorage.getItem('onboarded')==='1'}}catch(e){{}}if(!seenOnboarding&&!DEMO)openOnboarding();document.getElementById('sortKey').value=DEFAULT_SORT;if(DEFAULT_VIEW==='heatmap')showView('heatmap');init();autoScanOnOpen();loadIndices();if(qTicker)setTimeout(()=>loadTicker(qTicker),300);setInterval(pollForUpdates,20000)}};
 </script></body></html>'''
     html = translate_body(html, lang, [
         (">My Subscription<", f">{t('my_subscription', lang)}<"),
@@ -8349,7 +8352,7 @@ window.onload=()=>{{const qp=new URLSearchParams(location.search);if(qp.get('wel
         ('<h3 style="margin-top:12px">News</h3>', f'<h3 style="margin-top:12px">{t("news_label", lang)}</h3>'),
         (">Waiting for news...<", f">{t('waiting_for_news', lang)}<"),
     ])
-    return HTMLResponse(html)
+    return html
 
 
 @app.get("/market", response_class=HTMLResponse)
