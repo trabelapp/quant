@@ -50,6 +50,14 @@ services:
         sync: false
       - key: POLYGON_API_KEY
         sync: false
+      - key: TWITTER_API_KEY
+        sync: false
+      - key: TWITTER_API_SECRET
+        sync: false
+      - key: TWITTER_ACCESS_TOKEN
+        sync: false
+      - key: TWITTER_ACCESS_TOKEN_SECRET
+        sync: false
       - key: SITE_URL
         value: https://quantify.trading
       - key: AI_CONCURRENCY

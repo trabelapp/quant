@@ -2,6 +2,7 @@ import asyncio
 import gc
 import bisect
 import traceback
+import base64
 import hashlib
 import html as html_lib
 import hmac
@@ -415,6 +416,14 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 SCAN_TIMES_ET = [(9, 0), (9, 40), (10, 30), (16, 0)]
 SCAN_RETRY_INTERVAL_SECONDS = 15 * 60
 SCAN_MAX_ATTEMPTS_PER_SLOT = 3
+# Posted after the 4pm close scan has had time to run and be AI-scored, not right at
+# the close itself -- posting before scoring finishes would either wait on the request
+# or pick a ticker whose score isn't final yet.
+DAILY_TWEET_TIME_ET = (17, 30)
+TWITTER_API_KEY = os.getenv("TWITTER_API_KEY", "")
+TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET", "")
+TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN", "")
+TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET", "")
 # The AI market summary used to regenerate on every hourly scan (up to 11x/day), which
 # was a meaningful slice of the shared daily AI token quota for a feature that doesn't
 # need to be that fresh. Decided against paying for a bigger quota -- instead this only
@@ -560,6 +569,19 @@ def init_db():
             created_at REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_subscription_audit_email ON subscription_audit(email, id);
+        -- UNIQUE(platform,post_date) is what makes the daily tweet idempotent across a
+        -- restart: Render redeploys can happen more than once in an evening, and
+        -- without this a second boot on the same day would post twice.
+        CREATE TABLE IF NOT EXISTS social_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            post_date TEXT NOT NULL,
+            ticker TEXT,
+            post_text TEXT,
+            post_id TEXT,
+            posted_at REAL NOT NULL,
+            UNIQUE(platform, post_date)
+        );
         CREATE TABLE IF NOT EXISTS user_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
@@ -3773,6 +3795,158 @@ async def gumroad_reconcile_scheduler():
             print(f"[Error: {type(exc).__name__}] Gumroad reconcile scheduler error: {exc}", flush=True)
 
 
+# -----------------------------------------------------------------------------
+# Daily X (Twitter) post -- today's top-scoring detected ticker, using data the scan
+# already computed. No new API call to build the post, only to publish it; skips
+# quietly (not an error) until TWITTER_* is configured.
+# -----------------------------------------------------------------------------
+def _twitter_oauth1_header(method: str, url: str, body_params: dict) -> str:
+    """Signs a request the way X's API requires for posting as a specific account
+    (OAuth 1.0a user-context) -- there is no simpler auth mode for this endpoint.
+    Implemented by hand against the spec (HMAC-SHA1 over a sorted, percent-encoded
+    base string) rather than adding a new dependency for four lines of crypto."""
+    oauth_params = {
+        "oauth_consumer_key": TWITTER_API_KEY,
+        "oauth_nonce": secrets.token_hex(16),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_token": TWITTER_ACCESS_TOKEN,
+        "oauth_version": "1.0",
+    }
+    # The signature covers the OAuth params AND the request's own params together --
+    # for a JSON POST body (this endpoint) there are no body params to sign, only the
+    # oauth_* ones, but body_params is accepted for a form-encoded request too.
+    all_params = {**oauth_params, **body_params}
+    quote = lambda s: urllib.parse.quote(str(s), safe="")
+    param_str = "&".join(f"{quote(k)}={quote(v)}" for k, v in sorted(all_params.items()))
+    base_string = "&".join([method.upper(), quote(url), quote(param_str)])
+    signing_key = f"{quote(TWITTER_API_SECRET)}&{quote(TWITTER_ACCESS_TOKEN_SECRET)}"
+    signature = base64.b64encode(
+        hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
+    ).decode()
+    oauth_params["oauth_signature"] = signature
+    header_params = ", ".join(f'{quote(k)}="{quote(v)}"' for k, v in sorted(oauth_params.items()))
+    return f"OAuth {header_params}"
+
+
+def post_tweet(text: str) -> Optional[str]:
+    """Posts to X as the configured account. Returns the new post's id, or None on any
+    failure -- the caller decides whether that's worth logging or retrying."""
+    if not (TWITTER_API_KEY and TWITTER_API_SECRET and TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_TOKEN_SECRET):
+        return None
+    url = "https://api.twitter.com/2/tweets"
+    try:
+        auth_header = _twitter_oauth1_header("POST", url, {})
+        resp = requests.post(url, json={"text": text},
+                             headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                             timeout=15)
+        if resp.status_code not in (200, 201):
+            print(f"[twitter] Post failed ({resp.status_code}): {resp.text[:300]}", flush=True)
+            return None
+        return (resp.json().get("data") or {}).get("id")
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Twitter post failed: {exc}", flush=True)
+        return None
+
+
+def _compose_daily_tweet(conn) -> Optional[tuple[str, str]]:
+    """Picks the day's highest-scoring detected ticker and writes the same fact set the
+    landing page and /demo already show -- nothing computed here isn't already sitting
+    in daily_scans. Returns (ticker, tweet_text), or None if there's nothing to post
+    (no completed scan day, e.g. before the very first one ever runs)."""
+    scan_date = display_scan_date(conn)
+    if not scan_date:
+        return None
+    row = conn.execute("""
+        SELECT ticker,change_pct,pct_from_52w_high,timing_verdict,
+               ROUND((alpha_score+timing_score)/2.0,1) AS overall_score
+        FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL
+        ORDER BY overall_score DESC LIMIT 1
+    """, (scan_date,)).fetchone()
+    if not row:
+        return None
+    change = row["change_pct"]
+    change_str = f"{'+' if change is not None and change >= 0 else ''}{change}%" if change is not None else "flat"
+    off_high = f", {abs(row['pct_from_52w_high']):.1f}% off its 52-week high" if row["pct_from_52w_high"] is not None else ""
+    verdict = row["timing_verdict"] or "Reviewed"
+    text = (f"${row['ticker']} flagged by QUANTIFY's daily scan — Score {row['overall_score']}/100 · {verdict}\n"
+           f"{change_str} today{off_high}\n\n"
+           f"See today's full scan (no signup): https://quantify.trading/demo\n"
+           f"Not investment advice.")
+    return row["ticker"], text
+
+
+async def post_daily_tweet(force: bool = False) -> dict:
+    """The actual send, callable both from the scheduler and from the admin endpoint
+    that lets someone trigger (or re-trigger) it on demand while testing credentials.
+    force=True bypasses the once-per-day guard, for that same testing case."""
+    conn = db()
+    try:
+        today = today_str()
+        if not force:
+            existing = conn.execute(
+                "SELECT id FROM social_posts WHERE platform='x' AND post_date=?", (today,)
+            ).fetchone()
+            if existing:
+                return {"skipped": "already posted today"}
+        composed = _compose_daily_tweet(conn)
+        if not composed:
+            return {"skipped": "no completed scan day to post from"}
+        ticker, text = composed
+        if not (TWITTER_API_KEY and TWITTER_API_SECRET and TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_TOKEN_SECRET):
+            return {"skipped": "TWITTER_* credentials not configured", "would_post": text}
+        post_id = await asyncio.to_thread(post_tweet, text)
+        if not post_id:
+            return {"error": "post_tweet failed -- see server logs"}
+        conn.execute(
+            "INSERT INTO social_posts(platform,post_date,ticker,post_text,post_id,posted_at) "
+            "VALUES('x',?,?,?,?,?) ON CONFLICT(platform,post_date) DO NOTHING",
+            (today, ticker, text, post_id, time.time()),
+        )
+        conn.commit()
+        print(f"[twitter] Posted daily tweet for {ticker} (post_id={post_id})", flush=True)
+        return {"ok": True, "ticker": ticker, "post_id": post_id, "text": text}
+    finally:
+        conn.close()
+
+
+def _next_daily_time_et(now_et: datetime, hour: int, minute: int) -> datetime:
+    target = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now_et:
+        target += timedelta(days=1)
+    while target.weekday() >= 5:
+        target += timedelta(days=1)
+    return target
+
+
+async def daily_tweet_scheduler():
+    while True:
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        target = _next_daily_time_et(now_et, *DAILY_TWEET_TIME_ET)
+        wait = max(1.0, (target - now_et).total_seconds())
+        print(f"[twitter] Next daily post at {target.strftime('%Y-%m-%d %H:%M %Z')} (in {wait/60:.0f}m).", flush=True)
+        await asyncio.sleep(wait)
+        try:
+            result = await post_daily_tweet()
+            if "error" in result:
+                print(f"[twitter] Scheduled post failed: {result['error']}", flush=True)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Daily tweet scheduler error: {exc}", flush=True)
+
+
+@app.get("/api/admin/post-tweet-now")
+@app.post("/api/admin/post-tweet-now")
+async def api_admin_post_tweet_now(force: bool = True, token: Optional[str] = None,
+                                   token_form: Optional[str] = Form(None, alias="token")):
+    """Manual trigger for the daily tweet -- mainly for testing TWITTER_* credentials
+    right after adding them, without waiting for the next scheduled slot. force=true
+    (the default here) re-sends even if today's post already went out; pass
+    force=false to just check what WOULD be posted without bypassing that guard."""
+    if not _require_admin_token(token or token_form):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    return await post_daily_tweet(force=force)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -3792,6 +3966,7 @@ async def startup():
     asyncio.create_task(trial_lifecycle_scheduler())
     asyncio.create_task(gumroad_reconcile_scheduler())
     asyncio.create_task(fundamentals_scheduler())
+    asyncio.create_task(daily_tweet_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
     asyncio.get_running_loop().call_later(3, start_server_warmup)
 
