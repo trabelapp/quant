@@ -58,6 +58,10 @@ services:
         sync: false
       - key: TWITTER_ACCESS_TOKEN_SECRET
         sync: false
+      - key: BLUESKY_HANDLE
+        sync: false
+      - key: BLUESKY_APP_PASSWORD
+        sync: false
       - key: SITE_URL
         value: https://quantify.trading
       - key: AI_CONCURRENCY

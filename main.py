@@ -424,6 +424,11 @@ TWITTER_API_KEY = os.getenv("TWITTER_API_KEY", "")
 TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET", "")
 TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN", "")
 TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET", "")
+# Bluesky's API has no paid tier at all -- an app password (Settings > App Passwords on
+# bsky.app, not the account's real login password) is free and takes under a minute to
+# generate, unlike X's developer-portal/billing dance above.
+BLUESKY_HANDLE = os.getenv("BLUESKY_HANDLE", "")
+BLUESKY_APP_PASSWORD = os.getenv("BLUESKY_APP_PASSWORD", "")
 # The AI market summary used to regenerate on every hourly scan (up to 11x/day), which
 # was a meaningful slice of the shared daily AI token quota for a feature that doesn't
 # need to be that fresh. Decided against paying for a bigger quota -- instead this only
@@ -3849,6 +3854,59 @@ def post_tweet(text: str) -> Optional[str]:
         return None
 
 
+def post_bluesky(text: str) -> Optional[str]:
+    """Posts to Bluesky as the configured account. No paid tier exists for this API at
+    any usage level this app could plausibly reach, so unlike X there's no credits/
+    billing failure mode to handle here -- a failure here is a real auth or network
+    problem, not a plan limit."""
+    if not (BLUESKY_HANDLE and BLUESKY_APP_PASSWORD):
+        return None
+    try:
+        session_resp = requests.post(
+            "https://bsky.social/xrpc/com.atproto.server.createSession",
+            json={"identifier": BLUESKY_HANDLE, "password": BLUESKY_APP_PASSWORD}, timeout=15,
+        )
+        if session_resp.status_code != 200:
+            print(f"[bluesky] Login failed ({session_resp.status_code}): {session_resp.text[:300]}", flush=True)
+            return None
+        session = session_resp.json()
+        access_jwt, did = session["accessJwt"], session["did"]
+
+        # A plain-text URL is inert on Bluesky unless a "facet" marks its byte range as
+        # a link -- byte offsets, not character offsets, since the API measures UTF-8
+        # bytes (matters once the text has multi-byte characters like the em dash above).
+        facets = []
+        url_start = text.find("https://")
+        if url_start != -1:
+            url_end = url_start + len(text[url_start:].split()[0])
+            facets.append({
+                "index": {
+                    "byteStart": len(text[:url_start].encode("utf-8")),
+                    "byteEnd": len(text[:url_end].encode("utf-8")),
+                },
+                "features": [{"$type": "app.bsky.richtext.facet#link", "uri": text[url_start:url_end]}],
+            })
+        record = {
+            "$type": "app.bsky.feed.post",
+            "text": text,
+            "createdAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        }
+        if facets:
+            record["facets"] = facets
+        post_resp = requests.post(
+            "https://bsky.social/xrpc/com.atproto.repo.createRecord",
+            json={"repo": did, "collection": "app.bsky.feed.post", "record": record},
+            headers={"Authorization": f"Bearer {access_jwt}"}, timeout=15,
+        )
+        if post_resp.status_code != 200:
+            print(f"[bluesky] Post failed ({post_resp.status_code}): {post_resp.text[:300]}", flush=True)
+            return None
+        return post_resp.json().get("uri")
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Bluesky post failed: {exc}", flush=True)
+        return None
+
+
 def _compose_daily_tweet(conn) -> Optional[tuple[str, str]]:
     """Picks the day's highest-scoring detected ticker and writes the same fact set the
     landing page and /demo already show -- nothing computed here isn't already sitting
@@ -3876,16 +3934,18 @@ def _compose_daily_tweet(conn) -> Optional[tuple[str, str]]:
     return row["ticker"], text
 
 
-async def post_daily_tweet(force: bool = False) -> dict:
-    """The actual send, callable both from the scheduler and from the admin endpoint
-    that lets someone trigger (or re-trigger) it on demand while testing credentials.
-    force=True bypasses the once-per-day guard, for that same testing case."""
+async def _post_daily_social(platform: str, poster, configured: bool, log_prefix: str,
+                             force: bool = False) -> dict:
+    """Shared idempotency/compose/post/record flow for one platform -- the two
+    differences between X and Bluesky are which function actually sends the request and
+    whether its credentials are configured, so that's all each caller supplies. Both
+    platforms post the same composed text; nothing here is platform-specific."""
     conn = db()
     try:
         today = today_str()
         if not force:
             existing = conn.execute(
-                "SELECT id FROM social_posts WHERE platform='x' AND post_date=?", (today,)
+                "SELECT id FROM social_posts WHERE platform=? AND post_date=?", (platform, today)
             ).fetchone()
             if existing:
                 return {"skipped": "already posted today"}
@@ -3893,26 +3953,38 @@ async def post_daily_tweet(force: bool = False) -> dict:
         if not composed:
             return {"skipped": "no completed scan day to post from"}
         ticker, text = composed
-        if not (TWITTER_API_KEY and TWITTER_API_SECRET and TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_TOKEN_SECRET):
-            return {"skipped": "TWITTER_* credentials not configured", "would_post": text}
-        post_id = await asyncio.to_thread(post_tweet, text)
+        if not configured:
+            return {"skipped": f"{log_prefix} credentials not configured", "would_post": text}
+        post_id = await asyncio.to_thread(poster, text)
         if not post_id:
             # Composing the post never depends on the API call, so a failed post
-            # (wrong credentials, a processor outage, an account that isn't paying for
-            # write access right now) still hands back the exact text -- posting it by
-            # hand from the X app takes a few seconds and costs nothing, so a failure
-            # here never means starting over.
-            return {"error": "post_tweet failed -- see server logs", "ticker": ticker, "text": text}
+            # (wrong credentials, a processor outage, an account without paid write
+            # access) still hands back the exact text -- posting it by hand takes a
+            # few seconds and costs nothing, so a failure here never means starting over.
+            return {"error": f"{log_prefix} post failed -- see server logs", "ticker": ticker, "text": text}
         conn.execute(
             "INSERT INTO social_posts(platform,post_date,ticker,post_text,post_id,posted_at) "
-            "VALUES('x',?,?,?,?,?) ON CONFLICT(platform,post_date) DO NOTHING",
-            (today, ticker, text, post_id, time.time()),
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(platform,post_date) DO NOTHING",
+            (platform, today, ticker, text, post_id, time.time()),
         )
         conn.commit()
-        print(f"[twitter] Posted daily tweet for {ticker} (post_id={post_id})", flush=True)
+        print(f"[{log_prefix}] Posted daily update for {ticker} (post_id={post_id})", flush=True)
         return {"ok": True, "ticker": ticker, "post_id": post_id, "text": text}
     finally:
         conn.close()
+
+
+async def post_daily_tweet(force: bool = False) -> dict:
+    """Callable both from the scheduler and from the admin endpoint that lets someone
+    trigger (or re-trigger) it on demand while testing credentials. force=True bypasses
+    the once-per-day guard, for that same testing case."""
+    configured = bool(TWITTER_API_KEY and TWITTER_API_SECRET and TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_TOKEN_SECRET)
+    return await _post_daily_social("x", post_tweet, configured, "twitter", force=force)
+
+
+async def post_daily_bluesky(force: bool = False) -> dict:
+    configured = bool(BLUESKY_HANDLE and BLUESKY_APP_PASSWORD)
+    return await _post_daily_social("bluesky", post_bluesky, configured, "bluesky", force=force)
 
 
 def _next_daily_time_et(now_et: datetime, hour: int, minute: int) -> datetime:
@@ -3929,27 +4001,40 @@ async def daily_tweet_scheduler():
         now_et = datetime.now(ZoneInfo("America/New_York"))
         target = _next_daily_time_et(now_et, *DAILY_TWEET_TIME_ET)
         wait = max(1.0, (target - now_et).total_seconds())
-        print(f"[twitter] Next daily post at {target.strftime('%Y-%m-%d %H:%M %Z')} (in {wait/60:.0f}m).", flush=True)
+        print(f"[social] Next daily post at {target.strftime('%Y-%m-%d %H:%M %Z')} (in {wait/60:.0f}m).", flush=True)
         await asyncio.sleep(wait)
-        try:
-            result = await post_daily_tweet()
-            if "error" in result:
-                print(f"[twitter] Scheduled post failed: {result['error']}", flush=True)
-        except Exception as exc:
-            print(f"[Error: {type(exc).__name__}] Daily tweet scheduler error: {exc}", flush=True)
+        # Every platform runs independently -- X being unfunded, misconfigured, or down
+        # should never stop Bluesky (or whatever gets added next) from going out.
+        for platform_name, post_fn in (("twitter", post_daily_tweet), ("bluesky", post_daily_bluesky)):
+            try:
+                result = await post_fn()
+                if "error" in result:
+                    print(f"[{platform_name}] Scheduled post failed: {result['error']}", flush=True)
+            except Exception as exc:
+                print(f"[Error: {type(exc).__name__}] Daily {platform_name} scheduler error: {exc}", flush=True)
 
 
 @app.get("/api/admin/post-tweet-now")
 @app.post("/api/admin/post-tweet-now")
 async def api_admin_post_tweet_now(force: bool = True, token: Optional[str] = None,
                                    token_form: Optional[str] = Form(None, alias="token")):
-    """Manual trigger for the daily tweet -- mainly for testing TWITTER_* credentials
+    """Manual trigger for the daily X post -- mainly for testing TWITTER_* credentials
     right after adding them, without waiting for the next scheduled slot. force=true
     (the default here) re-sends even if today's post already went out; pass
     force=false to just check what WOULD be posted without bypassing that guard."""
     if not _require_admin_token(token or token_form):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return await post_daily_tweet(force=force)
+
+
+@app.get("/api/admin/post-bluesky-now")
+@app.post("/api/admin/post-bluesky-now")
+async def api_admin_post_bluesky_now(force: bool = True, token: Optional[str] = None,
+                                     token_form: Optional[str] = Form(None, alias="token")):
+    """Same as the X trigger above, for BLUESKY_HANDLE / BLUESKY_APP_PASSWORD."""
+    if not _require_admin_token(token or token_form):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    return await post_daily_bluesky(force=force)
 
 
 @app.on_event("startup")
