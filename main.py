@@ -1766,6 +1766,8 @@ UI_STRINGS = {
     "axis_momentum": {"en": "MOMENTUM", "ko": "모멘텀"},
     # Pre-existing gaps found in the same sweep.
     "no_scan_data": {"en": "No scan data yet.", "ko": "아직 스캔 데이터가 없습니다."},
+    "scan_previous_day": {"en": "Showing the last completed scan ({date}) — today's is still being reviewed.",
+                           "ko": "마지막으로 완료된 스캔({date})을 보여주는 중입니다 — 오늘 스캔은 아직 검토 중입니다."},
     "no_scan_data_check": {"en": "No scan data yet — check back after the next scan.", "ko": "아직 스캔 데이터가 없습니다 — 다음 스캔 후 다시 확인해주세요."},
     "heatmap_failed": {"en": "Could not load the heatmap.", "ko": "히트맵을 불러오지 못했습니다."},
     "ai_summary_pending": {"en": "AI summary is being prepared for today's scan — check back after the next cycle.",
@@ -4083,9 +4085,9 @@ async def public_preview():
     # product actually outputs is a stronger trust signal than any amount of
     # marketing copy, and it's honest since it's the same data a subscriber sees.
     conn = db()
-    latest_date = conn.execute(
-        "SELECT MAX(scan_date) FROM daily_scans WHERE quant_pass=1 AND timing_score IS NOT NULL"
-    ).fetchone()[0]
+    # Same rule as the scanner: a day that is still being scored would otherwise show
+    # here as a handful of tickers, and this is the page a first-time visitor lands on.
+    latest_date = display_scan_date(conn)
     if not latest_date:
         conn.close()
         return {"tickers": [], "scan_date": None, "detected_count": 0, "universe_count": len(UNIVERSE)}
@@ -4129,6 +4131,39 @@ async def public_preview():
             "universe_count": len(UNIVERSE)}
 
 
+# A scan writes its price rows in about a minute, but the AI review that gives each
+# ticker a timing score lands one ticker at a time over the following several minutes.
+# The scanner only lists tickers that have that score, so reading today unconditionally
+# meant the list emptied out and refilled in front of whoever was looking. Most visibly
+# after a restart, which re-runs the scan outside the normal schedule -- but it happened
+# every morning at 09:00 too.
+SCAN_READY_RATIO = 0.9
+
+
+def display_scan_date(conn) -> Optional[str]:
+    """The most recent scan day complete enough to show.
+
+    Showing yesterday's finished list until today's is scored is both more useful and
+    more honest than showing a fifth of today's: it is a whole picture of a stated date
+    rather than a partial one of this one.
+    """
+    rows = conn.execute("""
+        SELECT scan_date,
+               SUM(CASE WHEN quant_pass=1 THEN 1 ELSE 0 END) AS passed,
+               SUM(CASE WHEN quant_pass=1 AND timing_score IS NOT NULL THEN 1 ELSE 0 END) AS scored
+        FROM daily_scans GROUP BY scan_date ORDER BY scan_date DESC LIMIT 5
+    """).fetchall()
+    partial = None
+    for r in rows:
+        passed, scored = r["passed"] or 0, r["scored"] or 0
+        if passed and scored >= passed * SCAN_READY_RATIO:
+            return r["scan_date"]
+        if scored and partial is None:
+            partial = r["scan_date"]
+    # Nothing is complete yet (a genuinely first run): a partial day beats nothing.
+    return partial or (rows[0]["scan_date"] if rows else None)
+
+
 @app.get("/api/scan")
 async def api_scan(request: Request):
     user = get_logged_in_user(request)
@@ -4139,11 +4174,14 @@ async def api_scan(request: Request):
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep scanning."}, status_code=402)
     conn = db()
+    # Every figure below describes the same day, so the count in the header can never
+    # belong to a different scan than the list under it.
+    scan_date = display_scan_date(conn) or today_str()
     scanned_count = conn.execute(
-        "SELECT COUNT(*) FROM daily_scans WHERE scan_date=?", (today_str(),)
+        "SELECT COUNT(*) FROM daily_scans WHERE scan_date=?", (scan_date,)
     ).fetchone()[0]
     last_updated = conn.execute(
-        "SELECT MAX(created_at) FROM daily_scans WHERE scan_date=?", (today_str(),)
+        "SELECT MAX(created_at) FROM daily_scans WHERE scan_date=?", (scan_date,)
     ).fetchone()[0]
     rows = conn.execute("""
         SELECT ticker,universe,price,change_pct,alpha_score,quant_pass,timing_score,timing_verdict,
@@ -4152,7 +4190,7 @@ async def api_scan(request: Request):
         WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL
           AND (alpha_score+timing_score)/2.0 >= ?
         ORDER BY overall_score DESC
-    """, (today_str(), OVERALL_SCORE_THRESHOLD)).fetchall()
+    """, (scan_date, OVERALL_SCORE_THRESHOLD)).fetchall()
     conn.close()
     signals = []
     for r in rows:
@@ -4170,6 +4208,11 @@ async def api_scan(request: Request):
         signals.append(d)
     return {"scanned_count": scanned_count, "universe_count": len(UNIVERSE),
             "quant_pass_count": len(rows), "last_updated": last_updated,
+            "scan_date": scan_date,
+            # True while a newer scan exists but is still being AI-scored. The list below
+            # is the last finished day, and the page says so instead of implying the
+            # numbers are from today.
+            "showing_previous_day": scan_date != today_str(),
             "universe_status": UNIVERSE_STATUS, "cache": dict(CACHE_STATUS),
             "signals": signals}
 
@@ -5787,9 +5830,10 @@ def _landing_scan_counts() -> tuple[int | None, str | None]:
     detected = scan_date = None
     try:
         conn = db()
-        scan_date = conn.execute(
-            "SELECT MAX(scan_date) FROM daily_scans WHERE quant_pass=1 AND timing_score IS NOT NULL"
-        ).fetchone()[0]
+        # The landing headline counts the same list the demo shows, so it has to agree
+        # with it -- quoting a partial day here would advertise 11 detected stocks and
+        # then show 53 on the next page.
+        scan_date = display_scan_date(conn)
         if scan_date:
             detected = conn.execute(
                 "SELECT COUNT(*) FROM daily_scans WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL",
@@ -7757,9 +7801,9 @@ def og_head(title: str, description: str, path: str = "") -> str:
 @app.get("/demo", response_class=HTMLResponse)
 async def demo_page():
     conn = db()
-    latest_date = conn.execute(
-        "SELECT MAX(scan_date) FROM daily_scans WHERE quant_pass=1 AND timing_score IS NOT NULL"
-    ).fetchone()[0]
+    # Same rule as the scanner: a day that is still being scored would otherwise show
+    # here as a handful of tickers, and this is the page a first-time visitor lands on.
+    latest_date = display_scan_date(conn)
     rows = []
     if latest_date:
         rows = conn.execute("""
@@ -8071,7 +8115,8 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 }}
 </style></head><body>
 {_render_sidebar("scanner", lang)}
-<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel" id="detailPanel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Set an alert or add to portfolio</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now">
+<header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><div class="avatar-wrap"><button class="avatar" onclick="event.stopPropagation();toggleAvatarMenu()" title="{user}">{avatar_letter}</button><div class="avatar-menu" id="avatarMenu" style="display:none"><div class="email-row">{user}</div><a href="/subscription">My Subscription</a><a href="/contact">Contact Us</a><a href="/logout" class="danger-text">Log out</a></div></div></div></header><div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div id="scanAsOf" style="display:none;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;margin-bottom:8px"></div>
+<div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel" id="detailPanel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Set an alert or add to portfolio</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now">
 <div class="action-group">
 <span class="action-group-label">Price alert</span>
 <div class="action-row"><select id="targetDir" title="Alert when price rises to/above, or falls to/below, the target" style="padding:0 4px"><option value="above">&#8593; at/above</option><option value="below">&#8595; at/below</option></select><input id="target" type="number" placeholder="Target price $" style="width:100px" title="Get an email when the price reaches this value"><button class="action-btn" onclick="setAlert()" title="Email me when the price hits my target">Set Alert</button></div>
@@ -8105,6 +8150,7 @@ const SF_TEXT={json.dumps({k: t(k, lang) for k in (
     "sf_title","sf_vs_sector","sf_no_data","sf_footnote")})};
 const SCORE_SPLIT_NOTE={json.dumps(t("score_split", lang))};
 const SCORE_QUANT_ONLY={json.dumps(t("score_quant_only", lang))};
+const SCAN_PREVIOUS_DAY={json.dumps(t("scan_previous_day", lang))};
 const DEFAULT_SORT='{pref_default_sort}';
 const DEFAULT_VIEW='{pref_default_view}';
 const TRIAL_ENDS_STR='{trial_ends_str}';
@@ -8147,7 +8193,14 @@ function init(){{const c=document.getElementById('chart');chart=LightweightChart
 async function loadIndices(){{try{{const r=await fetch('/api/market-indices');const d=await r.json();const map={{sp500:d.sp500,ndx:d.nasdaq100}};Object.entries(map).forEach(([k,series])=>{{if(!series?.length)return;const boxEl=document.getElementById('idx-'+k);if(boxEl&&boxEl.clientWidth&&boxEl.clientHeight)idxCharts[k].resize(boxEl.clientWidth,boxEl.clientHeight);idxCharts[k+'_line'].setData(series.map(p=>({{time:p.time,value:p.close}})));idxCharts[k].timeScale().fitContent();const first=series[0].close,last=series[series.length-1].close;const chg=((last/first-1)*100).toFixed(2);idxCharts[k+'_line'].applyOptions({{color:chg>=0?'#26a69a':'#ef5350'}});const valEl=document.getElementById('idx-'+k+'-val');if(valEl)valEl.innerHTML=`${{last}} <span style="color:${{chg>=0?'#26a69a':'#ef5350'}}">${{chg>=0?'+':''}}${{chg}}%</span>`}})}}catch(e){{console.warn('index load failed',e)}}}}
 async function loadScoreHistory(t){{const el=document.getElementById('scoretrend');try{{const r=await fetch(`/api/score-history?ticker=${{encodeURIComponent(t)}}`);const d=await r.json();const scores=(d.points||[]).map(p=>p.alpha_score).filter(v=>v!=null);if(scores.length<2){{el.innerHTML=scores.length?scores[scores.length-1].toFixed(1):'-';return}}el.innerHTML=sparklineSVG(scores)+' '+scores[scores.length-1].toFixed(1)}}catch(e){{el.innerText='-'}}}}
 async function autoScanOnOpen(){{try{{await fetch('/api/auto-scan',{{method:'POST'}});}}catch(e){{console.warn('auto-scan trigger failed',e)}};scan()}}
-function updateUcount(d){{document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:''}}
+function updateUcount(d){{document.getElementById('ucount').innerText=d.universe_count?` · ${{d.quant_pass_count??0}} detected / ${{d.universe_count}} symbols`:'';
+  const asOf=document.getElementById('scanAsOf');
+  if(asOf){{
+    if(d.showing_previous_day&&d.scan_date){{
+      asOf.textContent=SCAN_PREVIOUS_DAY.replace('{{date}}',d.scan_date);
+      asOf.style.display='block';
+    }}else{{asOf.style.display='none';}}
+  }}}}
 async function scan(){{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();if(!lastSignals.length){{const ready=d.universe_status?.ready;const err=d.universe_status?.error;const scanned=d.scanned_count>0;document.getElementById('list').innerHTML='<div class="notice">'+(scanned?'Scan complete — no tickers cleared the quant threshold today. You can still look up any ticker above.':(ready?'The server is preparing the next scan — check back shortly.':(err?'Could not prepare constituent data. The server will retry automatically.':'Preparing S&P 500 / Nasdaq-100 constituents...')))+'</div>';loadTicker(ticker);return}}renderList();loadTicker(lastSignals[0].ticker)}}
 async function pollForUpdates(){{try{{const r=await fetch('/api/scan');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();updateUcount(d);if(d.last_updated&&d.last_updated!==lastUpdated){{lastUpdated=d.last_updated;lastSignals=d.signals||[];populateSectorFilter();renderList();if(currentView==='heatmap')loadHeatmap();loadTicker(ticker);showToast('Updated with the latest scan.')}}}}catch(e){{}}}}
 
