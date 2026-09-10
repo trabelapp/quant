@@ -3649,8 +3649,8 @@ def send_week1_email(email: str, token: str, winners, losers) -> bool:
 def send_trial_ending_email(email: str, token: str) -> bool:
     body = (
         "Your trial ends tomorrow. If you're keeping it, nothing to do, it just continues "
-        "at $9.99/month. If you're not, I'd really like to know why. One line is enough. "
-        "That answer is worth more to me than the $9.99.\n\n"
+        "at $30/month. If you're not, I'd really like to know why. One line is enough. "
+        "That answer is worth more to me than the $30.\n\n"
         f"Manage your subscription: {_trial_subscribe_link()}"
         + _unsub_footer(token)
     )
@@ -5781,9 +5781,9 @@ LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-
 "operatingSystem": "Web",
 "offers": {
 "@type": "Offer",
-"price": "9.99",
+"price": "30",
 "priceCurrency": "USD",
-"description": "7-day free trial, then $9.99/month, cancel anytime"
+"description": "7-day free trial, then $30/month, cancel anytime"
 }
 }
 </script>
@@ -5969,6 +5969,17 @@ footer a{color:var(--dim2);text-decoration:underline}
 .diff-col.for .mark{color:var(--green)}
 .diff-col.against .mark{color:var(--dim)}
 .feature .icon svg{display:block}
+.value-stack{max-width:620px;margin:0 auto;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:6px 36px}
+.value-row{display:flex;justify-content:space-between;align-items:baseline;gap:20px;padding:17px 0;border-bottom:1px solid var(--border);font-size:15.5px}
+.value-row b{color:var(--head);font-weight:600}
+.value-row span{font-variant-numeric:tabular-nums;color:var(--dim);white-space:nowrap;font-size:14.5px}
+.value-total{display:flex;justify-content:space-between;align-items:center;padding:20px 0 4px;margin-top:2px;border-top:2px solid var(--head)}
+.value-total .label{font-weight:800;color:var(--head);font-size:15.5px;letter-spacing:.2px}
+.value-total .amount{font-variant-numeric:tabular-nums;color:var(--dim);text-decoration:line-through;font-size:18px}
+.value-price{text-align:center;padding:24px 0 32px}
+.value-price .now{color:var(--green);font-size:12.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:8px}
+.value-price .amount{color:var(--head);font-weight:800;font-size:46px;letter-spacing:-1px;line-height:1}
+.value-price .amount span{font-size:17px;font-weight:700;color:var(--dim)}
 @media(max-width:820px){
   h1{font-size:38px}
   .steps,.features,.proof-grid,.diff-grid{grid-template-columns:1fr}
@@ -6002,6 +6013,9 @@ footer a{color:var(--dim2);text-decoration:underline}
   /* Pull the scanner mock up so its top edge shows above the fold: the product output is
      the thing that explains the product, and it used to start entirely below it. */
   .mock{margin-top:30px}
+  .value-stack{padding:4px 20px}
+  .value-row{font-size:14.5px;padding:14px 0}
+  .value-price .amount{font-size:38px}
 }
 </style></head><body>
 <header><div class="nav">
@@ -6147,10 +6161,31 @@ footer a{color:var(--dim2);text-decoration:underline}
 </div>
 </section>
 
+<section id="value">
+<div class="section-head">
+<div class="kicker">WHAT $30 ACTUALLY BUYS</div>
+<h2>Here's what you're really getting.</h2>
+<p>Priced the way each piece sells on its own elsewhere.</p>
+</div>
+<div class="value-stack" data-reveal>
+<div class="value-row"><b>Automatic quant detection across the full universe — no manual screening</b><span>$150/mo value</span></div>
+<div class="value-row"><b>AI-written risk analysis report on every pick</b><span>$20/mo value</span></div>
+<div class="value-row"><b>Snowflake-style fundamentals, financials at a glance</b><span>$30/mo value</span></div>
+<div class="value-row"><b>Hours saved not hunting for stocks one by one</b><span>$40/mo value</span></div>
+<div class="value-row"><b>Whole-market summary at a glance</b><span>$10/mo value</span></div>
+<div class="value-total"><span class="label">Total value</span><span class="amount">$250/mo</span></div>
+<div class="value-price">
+<div class="now">Your price</div>
+<div class="amount">$30<span>/month</span></div>
+</div>
+<a class="btn" href="/signup" style="display:block;text-align:center">Start Free Trial</a>
+</div>
+</section>
+
 <section>
 <div class="final-wrap">
 <h2>Know which one it is — before you buy, not after.</h2>
-<p>See today's list, free for 7 days. Then $9.99/month. Takes under a minute to sign up.</p>
+<p>See today's list, free for 7 days. Then $30/month. Takes under a minute to sign up.</p>
 <a class="btn" href="/signup">Get Started Free</a>
 </div>
 <div class="disclaimer">
@@ -6367,7 +6402,7 @@ AUTH_BRAND_HTML = """<div class="authbrand">
 <div class="points">
 <div class="point"><b>&#9670;</b> Live market data, never simulated</div>
 <div class="point"><b>&#9670;</b> Plain-language AI risk review on every pick</div>
-<div class="point"><b>&#9670;</b> 7-day free trial, then $9.99/month</div>
+<div class="point"><b>&#9670;</b> 7-day free trial, then $30/month</div>
 </div>
 </div>"""
 
@@ -6722,13 +6757,13 @@ async def llms_txt():
         "inside a real uptrend, then AI-checked for blow-off-top and dead-cat-bounce risk. "
         "Informational and educational only -- never investment advice, never a buy or sell "
         "signal.\n\n"
-        "QUANTIFY is a subscription web app: $9.99/month after a 7-day free trial. One "
+        "QUANTIFY is a subscription web app: $30/month after a 7-day free trial. One "
         "validated strategy, published openly with in-sample and out-of-sample backtest "
         "results -- no cherry-picked wins, no personalized picks, no hidden paywalled tiers.\n\n"
         "## Key pages\n"
         "- [Home](https://quantify.trading/): overview, a live example of today's scan, and "
         "the published backtest results\n"
-        "- [Pricing](https://quantify.trading/pricing): $9.99/month, 7-day free trial, one plan\n"
+        "- [Pricing](https://quantify.trading/pricing): $30/month, 7-day free trial, one plan\n"
         "- [FAQ](https://quantify.trading/faq): strategy explanation, badge definitions, data "
         "update frequency\n"
         "- [About](https://quantify.trading/about): what QUANTIFY is and isn't\n"
@@ -6955,8 +6990,8 @@ PUBLIC_KO: dict[str, str] = {
     "Backtest methodology published openly, in-sample and out-of-sample": "백테스트 방법론 전면 공개 (in-sample 및 out-of-sample)",
     ">Start Free Trial<": ">무료 체험 시작<",
     ">What happens after the trial?<": ">체험이 끝나면 어떻게 되나요?<",
-    "Your card is charged $9.99 when the 7-day trial ends, unless you cancel first from Settings. Cancel anytime — access continues through the end of whatever period you've already paid for.":
-        "7일 체험이 끝나면 설정에서 미리 해지하지 않는 한 카드로 $9.99가 청구됩니다. 언제든 해지할 수 있고, 이미 결제한 기간이 끝날 때까지는 계속 이용할 수 있습니다.",
+    "Your card is charged $30 when the 7-day trial ends, unless you cancel first from Settings. Cancel anytime — access continues through the end of whatever period you've already paid for.":
+        "7일 체험이 끝나면 설정에서 미리 해지하지 않는 한 카드로 $30가 청구됩니다. 언제든 해지할 수 있고, 이미 결제한 기간이 끝날 때까지는 계속 이용할 수 있습니다.",
     ">Questions?<": ">궁금한 점이 있나요?<",
     ">email us directly<": ">직접 이메일로 문의<",
     "QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer. Nothing on this page or in the app is investment advice.":
@@ -6981,14 +7016,14 @@ PUBLIC_KO: dict[str, str] = {
     ">Welcome back<": ">다시 오셨네요<",
     ">Log in to see today's detected tickers.<": ">오늘 감지된 종목을 보려면 로그인하세요.<",
     ">Create your account<": ">계정 만들기<",
-    ">7-day free trial, then $9.99/month. Cancel anytime.<": ">7일 무료 체험 후 월 $9.99. 언제든 해지할 수 있습니다.<",
+    ">7-day free trial, then $30/month. Cancel anytime.<": ">7일 무료 체험 후 월 $30. 언제든 해지할 수 있습니다.<",
     "Continue with Google": "Google로 계속하기",
     ">10+ characters, with at least 1 letter and 1 number<": ">10자 이상, 영문 1자와 숫자 1자 이상 포함<",
     ">Quant-detected stocks,<": ">퀀트가 찾아낸 종목,<",
     ">AI risk-checked.<": ">AI가 리스크까지 점검.<",
     "Live market data, never simulated": "실제 시장 데이터, 시뮬레이션 아님",
     "Plain-language AI risk review on every pick": "모든 종목에 쉬운 말로 된 AI 리스크 리뷰",
-    "7-day trial, then $9.99/month": "7일 무료 체험 후 월 $9.99",
+    "7-day trial, then $30/month": "7일 무료 체험 후 월 $30",
     "A daily scan of the S&amp;P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk before it ever reaches your screen.":
         "S&amp;P 500과 나스닥100을 매일 스캔하고, 화면에 표시되기 전에 AI가 급등 후 고점과 데드캣 바운스 위험을 교차 검증합니다.",
     ">Didn't get a verification email?<": ">인증 메일을 받지 못하셨나요?<",
@@ -7016,12 +7051,29 @@ PUBLIC_KO: dict[str, str] = {
     ">How do I cancel?<": ">어떻게 해지하나요?<",
     "From Settings or the Subscription page once you're logged in. Cancelling stops future billing; you keep access through the end of the period you already paid for.":
         "로그인 후 설정 또는 구독 페이지에서 해지할 수 있습니다. 해지하면 다음 청구가 중단되며, 이미 결제한 기간이 끝날 때까지는 계속 이용할 수 있습니다.",
+    # --- value stack (landing)
+    ">WHAT $30 ACTUALLY BUYS<": ">$30로 실제로 얻는 것<",
+    ">Here's what you're really getting.<": ">실제로 얻는 것은 이렇습니다.<",
+    ">Priced the way each piece sells on its own elsewhere.<": ">각 기능을 따로 구매할 때 기준으로 매긴 가격입니다.<",
+    "Automatic quant detection across the full universe — no manual screening": "전체 종목 자동 퀀트 감지 — 수작업 스크리닝 불필요",
+    "AI-written risk analysis report on every pick": "모든 추천 종목에 대한 AI 작성 리스크 분석 리포트",
+    "Snowflake-style fundamentals, financials at a glance": "한눈에 보는 스노우플레이크 스타일 재무제표",
+    "Hours saved not hunting for stocks one by one": "종목을 하나하나 찾아다닐 시간 절약",
+    "Whole-market summary at a glance": "한눈에 보는 전체 시장 요약",
+    "$150/mo value": "월 $150 상당",
+    "$20/mo value": "월 $20 상당",
+    "$30/mo value": "월 $30 상당",
+    "$40/mo value": "월 $40 상당",
+    "$10/mo value": "월 $10 상당",
+    ">Total value<": ">총 가치<",
+    ">Your price<": ">당신의 가격<",
+
     # --- final six, several of which are split by inline links, so the anchor tags are
     # part of the key rather than translating the fragments around them separately.
     "Demo needs no signup \u00b7 trial is 7 days free, no credit card.":
         "데모는 가입 없이 볼 수 있습니다 \u00b7 체험은 7일 무료, 카드 등록 없음.",
-    "See today's list, free for 7 days. Then $9.99/month. Takes under a minute to sign up.":
-        "오늘의 목록을 7일 동안 무료로 보세요. 이후 월 $9.99. 가입은 1분이면 끝납니다.",
+    "See today's list, free for 7 days. Then $30/month. Takes under a minute to sign up.":
+        "오늘의 목록을 7일 동안 무료로 보세요. 이후 월 $30. 가입은 1분이면 끝납니다.",
     "See the <a href=\"/faq\">FAQ</a>, or <a href=\"mailto:quantify.app.official@gmail.com\">email us directly</a>.":
         "<a href=\"/faq\">자주 묻는 질문</a>을 보시거나 <a href=\"mailto:quantify.app.official@gmail.com\">직접 이메일로 문의</a>해 주세요.",
     "One validated quant rule — a pullback in an established uptrend — run across 518 stocks, refreshed four times a day around the market open and close. Every ticker that clears the bar also gets an AI-written review checking for the specific ways that setup can fail (a blow-off top disguised as a pullback, a dead-cat bounce, a stock that's actually in a downtrend). The scoring and the backtest methodology behind it are published openly, in-sample and out-of-sample, not just cherry-picked results.":
@@ -7176,7 +7228,7 @@ async def pricing_page(request: Request):
 <h1>One plan. Everything included.</h1>
 <p class="sublead">No tiers to compare and nothing paywalled inside the app — every subscriber gets the full quant scanner, AI risk review, market view, and portfolio tools.</p>
 <div class="price-card">
-<div class="amount">$9.99<span>/month</span></div>
+<div class="amount">$30<span>/month</span></div>
 <p style="color:var(--dim);font-size:13px;margin:6px 0 0">7-day free trial, then billed monthly. Cancel anytime.</p>
 <ul>
 <li>Full S&amp;P 500 + Nasdaq-100 quant scan, updated four times a day around the market open and close</li>
@@ -7188,12 +7240,12 @@ async def pricing_page(request: Request):
 <a class="btn" href="/signup" style="display:block;text-align:center">Start Free Trial</a>
 </div>
 <h2>What happens after the trial?</h2>
-<p>Your card is charged $9.99 when the 7-day trial ends, unless you cancel first from Settings. Cancel anytime — access continues through the end of whatever period you've already paid for.</p>
+<p>Your card is charged $30 when the 7-day trial ends, unless you cancel first from Settings. Cancel anytime — access continues through the end of whatever period you've already paid for.</p>
 <h2>Questions?</h2>
 <p>See the <a href="/faq">FAQ</a>, or <a href="mailto:quantify.app.official@gmail.com">email us directly</a>.</p>
 <div class="disclaimer">QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer. Nothing on this page or in the app is investment advice.</div>
 """
-    return render_marketing_page("Pricing", "QUANTIFY pricing: $9.99/month after a 7-day free trial, one plan, everything included.", body, path="/pricing", lang=resolve_lang(request, get_logged_in_user(request)))
+    return render_marketing_page("Pricing", "QUANTIFY pricing: $30/month after a 7-day free trial, one plan, everything included.", body, path="/pricing", lang=resolve_lang(request, get_logged_in_user(request)))
 
 
 @app.get("/faq", response_class=HTMLResponse)
@@ -7690,7 +7742,7 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
 @app.get("/signup", response_class=HTMLResponse)
 async def signup_page(request: Request, error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">7-day free trial, then $9.99/month. Cancel anytime.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="new-password"><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
+    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">7-day free trial, then $30/month. Cancel anytime.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="new-password"><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
     return render_auth_page("QUANTIFY. Sign up", form, path="/signup", lang=resolve_lang(request))
 
 
