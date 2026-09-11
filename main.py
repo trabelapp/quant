@@ -7,6 +7,7 @@ import hashlib
 import html as html_lib
 import hmac
 import json
+import math
 import os
 import pickle
 import re
@@ -8061,6 +8062,21 @@ STOCK_PAGE_CSS = """
 .stock-index a{display:flex;justify-content:space-between;align-items:center;gap:8px;border:1px solid var(--border);border-radius:9px;padding:11px 13px;text-decoration:none;color:var(--head);font-weight:600}
 .stock-index a:hover{border-color:var(--green);background:var(--panel2)}
 .stock-index .sc{font-size:13px;color:var(--dim);font-weight:600}
+.sf-vs{color:var(--dim);font-size:14px;margin:0 0 14px}
+.sf-chart-wrap{max-width:280px;margin:0 auto 18px}
+.sf-chart-wrap svg{width:100%;height:auto;display:block}
+.sf-takeaways{margin:0 0 22px;padding-left:20px;color:var(--dim2);font-size:15px;line-height:1.7}
+.sf-takeaways li{margin-bottom:6px}
+.sf-legend-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:10px}
+.sf-row{border:1px solid var(--border);background:var(--panel2);border-radius:10px;padding:12px 14px}
+.sf-row.empty{opacity:.6}
+.sf-row-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px}
+.sf-label{font-size:12px;font-weight:800;letter-spacing:.4px;color:var(--head)}
+.sf-score{font-size:18px;font-weight:800}
+.sf-raw{font-size:13px;color:var(--dim2);margin-bottom:4px}
+.sf-help{font-size:11.5px;color:var(--dim)}
+.sf-footnote{font-size:13px;color:var(--dim);margin-top:4px}
+.sf-nodata-note{color:var(--dim);font-size:14.5px}
 """
 
 
@@ -8166,6 +8182,134 @@ def _stock_metrics_html(d):
     )
 
 
+def _sf_color(avg):
+    if avg is None:
+        return "var(--dim)"
+    if avg >= 66:
+        return "var(--green)"
+    if avg >= 33:
+        return "var(--orange)"
+    return "var(--red)"
+
+
+def _snowflake_svg(sf: dict) -> str:
+    """Static server-rendered version of the terminal's client-side renderSnowflake()
+    (same SNOW_N/snowPoint/snowPoly/sfColor geometry: 6 axes at 60-degree steps from
+    -90 degrees, grid rings at 25/50/75/100%, dashed spokes for axes with no data,
+    a filled polygon over only the known points, colored by the average of those
+    points). Re-implemented in plain Python producing static SVG markup instead of a
+    JS/DOM call, so the chart is actually present in the HTML response a crawler sees.
+    """
+    axes = sf.get("axes") or []
+    n = len(axes)
+    if n == 0:
+        return ""
+    cx, cy, R = 100.0, 100.0, 64.0
+
+    def point(r, i):
+        angle = math.radians(-90 + i * 360 / n)
+        return cx + r * math.cos(angle), cy + r * math.sin(angle)
+
+    def poly(r):
+        return " ".join(f"{x:.1f},{y:.1f}" for x, y in (point(r, i) for i in range(n)))
+
+    known = [a["value"] for a in axes if a["value"] is not None]
+    avg = sum(known) / len(known) if known else None
+    color = _sf_color(avg)
+
+    parts = [f'<polygon points="{poly(R * f)}" fill="none" stroke="var(--border)" stroke-width="1"/>'
+             for f in (0.25, 0.5, 0.75, 1.0)]
+    for i, a in enumerate(axes):
+        x, y = point(R, i)
+        dash = ' stroke-dasharray="3 3"' if a["value"] is None else ""
+        parts.append(f'<line x1="{cx:.1f}" y1="{cy:.1f}" x2="{x:.1f}" y2="{y:.1f}" stroke="var(--border)" stroke-width="1"{dash}/>')
+
+    known_pts = []
+    for i, a in enumerate(axes):
+        if a["value"] is None:
+            continue
+        x, y = point(R * max(0.02, a["value"] / 100), i)
+        known_pts.append((x, y))
+    if known_pts:
+        pts_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in known_pts)
+        parts.append(f'<polygon points="{pts_str}" fill="{color}" fill-opacity="0.3" stroke="{color}" stroke-width="2.5" stroke-linejoin="round"/>')
+        for x, y in known_pts:
+            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="{color}"/>')
+
+    for i, a in enumerate(axes):
+        x, y = point(R + 20, i)
+        anchor = "middle" if abs(x - cx) < 8 else ("start" if x > cx else "end")
+        fill = "var(--dim)" if a["value"] is None else "var(--head)"
+        parts.append(
+            f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="{anchor}" font-size="13" '
+            f'font-weight="800" letter-spacing="0.2" fill="{fill}">{html_lib.escape(a["key"])}</text>'
+        )
+
+    return ('<svg viewBox="-30 -14 260 232" role="img" aria-label="Fundamentals breakdown radar" '
+            'xmlns="http://www.w3.org/2000/svg">' + "".join(parts) + "</svg>")
+
+
+def _snowflake_legend_html(sf: dict) -> str:
+    """Static equivalent of the terminal's .sf-legend rendering: same per-axis label,
+    score and raw-metric text (e.g. "19.1x P/E · 5.1x P/B"), as plain server-rendered
+    HTML instead of JS-injected innerHTML -- this is the actual keyword-rich, crawlable
+    text (P/E, ROE, debt/equity, dividend yield) a search engine can index.
+    """
+    rows = []
+    for a in sf.get("axes") or []:
+        empty = a["value"] is None
+        score_txt = "—" if empty else f"{round(a['value'])}"
+        color = "var(--dim)" if empty else _sf_color(a["value"])
+        rows.append(
+            f'<div class="sf-row{" empty" if empty else ""}">'
+            f'<div class="sf-row-top"><span class="sf-label">{html_lib.escape(a["key"])}</span>'
+            f'<span class="sf-score" style="color:{color}">{score_txt}</span></div>'
+            f'<div class="sf-raw">{html_lib.escape(a.get("raw") or "")}</div>'
+            f'<div class="sf-help">{html_lib.escape(t(a["help_key"], "en"))}</div>'
+            f'</div>'
+        )
+    return f'<div class="sf-legend-list">{"".join(rows)}</div>'
+
+
+def _snowflake_takeaways(sf: dict, ticker: str) -> list:
+    """Deterministic 'why this stock' bullets built only from the real sector-percentile
+    data _snowflake_axes() already computed -- no AI, no invented claims. A middling
+    score (31-69th percentile) or a missing axis says nothing, rather than forcing a
+    claim the numbers don't actually support.
+    """
+    sector = sf.get("sector") or "its sector"
+    by_key = {a["key"]: a for a in (sf.get("axes") or [])}
+    bits = []
+
+    def axis_bit(key, high_text, low_text):
+        a = by_key.get(key)
+        if not a or a["value"] is None:
+            return
+        if a["value"] >= 70:
+            bits.append(high_text)
+        elif a["value"] <= 30:
+            bits.append(low_text)
+
+    axis_bit("VALUE",
+              f"{ticker} trades cheaper than most {sector} peers on P/E and P/B.",
+              f"{ticker} trades more expensively than most {sector} peers on P/E and P/B.")
+    axis_bit("GROWTH",
+              f"{ticker} is growing revenue and earnings faster than most {sector} peers.",
+              f"{ticker} is growing revenue and earnings slower than most {sector} peers.")
+    axis_bit("PROFIT",
+              f"{ticker} is more profitable (ROE, margins) than most {sector} peers.",
+              f"{ticker} is less profitable (ROE, margins) than most {sector} peers.")
+    axis_bit("HEALTH",
+              f"{ticker} carries less debt and more liquidity than most {sector} peers.",
+              f"{ticker} carries more debt and less liquidity than most {sector} peers.")
+    # No low-percentile bullet for DIVIDEND -- a company paying no dividend isn't a
+    # company with a bad dividend, so there's nothing honest to say in that direction.
+    div_axis = by_key.get("DIVIDEND")
+    if div_axis and div_axis["value"] is not None and div_axis["value"] >= 70:
+        bits.append(f"{ticker} pays a higher dividend yield than most {sector} peers.")
+    return bits
+
+
 def _latest_scan_row(ticker):
     conn = db()
     row = conn.execute("""
@@ -8215,10 +8359,29 @@ async def stock_page(ticker: str):
                   'Rationale</b> for this ticker are part of the full report.</p>'
                   '<a class="btn" href="/signup">Read the full report — 7 days free</a></div>')
 
+    # Fundamentals (VALUE/GROWTH/PROFIT/HEALTH/DIVIDEND) plus the AI CHECK axis, ranked
+    # against the ticker's own sector -- the same Snowflake the logged-in terminal draws
+    # client-side (renderSnowflake()), rendered here as static server-side markup so it's
+    # actually part of what a search engine (and a signed-out visitor) sees.
+    sf = _snowflake_axes(d, ticker, "en")
+    if sf and sf["have_fundamentals"]:
+        takeaways = _snowflake_takeaways(sf, ticker)
+        takeaways_html = (f'<ul class="sf-takeaways">{"".join(f"<li>{html_lib.escape(b)}</li>" for b in takeaways)}</ul>'
+                           if takeaways else "")
+        snowflake_html = f'''<h2>{ticker} Snowflake</h2>
+<p class="sf-vs">{t("sf_vs_sector", "en")} <b>{html_lib.escape(sf["sector"])}</b></p>
+<div class="sf-chart-wrap">{_snowflake_svg(sf)}</div>
+{takeaways_html}
+{_snowflake_legend_html(sf)}
+<p class="sf-footnote">{html_lib.escape(t("sf_footnote", "en"))}</p>'''
+    else:
+        snowflake_html = f'<h2>{ticker} Snowflake</h2><p class="sf-nodata-note">{html_lib.escape(t("sf_no_data", "en"))}</p>'
+
     body = f'''<div class="eyebrow">{html_lib.escape(d["universe"] or "Scanned universe")} &middot; scan of {d["scan_date"]}</div>
 <h1>Is {ticker} a buy right now?</h1>
 <div class="stock-head"><div class="stock-score">{score if score is not None else "—"}<span>/100</span></div>{badge}</div>
 <p class="sublead">QUANTIFY's quant scan and plain-English read on {ticker}, from the latest run.</p>
+{snowflake_html}
 <p>{_stock_plain_english(d)}</p>
 {_stock_metrics_html(d)}
 <div class="updated">Last updated {updated}. The scanner recomputes four times each trading day.</div>
@@ -8237,7 +8400,8 @@ buy or sell any security. Every investment decision, and its outcome, is your ow
     return render_marketing_page(
         f"Is {ticker} a buy right now?",
         f"Is {ticker} a buy right now? QUANTIFY's quant score, {('AI verdict, ' if verdict else '')}"
-        f"key indicators and a plain-English breakdown from the latest daily scan.",
+        f"Snowflake fundamentals (valuation, growth, profitability, financial health, dividend) "
+        f"and a plain-English breakdown from the latest daily scan.",
         body,
         path=f"/stock/{ticker}",
         extra_head=f"<style>{STOCK_PAGE_CSS}</style>",
