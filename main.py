@@ -9401,8 +9401,14 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
             # for purchases out of habit.
             email_warning = (f'결제 화면의 이메일이 <b>{user_esc}</b>인지 꼭 확인하세요 — 다른 이메일로 결제하면 이 계정에는 반영되지 않습니다.' if ko
                             else f'Make sure the email at checkout is <b>{user_esc}</b> — paying with a different email won\'t activate this account.')
-            checkout_html = (f'<a href="{checkout_url}" target="_blank" rel="noopener" class="subscribe-btn">{t("subscribe_btn", lang)}</a>'
-                            f'<p class="email-warning">{email_warning}</p>')
+            # A plain <a href> to a gumroad.com/gum.co "/l/..." link is exactly what
+            # Gumroad's own overlay script (loaded below) looks for -- it intercepts the
+            # click and opens checkout in an in-page iframe instead of navigating away,
+            # with no extra class or data attribute needed. A non-Gumroad checkout_url
+            # (e.g. Lemon Squeezy) simply falls through and behaves as a normal link.
+            checkout_html = (f'<a href="{checkout_url}" class="subscribe-btn">{t("subscribe_btn", lang)}</a>'
+                            f'<p class="email-warning">{email_warning}</p>'
+                            '<script src="https://gumroad.com/js/gumroad.js"></script>')
         else:
             checkout_html = f'<div class="subscribe-btn disabled">{t("paid_plans_soon", lang)}</div>'
 
@@ -9431,6 +9437,7 @@ a.back{{color:var(--green);text-decoration:underline;font-size:15px;font-weight:
 .badge.warn{{background:#fbf1e0;color:var(--orange)}}
 p{{color:var(--text);font-size:15.5px;line-height:1.75;margin-top:16px}}
 .subscribe-btn{{display:block;text-align:center;margin-top:20px;background:var(--green);color:#ffffff;padding:14px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px}}
+.subscribe-btn .logo-full{{display:none}}
 .subscribe-btn.disabled{{background:var(--panel2);color:var(--dim);border:1px solid var(--border);cursor:default}}
 .reason-banner{{max-width:560px;margin:0 auto 14px;background:#fbf1e0;border:1px solid #ecdcb8;color:var(--orange);padding:14px 18px;border-radius:10px;font-size:14.5px;font-weight:600;line-height:1.6}}
 .email-warning{{margin-top:12px;font-size:13px;color:var(--dim);text-align:center;line-height:1.6}}
