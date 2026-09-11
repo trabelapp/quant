@@ -13,6 +13,7 @@ import re
 import secrets
 import smtplib
 import sqlite3
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timedelta
@@ -377,6 +378,17 @@ AI_STATUS = {"running": False, "processed": 0, "total": 0, "ready": 0, "started_
 AI_TASK = None
 AI_QUOTA_EXHAUSTED_DATE = None  # date_str() of the last day the AI provider reported a tokens-per-day cap hit
 AI_CONCURRENCY = max(1, int(os.getenv("AI_CONCURRENCY", "4")))
+# Groq's on_demand tier caps openai/gpt-oss-20b at 8000 tokens/minute, and one report
+# call costs roughly 1000-1300 tokens (measured from real 429 bodies: "Used 7899,
+# Requested 1258"). Firing calls back-to-back -- even serially, at AI_CONCURRENCY=1 --
+# saturates that budget within the first several tickers of a batch; every request
+# behind it then re-hits 429 until some exhaust all 5 retries and never get a report.
+# A fixed floor between call starts, a bit above the provider's own observed backoff
+# (~8.7s), keeps the batch under budget proactively instead of only reacting after
+# blowing past it.
+AI_MIN_CALL_INTERVAL = float(os.getenv("AI_MIN_CALL_INTERVAL", "10.0"))
+_AI_CALL_LOCK = threading.Lock()
+_AI_LAST_CALL_AT = 0.0
 QUANT_PASS_THRESHOLD = float(os.getenv("QUANT_PASS_THRESHOLD", "83"))
 # Each day's highest-scoring tickers that did NOT qualify are recorded to a SEPARATE
 # watch list on /record -- tracked out of curiosity, never mixed into the strategy's
@@ -2155,6 +2167,19 @@ def translate_body(body: str, lang: str, replacements: list) -> str:
     return body
 
 
+def _ai_pace_call():
+    """Block until at least AI_MIN_CALL_INTERVAL has passed since the last AI provider
+    call started. Called right before every chat.completions.create -- including on a
+    retry after a 429 -- so the whole process (batch prefetch and on-demand regen alike)
+    shares one throttle instead of each caller pacing itself independently."""
+    global _AI_LAST_CALL_AT
+    with _AI_CALL_LOCK:
+        wait = _AI_LAST_CALL_AT + AI_MIN_CALL_INTERVAL - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _AI_LAST_CALL_AT = time.time()
+
+
 STRATEGY_MODE = "Long-Term Momentum Pullback"
 
 MODE_CRITERIA = {
@@ -2232,6 +2257,7 @@ def ai_report_sync(ticker, price, change, mode, rsi, macd,
     extra_args = {"reasoning_effort": "low"} if "gpt-oss" in AI_MODEL else {}
     for attempt in range(max_retries):
         try:
+            _ai_pace_call()
             response = ai_client.chat.completions.create(
                 model=AI_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0.2,
                 response_format={"type": "json_object"}, **extra_args,
@@ -2314,6 +2340,7 @@ def market_summary_ai_sync(stats):
     extra_args = {"reasoning_effort": "low"} if "gpt-oss" in AI_MODEL else {}
     for attempt in range(max_retries):
         try:
+            _ai_pace_call()
             response = ai_client.chat.completions.create(
                 model=AI_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0.2,
                 response_format={"type": "json_object"}, **extra_args,
@@ -5327,11 +5354,18 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
         language = "en"
 
     conn=db()
+    # Match whichever scan day the list is actually showing, not necessarily today: the
+    # list holds off on a day until display_scan_date() calls it complete enough (see
+    # that function), but a specific ticker can individually already have today's fresher
+    # alpha_score/timing_score before the day as a whole is ready. Reading today's row
+    # here regardless used to let a ticker's ai-report detail (Quant/AI/overall) silently
+    # diverge from the exact same ticker's Score in the list next to it.
+    scan_date = display_scan_date(conn) or today_str()
     row=conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
                                 price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version,alpha_score,quant_pass,
                                 pct_off_20d_high,pct_above_200d_sma
                         FROM daily_scans WHERE scan_date=? AND ticker=?
-                        ORDER BY id DESC LIMIT 1""",(today_str(),ticker)).fetchone()
+                        ORDER BY id DESC LIMIT 1""",(scan_date,ticker)).fetchone()
 
     if row is None and demo:
         # Whitelisted tickers always have a row; if one somehow doesn't, the anonymous
@@ -5343,7 +5377,10 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
         # Ticker outside today's S&P 500 / Nasdaq-100 scan (e.g. manually searched) has no
         # daily_scans row at all, so there is nothing to hang an AI report on — it would
         # otherwise sit on "Preparing AI analysis cache..." forever. Compute it live, the
-        # same way the batch scanner does, so the AI path works for any valid ticker.
+        # same way the batch scanner does, so the AI path works for any valid ticker. This
+        # one is genuinely today's row (there is no earlier "displayed" row to match), so
+        # scan_date is reset to today_str() here for the rest of the function to follow.
+        scan_date = today_str()
         df = await download_stock(ticker, "1d")
         analysis = analyze_dataframe(ticker, df)
         if analysis:
@@ -5357,7 +5394,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(scan_date,ticker) DO NOTHING
             """, (
-                today_str(), ticker, universe, analysis["price"], analysis["change"], analysis["alpha_score"],
+                scan_date, ticker, universe, analysis["price"], analysis["change"], analysis["alpha_score"],
                 analysis["rsi"], analysis["macd"], analysis.get("pct_from_52w_high"), analysis.get("pct_from_52w_low"),
                 (1 if analysis.get("above_200d_sma") else (0 if analysis.get("above_200d_sma") is False else None)),
                 analysis.get("volume_ratio"),
@@ -5367,7 +5404,7 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
             row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
                                           price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,ai_prompt_version,alpha_score,quant_pass,
                                 pct_off_20d_high,pct_above_200d_sma
-                                  FROM daily_scans WHERE scan_date=? AND ticker=?""", (today_str(), ticker)).fetchone()
+                                  FROM daily_scans WHERE scan_date=? AND ticker=?""", (scan_date, ticker)).fetchone()
 
     # A cached report only satisfies this request if it matches both the selected
     # strategy mode AND language, and was generated under the current prompt schema.
@@ -5396,11 +5433,11 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
                                 ai_updated_at=?,ai_error=NULL,timing_score=?,timing_verdict=?,ai_prompt_version=?
                             WHERE scan_date=? AND ticker=?""",
                          (ai_result["report_json"], mode, language, time.time(),
-                          ai_result["timing_score"], ai_result["timing_verdict"], AI_PROMPT_VERSION, today_str(), ticker))
+                          ai_result["timing_score"], ai_result["timing_verdict"], AI_PROMPT_VERSION, scan_date, ticker))
             conn.commit()
             row = conn.execute("""SELECT ai_report,short_percent,ai_status,ai_mode,ai_language,ai_updated_at,ai_error,timing_score,timing_verdict,
                                           price,change_pct,rsi,macd,pct_from_52w_high,pct_from_52w_low,above_200d_sma,volume_ratio,alpha_score,quant_pass
-                                  FROM daily_scans WHERE scan_date=? AND ticker=?""", (today_str(), ticker)).fetchone()
+                                  FROM daily_scans WHERE scan_date=? AND ticker=?""", (scan_date, ticker)).fetchone()
     conn.close()
 
     report_sections = None
