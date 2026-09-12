@@ -471,6 +471,9 @@ SIGNUP_MAX_ATTEMPTS = 5
 CONTACT_ATTEMPTS = {}
 CONTACT_MAX_ATTEMPTS = 5
 
+PAYMENT_CLAIM_ATTEMPTS = {}
+PAYMENT_CLAIM_MAX_ATTEMPTS = 3
+
 
 def _register_failed_attempt(store: dict, key: str) -> int:
     now = time.time()
@@ -9844,6 +9847,22 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
         else:
             checkout_html = f'<div class="subscribe-btn disabled">{t("paid_plans_soon", lang)}</div>'
 
+    # Recovery path for the checkout-email-mismatch bug: only shown while this account
+    # is still being asked to subscribe, since that's exactly the screen someone who
+    # already paid with a different email would be stuck looking at.
+    claim_html = ""
+    if sub_status != "active":
+        claim_title = "이미 결제하셨나요?" if ko else "Already paid?"
+        claim_body = ('결제하신 이메일이 이 계정과 다르면 자동으로 반영되지 않아요. 결제할 때 사용한 이메일을 알려주시면 확인 후 반영해드릴게요.' if ko
+                      else "If you paid with a different email than this account, it won't activate automatically. "
+                           "Tell us the email you used at checkout and we'll verify and update your account.")
+        claim_placeholder = "결제하신 이메일" if ko else "Email you paid with"
+        claim_btn = "확인 요청 보내기" if ko else "Submit for verification"
+        claim_html = f'''<div class="card"><h2>{claim_title}</h2><p>{claim_body}</p>
+<input type="email" id="claimEmail" placeholder="{claim_placeholder}">
+<button type="button" class="claim-btn" onclick="reportPayment()">{claim_btn}</button>
+<div class="msg" id="claimMsg"></div></div>'''
+
     reason_banner = ""
     if reason == "trial_ended" and sub_status not in ("active", "cancelled"):
         # Excludes a just-cancelled account for the same reason the badge above does --
@@ -9879,12 +9898,17 @@ p{{color:var(--text);font-size:15.5px;line-height:1.75;margin-top:16px}}
 .cancel-btn:disabled{{opacity:.6;cursor:default}}
 .msg{{font-size:13.5px;min-height:18px;margin-top:10px;text-align:center}}
 .msg.ok{{color:var(--green)}}.msg.err{{color:var(--red)}}
+.card input[type=email]{{width:100%;background:var(--panel2);border:1.5px solid var(--border);color:var(--head);padding:12px 14px;font-size:15px;border-radius:8px;font-family:inherit;box-sizing:border-box}}
+.card input[type=email]:focus{{outline:none;border-color:var(--green)}}
+.claim-btn{{display:block;width:100%;margin-top:12px;background:transparent;color:var(--green);border:1.5px solid var(--green);padding:13px;border-radius:8px;font-weight:700;font-size:15px;cursor:pointer;font-family:inherit}}
+.claim-btn:hover{{background:rgba(14,138,95,.08)}}
+.claim-btn:disabled{{opacity:.6;cursor:default}}
 </style></head><body><header><a class="brand" href="/terminal">QUANTIFY<span>.</span></a><div class="headerRight"><span style="color:var(--dim);font-size:14px">{t("page_subscription", lang)} · {user_esc}</span><a class="back" href="/portfolio">{t("nav_portfolio", lang)}</a><a class="back" href="/settings">{t("nav_settings", lang)}</a><a class="back" href="/contact">{t("nav_contact", lang)}</a><a class="back" href="/terminal">{t("back_to_terminal", lang)}</a></div></header>
 <div class="wrap">{reason_banner}<div class="card">
 <h2>{t("current_plan", lang)}</h2>
 {plan_html}
 {checkout_html}
-</div></div>
+</div>{claim_html}</div>
 <script>
 async function cancelSubscription(){{
   if(!confirm({json.dumps(t("cancel_subscription_confirm", lang))}))return;
@@ -9903,6 +9927,20 @@ async function cancelSubscription(){{
     }}
     else{{msg.className='msg err';msg.textContent=d.error||{json.dumps(t("cancel_subscription_error", lang))};btn.disabled=false}}
   }}catch(e){{msg.className='msg err';msg.textContent={json.dumps(t("cancel_subscription_error", lang))};btn.disabled=false}}
+}}
+async function reportPayment(){{
+  const email=document.getElementById('claimEmail').value.trim();
+  const msg=document.getElementById('claimMsg');
+  if(!email){{msg.className='msg err';msg.textContent={json.dumps("이메일을 입력해주세요." if ko else "Enter an email address.")};return}}
+  const btn=document.querySelector('.claim-btn');
+  btn.disabled=true;msg.className='msg';msg.textContent='';
+  try{{
+    const f=new FormData();f.append('gumroad_email',email);
+    const r=await fetch('/api/subscription/report-payment',{{method:'POST',body:f}});
+    const d=await r.json();
+    if(r.ok){{msg.className='msg ok';msg.textContent=d.message}}
+    else{{msg.className='msg err';msg.textContent=d.error||{json.dumps("제출에 실패했어요. 다시 시도해주세요." if ko else "Could not submit. Please try again.")};btn.disabled=false}}
+  }}catch(e){{msg.className='msg err';msg.textContent={json.dumps("제출에 실패했어요. 다시 시도해주세요." if ko else "Could not submit. Please try again.")};btn.disabled=false}}
 }}
 </script>
 </body></html>''')
@@ -9943,6 +9981,35 @@ async def api_cancel_subscription(request: Request):
     conn.close()
     lang = get_user_lang(user)
     message = ("구독이 취소되었습니다." if lang == "ko" else "Your subscription has been cancelled.")
+    return {"ok": True, "message": message}
+
+
+@app.post("/api/subscription/report-payment")
+async def api_report_payment(request: Request, gumroad_email: str = Form(...)):
+    """Self-service recovery for the checkout-email-mismatch bug (see
+    _notify_payment_claim): the account only ever activates on an exact email match, so
+    someone who paid with a different email than their QUANTIFY account is otherwise
+    stuck on the subscribe screen with no way to fix it themselves. Always returns the
+    same message regardless of whether a matching sale was found -- this endpoint must
+    never let an arbitrary caller probe "did this email pay us," only the operator's
+    notification carries that distinction."""
+    user = get_logged_in_user(request)
+    if not user:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    lang = get_user_lang(user)
+    if _is_locked_out(PAYMENT_CLAIM_ATTEMPTS, user, PAYMENT_CLAIM_MAX_ATTEMPTS):
+        err = ("너무 많이 시도했어요. 잠시 후 다시 시도하거나 직접 문의해주세요." if lang == "ko"
+              else "Too many submissions recently. Try again later, or contact us directly.")
+        return JSONResponse({"error": err}, status_code=429)
+    gumroad_email = gumroad_email.strip().lower()
+    if not gumroad_email or "@" not in gumroad_email:
+        err = "이메일을 입력해주세요." if lang == "ko" else "Enter a valid email address."
+        return JSONResponse({"error": err}, status_code=400)
+    _register_failed_attempt(PAYMENT_CLAIM_ATTEMPTS, user)
+    sale = await asyncio.to_thread(_find_valid_gumroad_sale, gumroad_email)
+    await asyncio.to_thread(_notify_payment_claim, user, gumroad_email, sale)
+    message = ("제출됐어요 — 확인 후 몇 시간 내로 계정에 반영해드릴게요." if lang == "ko"
+              else "Submitted — we'll verify and update your account, usually within a few hours.")
     return {"ok": True, "message": message}
 
 
@@ -10055,6 +10122,51 @@ async def lemonsqueezy_webhook(request: Request):
     finally:
         conn.close()
     return {"ok": True}
+
+
+def _find_valid_gumroad_sale(email: str) -> Optional[dict]:
+    """Look up every Gumroad sale under this email against QUANTIFY's own seller account
+    (GUMROAD_ACCESS_TOKEN only ever sees this seller's own sales, so there's no cross-
+    account leak here), and return the most recent one that's still a genuine paid sale
+    -- not refunded, not chargebacked, not an ended/cancelled subscription -- or None."""
+    data = _gumroad_api_get("/sales", {"email": email})
+    sales = (data or {}).get("sales") or []
+    valid = [s for s in sales if not s.get("refunded") and not s.get("chargebacked")
+             and not s.get("ended") and not s.get("cancelled")]
+    if not valid:
+        return None
+    valid.sort(key=lambda s: s.get("created_at") or "", reverse=True)
+    return valid[0]
+
+
+def _notify_payment_claim(quantify_email: str, gumroad_email: str, sale: Optional[dict]):
+    """Self-service recovery for the checkout-email-mismatch bug: someone paid on
+    Gumroad with a different email than their QUANTIFY account, so the webhook's exact-
+    match never activated them and they're stuck looking at the subscribe screen despite
+    having paid. Granting access purely on their own claimed email would let anyone
+    logged into any account type in an email they don't own to steal someone else's
+    subscription, so this verifies the claim against Gumroad's real sales record first
+    and puts the verified facts in the operator's inbox for a one-click resolution with
+    the same /api/admin/grant-access tool the webhook-side version of this already uses."""
+    if not SENDER_EMAIL:
+        return
+    if sale:
+        body = (f"{quantify_email} says they paid on Gumroad with {gumroad_email}, and QUANTIFY's own "
+               f"Gumroad account confirms a real, unrefunded sale under that email:\n\n"
+               f"  product: {sale.get('product_name')}\n"
+               f"  sale_id: {sale.get('id')}\n"
+               f"  subscription_id: {sale.get('subscription_id') or '(one-time, not a subscription)'}\n"
+               f"  purchased: {sale.get('created_at')}\n\n"
+               f"Grant access with:\n"
+               f"/api/admin/grant-access?email={urllib.parse.quote(quantify_email)}&token=...")
+        subject = f"[QUANTIFY] Payment claim VERIFIED — grant {quantify_email}"
+    else:
+        body = (f"{quantify_email} says they paid on Gumroad with {gumroad_email}, but QUANTIFY's own "
+               f"Gumroad account has no matching unrefunded sale under that email.\n\n"
+               f"Check /api/admin/user-status?email={urllib.parse.quote(quantify_email)} and ask them to "
+               f"double-check the email on their Gumroad receipt before granting anything.")
+        subject = f"[QUANTIFY] Payment claim NOT verified — {quantify_email}"
+    send_email_notification(CONTACT_NOTIFY_EMAIL, subject, body)
 
 
 def _notify_unmatched_payment(processor: str, paid_email: str, detail: str):
