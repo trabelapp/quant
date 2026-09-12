@@ -3871,36 +3871,43 @@ def _gumroad_api_get(path: str, params: dict) -> Optional[dict]:
         return None
 
 
+async def _run_gumroad_reconcile_once():
+    if not GUMROAD_ACCESS_TOKEN:
+        return
+    try:
+        conn = db()
+        rows = conn.execute(
+            "SELECT email,gumroad_subscription_id FROM users "
+            "WHERE subscription_status='active' AND gumroad_subscription_id IS NOT NULL AND gumroad_subscription_id<>''"
+        ).fetchall()
+        downgraded = 0
+        for row in rows:
+            data = await asyncio.to_thread(_gumroad_api_get, f"/subscribers/{row['gumroad_subscription_id']}", {})
+            sub = (data or {}).get("subscribers") or {}
+            if sub and (sub.get("status") != "alive" or sub.get("ended_at")):
+                set_subscription_status(conn, row["email"], "expired", "gumroad_reconcile",
+                                        f"subscriber_id={row['gumroad_subscription_id']} status={sub.get('status')} ended_at={sub.get('ended_at')}")
+                conn.commit()
+                downgraded += 1
+        conn.close()
+        if downgraded:
+            print(f"[gumroad] Reconciliation downgraded {downgraded} account(s) with an ended subscription", flush=True)
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Gumroad reconcile scheduler error: {exc}", flush=True)
+
+
 async def gumroad_reconcile_scheduler():
     # Gumroad's Ping webhook has no "subscription cancelled" event at all (only
     # sale/refund) — a user who cancels future billing without a refund never
     # generates a ping, so we'd otherwise keep their access active forever.
     # Gumroad's own docs recommend reconciling periodically via the API instead
-    # of treating pings as authoritative state.
+    # of treating pings as authoritative state. Runs once immediately on startup
+    # (not just after the first 24h sleep) so a subscription that ended while the
+    # server was down or mid-deploy doesn't sit undetected for up to a full day.
+    await _run_gumroad_reconcile_once()
     while True:
         await asyncio.sleep(24 * 3600)
-        if not GUMROAD_ACCESS_TOKEN:
-            continue
-        try:
-            conn = db()
-            rows = conn.execute(
-                "SELECT email,gumroad_subscription_id FROM users "
-                "WHERE subscription_status='active' AND gumroad_subscription_id IS NOT NULL AND gumroad_subscription_id<>''"
-            ).fetchall()
-            downgraded = 0
-            for row in rows:
-                data = await asyncio.to_thread(_gumroad_api_get, f"/subscribers/{row['gumroad_subscription_id']}", {})
-                sub = (data or {}).get("subscribers") or {}
-                if sub and (sub.get("status") != "alive" or sub.get("ended_at")):
-                    set_subscription_status(conn, row["email"], "expired", "gumroad_reconcile",
-                                            f"subscriber_id={row['gumroad_subscription_id']} status={sub.get('status')} ended_at={sub.get('ended_at')}")
-                    conn.commit()
-                    downgraded += 1
-            conn.close()
-            if downgraded:
-                print(f"[gumroad] Reconciliation downgraded {downgraded} account(s) with an ended subscription", flush=True)
-        except Exception as exc:
-            print(f"[Error: {type(exc).__name__}] Gumroad reconcile scheduler error: {exc}", flush=True)
+        await _run_gumroad_reconcile_once()
 
 
 # -----------------------------------------------------------------------------
@@ -4998,6 +5005,22 @@ async def api_admin_grant_access(request: Request, email: Optional[str] = None, 
     if not rowcount:
         return JSONResponse({"error": f"No account found for {email}"}, status_code=404)
     return {"ok": True, "email": email, "subscription_status": "active"}
+
+
+@app.get("/api/admin/reconcile-gumroad")
+@app.post("/api/admin/reconcile-gumroad")
+async def api_admin_reconcile_gumroad(token: Optional[str] = None, token_form: Optional[str] = Form(None, alias="token")):
+    """Manual, on-demand run of the same check gumroad_reconcile_scheduler() runs every
+    24h -- every locally 'active' Gumroad-linked account is checked against Gumroad's own
+    subscriber status and downgraded to 'expired' if Gumroad says it isn't alive anymore.
+    Lets someone confirm this is actually working (or force it right after a cancellation)
+    instead of waiting up to a day for the next scheduled pass."""
+    if not _require_admin_token(token or token_form):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not GUMROAD_ACCESS_TOKEN:
+        return JSONResponse({"error": "GUMROAD_ACCESS_TOKEN is not configured -- nothing to check against."}, status_code=503)
+    await _run_gumroad_reconcile_once()
+    return {"ok": True, "message": "Reconciliation pass complete -- see server logs for how many accounts were downgraded."}
 
 
 @app.get("/api/admin/run-batch")
