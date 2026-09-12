@@ -6666,7 +6666,7 @@ def _render_proof_section() -> tuple[str, str, str, str]:
             f'{tickers_sampled if tickers_sampled is not None else "-"} tickers. Last computed: {computed_str}.<br>'
             f'Past performance does not guarantee future results. This is historical, informational analysis — '
             f'not a forecast, and not investment advice.<br>'
-            f'<a href="/backtest">Try the simulator yourself &rarr;</a></p>')
+            f'<a href="/backtest-lab">Try the simulator yourself &rarr;</a></p>')
     return "".join(cards_html), note, _render_validation_note(results), _render_universe_note(tickers_sampled)
 
 
@@ -6935,7 +6935,7 @@ async def llms_txt():
 @app.get("/sitemap.xml")
 async def sitemap_xml(request: Request):
     base = str(request.base_url).rstrip("/")
-    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/stocks", "/record", "/backtest", "/terms", "/privacy"]
+    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/stocks", "/record", "/backtest-lab", "/terms", "/privacy"]
     try:
         conn = db()
         latest = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
@@ -8274,25 +8274,27 @@ def _stock_plain_english(d):
     return " ".join(bits)
 
 
-def _stock_metrics_html(d):
+def _stock_metrics_html(d, lang="en"):
+    ko = lang == "ko"
     def box(k, v):
         return f'<div class="metric-box"><div class="k">{k}</div><div class="v">{v}</div></div>'
-    high = f'{d["pct_from_52w_high"]}%' if d["pct_from_52w_high"] is not None else "N/A"
-    low = f'{d["pct_from_52w_low"]}%' if d["pct_from_52w_low"] is not None else "N/A"
-    trend = "N/A" if d["above_200d_sma"] is None else ("Uptrend" if d["above_200d_sma"] else "Downtrend")
-    vol = f'{d["volume_ratio"]}x avg' if d["volume_ratio"] is not None else "N/A"
+    na = "해당없음" if ko else "N/A"
+    high = f'{d["pct_from_52w_high"]}%' if d["pct_from_52w_high"] is not None else na
+    low = f'{d["pct_from_52w_low"]}%' if d["pct_from_52w_low"] is not None else na
+    trend = na if d["above_200d_sma"] is None else (("상승 추세" if ko else "Uptrend") if d["above_200d_sma"] else ("하락 추세" if ko else "Downtrend"))
+    vol = (f'평균의 {d["volume_ratio"]}배' if ko else f'{d["volume_ratio"]}x avg') if d["volume_ratio"] is not None else na
     chg = d["change_pct"]
-    chg_txt = f'{"+" if (chg or 0) >= 0 else ""}{chg}%' if chg is not None else "N/A"
+    chg_txt = f'{"+" if (chg or 0) >= 0 else ""}{chg}%' if chg is not None else na
     return (
         '<div class="metric-grid">'
-        + box("Price", f'${d["price"]}')
-        + box("Change", chg_txt)
+        + box("가격" if ko else "Price", f'${d["price"]}')
+        + box("변동" if ko else "Change", chg_txt)
         + box("RSI / MACD", f'{d["rsi"]} / {d["macd"]}')
-        + box("52W High", high)
-        + box("52W Low", low)
-        + box("Trend", trend)
-        + box("Volume", vol)
-        + box("Quant score", f'{d["alpha_score"]}/100')
+        + box("52주 고점" if ko else "52W High", high)
+        + box("52주 저점" if ko else "52W Low", low)
+        + box("추세" if ko else "Trend", trend)
+        + box("거래량" if ko else "Volume", vol)
+        + box("퀀트 점수" if ko else "Quant score", f'{d["alpha_score"]}/100')
         + "</div>"
     )
 
@@ -8307,7 +8309,7 @@ def _sf_color(avg):
     return "var(--red)"
 
 
-def _snowflake_svg(sf: dict) -> str:
+def _snowflake_svg(sf: dict, lang: str = "en") -> str:
     """Static server-rendered version of the terminal's client-side renderSnowflake()
     (same SNOW_N/snowPoint/snowPoly/sfColor geometry: 6 axes at 60-degree steps from
     -90 degrees, grid rings at 25/50/75/100%, dashed spokes for axes with no data,
@@ -8355,16 +8357,17 @@ def _snowflake_svg(sf: dict) -> str:
         x, y = point(R + 20, i)
         anchor = "middle" if abs(x - cx) < 8 else ("start" if x > cx else "end")
         fill = "var(--dim)" if a["value"] is None else "var(--head)"
+        label = t(a["label_key"], lang) or a["key"]
         parts.append(
             f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="{anchor}" font-size="13" '
-            f'font-weight="800" letter-spacing="0.2" fill="{fill}">{html_lib.escape(a["key"])}</text>'
+            f'font-weight="800" letter-spacing="0.2" fill="{fill}">{html_lib.escape(label)}</text>'
         )
 
     return ('<svg viewBox="-30 -14 260 232" role="img" aria-label="Fundamentals breakdown radar" '
             'xmlns="http://www.w3.org/2000/svg">' + "".join(parts) + "</svg>")
 
 
-def _snowflake_legend_html(sf: dict) -> str:
+def _snowflake_legend_html(sf: dict, lang: str = "en") -> str:
     """Static equivalent of the terminal's .sf-legend rendering: same per-axis label,
     score and raw-metric text (e.g. "19.1x P/E · 5.1x P/B"), as plain server-rendered
     HTML instead of JS-injected innerHTML -- this is the actual keyword-rich, crawlable
@@ -8375,12 +8378,13 @@ def _snowflake_legend_html(sf: dict) -> str:
         empty = a["value"] is None
         score_txt = "—" if empty else f"{round(a['value'])}"
         color = "var(--dim)" if empty else _sf_color(a["value"])
+        label = t(a["label_key"], lang) or a["key"]
         rows.append(
             f'<div class="sf-row{" empty" if empty else ""}">'
-            f'<div class="sf-row-top"><span class="sf-label">{html_lib.escape(a["key"])}</span>'
+            f'<div class="sf-row-top"><span class="sf-label">{html_lib.escape(label)}</span>'
             f'<span class="sf-score" style="color:{color}">{score_txt}</span></div>'
             f'<div class="sf-raw">{html_lib.escape(a.get("raw") or "")}</div>'
-            f'<div class="sf-help">{html_lib.escape(t(a["help_key"], "en"))}</div>'
+            f'<div class="sf-help">{html_lib.escape(t(a["help_key"], lang))}</div>'
             f'</div>'
         )
     return f'<div class="sf-legend-list">{"".join(rows)}</div>'
@@ -8445,7 +8449,7 @@ def _latest_scan_row(ticker):
 
 
 @app.get("/stock/{ticker}", response_class=HTMLResponse)
-async def stock_page(ticker: str):
+async def stock_page(request: Request, ticker: str):
     ticker = normalize_ticker(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
         return HTMLResponse("Not found", status_code=404)
@@ -8453,10 +8457,13 @@ async def stock_page(ticker: str):
     if not d:
         return HTMLResponse("Not found", status_code=404)
 
+    lang = resolve_lang(request, get_logged_in_user(request))
+    ko = lang == "ko"
     verdict = d["timing_verdict"]
     score = d["overall_score"] if d["overall_score"] is not None else d["alpha_score"]
+    not_listed = "오늘 목록에 없음" if ko else "Not on today's list"
     badge = (f'<span class="stock-badge {_verdict_badge_class(verdict)}">{html_lib.escape(verdict)}</span>'
-             if verdict else '<span class="stock-badge badge-pending">Not on today\'s list</span>')
+             if verdict else f'<span class="stock-badge badge-pending">{not_listed}</span>')
     updated_ts = d["ai_updated_at"] or d["created_at"]
     updated = (datetime.fromtimestamp(updated_ts, ZoneInfo("America/New_York")).strftime("%b %d, %Y at %I:%M %p ET")
                if updated_ts else d["scan_date"])
@@ -8469,57 +8476,85 @@ async def stock_page(ticker: str):
             sections = {}
     teaser = ""
     if sections.get("quant_review"):
-        teaser = (f'<h2>AI quant review</h2><p>{sections["quant_review"]}</p>'
-                  '<div class="locked-report"><p><b>Supply/Demand, Risk Review, News Analysis and Timing '
-                  'Rationale</b> for this ticker are part of the full report.</p>'
-                  '<a class="btn" href="/signup">Read the full report — 7 days free</a></div>')
+        h2_review = "AI 퀀트 리뷰" if ko else "AI quant review"
+        locked_note = ('<b>수급 분석, 리스크 리뷰, 뉴스 분석, 타이밍 근거</b>는 전체 리포트에서 볼 수 있습니다.' if ko else
+                       '<b>Supply/Demand, Risk Review, News Analysis and Timing '
+                       'Rationale</b> for this ticker are part of the full report.')
+        read_full = "전체 리포트 읽기 — 7일 무료" if ko else "Read the full report — 7 days free"
+        teaser = (f'<h2>{h2_review}</h2><p>{sections["quant_review"]}</p>'
+                  f'<div class="locked-report"><p>{locked_note}</p>'
+                  f'<a class="btn" href="/signup">{read_full}</a></div>')
 
     # Fundamentals (VALUE/GROWTH/PROFIT/HEALTH/DIVIDEND) plus the AI CHECK axis, ranked
     # against the ticker's own sector -- the same Snowflake the logged-in terminal draws
     # client-side (renderSnowflake()), rendered here as static server-side markup so it's
-    # actually part of what a search engine (and a signed-out visitor) sees.
-    sf = _snowflake_axes(d, ticker, "en")
+    # actually part of what a search engine (and a signed-out visitor) sees. _snowflake_axes
+    # and t() already support "ko" internally (used by the logged-in terminal), so passing
+    # the page's real lang through -- instead of a hardcoded "en" -- localizes this whole
+    # section for free.
+    sf = _snowflake_axes(d, ticker, lang)
+    sf_title = f"{ticker} 스노우플레이크" if ko else f"{ticker} Snowflake"
     if sf and sf["have_fundamentals"]:
         takeaways = _snowflake_takeaways(sf, ticker)
         takeaways_html = (f'<ul class="sf-takeaways">{"".join(f"<li>{html_lib.escape(b)}</li>" for b in takeaways)}</ul>'
                            if takeaways else "")
-        snowflake_html = f'''<h2>{ticker} Snowflake</h2>
-<p class="sf-vs">{t("sf_vs_sector", "en")} <b>{html_lib.escape(sf["sector"])}</b></p>
-<div class="sf-chart-wrap">{_snowflake_svg(sf)}</div>
+        snowflake_html = f'''<h2>{sf_title}</h2>
+<p class="sf-vs">{t("sf_vs_sector", lang)} <b>{html_lib.escape(sf["sector"])}</b></p>
+<div class="sf-chart-wrap">{_snowflake_svg(sf, lang)}</div>
 {takeaways_html}
-{_snowflake_legend_html(sf)}
-<p class="sf-footnote">{html_lib.escape(t("sf_footnote", "en"))}</p>'''
+{_snowflake_legend_html(sf, lang)}
+<p class="sf-footnote">{html_lib.escape(t("sf_footnote", lang))}</p>'''
     else:
-        snowflake_html = f'<h2>{ticker} Snowflake</h2><p class="sf-nodata-note">{html_lib.escape(t("sf_no_data", "en"))}</p>'
+        snowflake_html = f'<h2>{sf_title}</h2><p class="sf-nodata-note">{html_lib.escape(t("sf_no_data", lang))}</p>'
 
-    body = f'''<div class="eyebrow">{html_lib.escape(d["universe"] or "Scanned universe")} &middot; scan of {d["scan_date"]}</div>
-<h1>Is {ticker} a buy right now?</h1>
+    h1 = f"지금 {ticker}을(를) 사도 될까요?" if ko else f"Is {ticker} a buy right now?"
+    sublead = (f'{ticker}에 대한 QUANTIFY의 퀀트 스캔과 쉬운 말 설명이에요, 최신 스캔 기준.' if ko else
+              f"QUANTIFY's quant scan and plain-English read on {ticker}, from the latest run.")
+    updated_line = (f'{updated} 기준 최신 정보입니다. 스캐너는 거래일마다 네 번 다시 계산됩니다.' if ko else
+                    f"Last updated {updated}. The scanner recomputes four times each trading day.")
+    h2_rest = "오늘의 나머지 스캔 결과 보기" if ko else "See the rest of today's scan"
+    rest_p = ('QUANTIFY는 매 거래일 S&amp;P 500과 나스닥100에서 장기 상승 추세 안의 눌림목 종목을 스캔하고, '
+             'AI가 각각을 급등 후 고점과 데드캣 바운스 위험까지 점검해요. 전체 감지 목록, 가격 알림, 포트폴리오 추적은 '
+             '멤버에게 제공돼요 — 가입 없이 <a href="/demo">라이브 데모</a>를 먼저 봐도 좋아요.' if ko else
+             'QUANTIFY scans the S&amp;P 500 and Nasdaq-100 every trading day for stocks pulling back inside a '
+             'long-term uptrend, then has AI check each one for blow-off-top and dead-cat-bounce risk. '
+             'The full detected list, price alerts and portfolio tracking are available to members — '
+             'or <a href="/demo">try the live demo</a> with no signup.')
+    cta = "7일 무료 체험 시작하기" if ko else "Start your 7-day free trial"
+    browse_all = "QUANTIFY가 다루는 모든 종목 보기 &rarr;" if ko else "Browse every ticker QUANTIFY covers &rarr;"
+    disclaimer = ('<b>투자 조언이 아닙니다.</b> QUANTIFY는 정보 제공 및 교육용 도구입니다. 점수와 AI 코멘트는 과거와 현재 '
+                 '데이터를 설명할 뿐, 특정 증권을 사거나 팔라는 추천이 절대 아닙니다. 모든 투자 결정과 그 결과는 전적으로 '
+                 '본인의 몫입니다.' if ko else
+                 "<b>Not investment advice.</b> QUANTIFY is informational and educational only. "
+                 "Scores and AI commentary describe historical and current data — they are never a recommendation to "
+                 "buy or sell any security. Every investment decision, and its outcome, is your own.")
+    universe_label = html_lib.escape(d["universe"] or ("스캔된 종목군" if ko else "Scanned universe"))
+    eyebrow_line = f'{universe_label} &middot; {("스캔일 " + d["scan_date"]) if ko else ("scan of " + d["scan_date"])}'
+
+    body = f'''<div class="eyebrow">{eyebrow_line}</div>
+<h1>{h1}</h1>
 <div class="stock-head"><div class="stock-score">{score if score is not None else "—"}<span>/100</span></div>{badge}</div>
-<p class="sublead">QUANTIFY's quant scan and plain-English read on {ticker}, from the latest run.</p>
+<p class="sublead">{sublead}</p>
 {snowflake_html}
 <p>{_stock_plain_english(d)}</p>
-{_stock_metrics_html(d)}
-<div class="updated">Last updated {updated}. The scanner recomputes four times each trading day.</div>
+{_stock_metrics_html(d, lang)}
+<div class="updated">{updated_line}</div>
 {teaser}
-<h2>See the rest of today's scan</h2>
-<p>QUANTIFY scans the S&amp;P 500 and Nasdaq-100 every trading day for stocks pulling back inside a
-long-term uptrend, then has AI check each one for blow-off-top and dead-cat-bounce risk.
-The full detected list, price alerts and portfolio tracking are available to members —
-or <a href="/demo">try the live demo</a> with no signup.</p>
-<p><a class="btn" href="/signup">Start your 7-day free trial</a></p>
-<p style="margin-top:18px"><a href="/stocks">Browse every ticker QUANTIFY covers &rarr;</a></p>
-<div class="disclaimer"><b>Not investment advice.</b> QUANTIFY is informational and educational only.
-Scores and AI commentary describe historical and current data — they are never a recommendation to
-buy or sell any security. Every investment decision, and its outcome, is your own.</div>'''
+<h2>{h2_rest}</h2>
+<p>{rest_p}</p>
+<p><a class="btn" href="/signup">{cta}</a></p>
+<p style="margin-top:18px"><a href="/stocks">{browse_all}</a></p>
+<div class="disclaimer">{disclaimer}</div>'''
 
     return render_marketing_page(
-        f"Is {ticker} a buy right now?",
+        (f"지금 {ticker}을(를) 사도 될까요?" if ko else f"Is {ticker} a buy right now?"),
         f"Is {ticker} a buy right now? QUANTIFY's quant score, {('AI verdict, ' if verdict else '')}"
         f"Snowflake fundamentals (valuation, growth, profitability, financial health, dividend) "
         f"and a plain-English breakdown from the latest daily scan.",
         body,
         path=f"/stock/{ticker}",
         extra_head=f"<style>{STOCK_PAGE_CSS}</style>",
+        lang=lang,
     )
 
 
@@ -8624,6 +8659,7 @@ async def unsubscribe_post(token: str = ""):
 
 def _do_unsubscribe(token: str):
     ok = False
+    lang = "en"
     if token:
         try:
             conn = db()
@@ -8632,6 +8668,7 @@ def _do_unsubscribe(token: str):
                 conn.execute("UPDATE users SET pref_marketing_emails=0 WHERE unsub_token=?", (token,))
                 conn.commit()
                 ok = True
+                lang = get_user_lang(row["email"])
             conn.close()
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Unsubscribe failed: {exc}")
@@ -8643,11 +8680,13 @@ def _do_unsubscribe(token: str):
             '<h1>Link not recognised</h1><p class="sublead">That unsubscribe link is not valid — '
             'it may have already been used or been cut short by your email client.</p>'
             '<p>Reply to any QUANTIFY email and we\'ll take you off the list manually.</p>')
-    return render_marketing_page("Unsubscribe", "Manage QUANTIFY email preferences.", body, path="/unsubscribe")
+    return render_marketing_page("Unsubscribe", "Manage QUANTIFY email preferences.", body, path="/unsubscribe", lang=lang)
 
 
 @app.get("/record", response_class=HTMLResponse)
-async def record_page():
+async def record_page(request: Request):
+    lang = resolve_lang(request, get_logged_in_user(request))
+    ko = lang == "ko"
     passed = _record_rows("passed")
     near = _record_rows("near_miss")
     ok, broken_at = verify_track_chain(passed)
@@ -8655,59 +8694,100 @@ async def record_page():
     started = passed[0]["record_date"] if passed else None
 
     if ok and ok_near:
-        chain = ('<div class="chain"><b>Chain verified.</b> Each row is hashed together with the '
-                 f'hash of the row before it, so editing or removing any past entry breaks every '
-                 f'hash after it. All {len(passed) + len(near)} rows currently verify.</div>')
+        chain = (f'<div class="chain"><b>{"체인 검증 완료." if ko else "Chain verified."}</b> '
+                 + (f'각 행은 바로 앞 행의 해시와 함께 다시 해시되기 때문에, 과거 항목을 수정하거나 삭제하면 '
+                    f'그 뒤의 모든 해시가 깨집니다. 현재 {len(passed) + len(near)}개 행 전부 검증됩니다.' if ko else
+                    f'Each row is hashed together with the hash of the row before it, so editing or removing '
+                    f'any past entry breaks every hash after it. All {len(passed) + len(near)} rows currently verify.')
+                 + '</div>')
     else:
-        chain = ('<div class="chain bad"><b>Chain verification FAILED</b> — an entry does not match '
-                 f'its hash{f" (row {broken_at + 1})" if broken_at is not None else ""}. '
-                 'Treat these numbers as untrustworthy until this is explained.</div>')
+        row_note = (f" ({broken_at + 1}번째 행)" if ko and broken_at is not None else
+                    (f" (row {broken_at + 1})" if broken_at is not None else ""))
+        chain = (f'<div class="chain bad"><b>{"체인 검증 실패" if ko else "Chain verification FAILED"}</b> — '
+                 + (f'항목이 자기 해시와 일치하지 않습니다{row_note}. 이 원인이 설명되기 전까지는 이 숫자들을 믿지 마세요.' if ko else
+                    f'an entry does not match its hash{row_note}. Treat these numbers as untrustworthy until this is explained.')
+                 + '</div>')
 
-    body = f'''<h1>Track record</h1>
-<p class="sublead">Every stock QUANTIFY's scanner has flagged, recorded automatically on the day
-it was flagged — winners and losers, nothing removed.</p>
+    h1 = "트랙 레코드" if ko else "Track record"
+    sublead = ("QUANTIFY 스캐너가 찾아낸 모든 종목을, 찾아낸 바로 그날 자동으로 기록합니다 — 승자도 패자도, 아무것도 지우지 않고." if ko else
+              "Every stock QUANTIFY's scanner has flagged, recorded automatically on the day "
+              "it was flagged — winners and losers, nothing removed.")
+    h2_flagged = "스캐너가 찾아낸 종목" if ko else "Flagged by the scanner"
+    method_html = (
+        f'<div class="method"><b>{"어떻게 기록되나요." if ko else "How this is recorded."}</b> '
+        + ('스캐너는 거래일마다 네 번 돌아갑니다. 어떤 종목을 처음 찾아낸 실행이 그 순간의 가격과 점수로 즉시 여기에 기록하고, '
+           '같은 날의 이후 실행들은 그 기록을 바꿀 수 없습니다. 이 제품 어디에도 행을 추가·수정·삭제할 수 있는 화면이나 '
+           'API는 없습니다 — 오직 스캐너만 기록합니다. '
+           + (f'기록은 {started}부터 시작됐습니다.' if started else '기록은 다음 스캔부터 시작됩니다.') if ko else
+           'The scanner runs four times every trading day. '
+           'The first run that flags a ticker writes it here immediately, with the price and score it had at '
+           'that moment — later runs the same day cannot change that entry. There is no screen, button or API '
+           'anywhere in this product that lets anyone add, edit or delete a row: the scanner is the only writer. '
+           + (f"Recording began {started}." if started else "Recording begins with the next scan."))
+        + '<br><br>'
+        + f'<b>{"숫자는 어떻게 계산되나요." if ko else "How the numbers are calculated."}</b> '
+        + ('종가만 사용합니다. 수수료, 슬리피지, 포지션 사이징, 복리 없음, 실제로 언제 팔았을지에 대한 가정도 없습니다 — '
+           '"변화"는 그저 기록된 가격에서 가장 최근 스캔 가격까지의 이동일 뿐입니다. S&amp;P 열은 참고용으로, '
+           '같은 기간 동안의 지수 움직임입니다.' if ko else
+           'Closing prices only. No commissions, no slippage, no '
+           'position sizing, no compounding, and no assumption about when you would have sold — "change" is '
+           'simply the move from the recorded price to the most recent scan price. The S&amp;P column is the '
+           "index's move over that same span, for context.")
+        + '</div>'
+    )
+    h2_nearmiss = "별도 관찰 목록 — 기준 통과 실패" if ko else "Separate watch list — did not qualify"
+    sep_note = (f'이 목록은 매일 기준을 <b>통과하지 못한</b> 종목 중 점수가 가장 높았던 {NEAR_MISS_COUNT}개로, 실제 픽이 된 적은 없습니다. '
+               f'그냥 궁금해서 별도 체인으로, 별도로 계산해서 추적할 뿐이며 <b>위 기록에는 포함되지 않습니다</b> — 합산도, '
+               f'평균도, 집계도 절대 함께하지 않습니다.' if ko else
+               f'These were the {NEAR_MISS_COUNT} highest-scoring tickers each day that '
+               '<b>did not pass</b> the filter, so they were never picks. They are tracked out of curiosity on a separate '
+               'chain, with separately calculated numbers, and are <b>not part of the record above</b> — they are '
+               'never counted, averaged or summed into it.')
+    h2_current = "현재 스캔 보기" if ko else "See the current scan"
+    demo_line = ('가입 없이 <a href="/demo">라이브 데모</a>를 보거나, QUANTIFY가 다루는 <a href="/stocks">모든 종목을 둘러보세요</a>.' if ko else
+                'Try the <a href="/demo">live demo</a> with no signup, or <a href="/stocks">browse every ticker</a> '
+                'QUANTIFY covers.')
+    cta = "7일 무료 체험 시작하기" if ko else "Start your 7-day free trial"
+    disclaimer = ('<b>투자 조언이 아닙니다.</b> 이 페이지의 모든 내용을 포함해, 과거 결과는 미래 수익을 예측하지 않습니다. '
+                 'QUANTIFY는 정보 제공 및 교육용 도구이며, 여기 어떤 것도 특정 증권을 사거나 팔라는 추천이 아닙니다. '
+                 '이 수치들은 수수료, 슬리피지, 세금, 포지션 사이징을 무시하기 때문에 실제로 달성 가능한 수익이 아닙니다. '
+                 '모든 투자 결정과 그 결과는 전적으로 본인의 몫입니다.' if ko else
+                 "<b>Not investment advice.</b> Past results — including everything on this "
+                 "page — do not predict future returns. QUANTIFY is informational and educational only, and nothing "
+                 "here is a recommendation to buy or sell any security. These figures ignore commissions, slippage, "
+                 "taxes and position sizing, so they are not achievable real-world returns. Every investment "
+                 "decision, and its outcome, is your own.")
+
+    body = f'''<h1>{h1}</h1>
+<p class="sublead">{sublead}</p>
 {chain}
-<h2>Flagged by the scanner</h2>
+<h2>{h2_flagged}</h2>
 {_record_section(passed, "picks")}
-<div class="method"><b>How this is recorded.</b> The scanner runs four times every trading day.
-The first run that flags a ticker writes it here immediately, with the price and score it had at
-that moment — later runs the same day cannot change that entry. There is no screen, button or API
-anywhere in this product that lets anyone add, edit or delete a row: the scanner is the only writer.
-{f"Recording began {started}." if started else "Recording begins with the next scan."}
-<br><br>
-<b>How the numbers are calculated.</b> Closing prices only. No commissions, no slippage, no
-position sizing, no compounding, and no assumption about when you would have sold — "change" is
-simply the move from the recorded price to the most recent scan price. The S&amp;P column is the
-index's move over that same span, for context.</div>
-<h2 style="margin-top:46px">Separate watch list — did not qualify</h2>
-<div class="sep-note">These were the {NEAR_MISS_COUNT} highest-scoring tickers each day that
-<b>did not pass</b> the filter, so they were never picks. They are tracked out of curiosity on a separate
-chain, with separately calculated numbers, and are <b>not part of the record above</b> — they are
-never counted, averaged or summed into it.</div>
+{method_html}
+<h2 style="margin-top:46px">{h2_nearmiss}</h2>
+<div class="sep-note">{sep_note}</div>
 {_record_section(near, "near misses")}
-<h2 style="margin-top:46px">See the current scan</h2>
-<p><a href="/demo">Try the live demo</a> with no signup, or <a href="/stocks">browse every ticker</a>
-QUANTIFY covers.</p>
-<p><a class="btn" href="/signup">Start your 7-day free trial</a></p>
-<div class="disclaimer"><b>Not investment advice.</b> Past results — including everything on this
-page — do not predict future returns. QUANTIFY is informational and educational only, and nothing
-here is a recommendation to buy or sell any security. These figures ignore commissions, slippage,
-taxes and position sizing, so they are not achievable real-world returns. Every investment
-decision, and its outcome, is your own.</div>'''
+<h2 style="margin-top:46px">{h2_current}</h2>
+<p>{demo_line}</p>
+<p><a class="btn" href="/signup">{cta}</a></p>
+<div class="disclaimer">{disclaimer}</div>'''
 
     return render_marketing_page(
-        "Track record",
+        "Track record" if not ko else "트랙 레코드",
         "Every stock QUANTIFY's scanner has flagged, recorded automatically on the day it was "
         "flagged — including the losers. No filtering, no hand-picked examples.",
         body,
         path="/record",
         extra_head=f"<style>{RECORD_PAGE_CSS}</style>",
+        lang=lang,
     )
 
 
 BACKTEST_PAGE_CSS = """
-.bt-band-note{background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin:18px 0 30px;font-size:14.5px;color:var(--dim2)}
+.bt-how{background:var(--panel2);border-left:3px solid var(--green);border-radius:0 10px 10px 0;padding:14px 18px;margin:18px 0;font-size:14.5px;line-height:1.7;color:var(--dim2)}
+.bt-band-note{background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin:0 0 30px;font-size:14.5px;color:var(--dim2)}
 .bt-band-note b{color:var(--head)}
+.bt-live{background:var(--panel);border:1px dashed var(--border);border-radius:8px;padding:11px 14px;margin:6px 0 22px;font-size:14px;font-weight:600;color:var(--head);text-align:center}
 .bt-controls{border:1px solid var(--border);background:var(--panel2);border-radius:14px;padding:26px 28px;margin-bottom:26px}
 .bt-slider-group{margin-bottom:22px}
 .bt-slider-group:last-of-type{margin-bottom:0}
@@ -8729,61 +8809,118 @@ BACKTEST_PAGE_CSS = """
 """
 
 
-@app.get("/backtest", response_class=HTMLResponse)
-async def backtest_page():
-    body = '''<div class="eyebrow">TRY IT YOURSELF</div>
-<h1>Test the strategy's own numbers</h1>
-<p class="sublead">QUANTIFY only ever trades one rule: a pullback inside a confirmed long-term
-uptrend. Drag the sliders below to re-run that same rule with a different pullback range,
-against the same 2 years of real price history behind the numbers on the home page.</p>
-<div class="bt-band-note">QUANTIFY's live strategy trades a <b>10-25%</b> pullback. Everything
-else here is you testing whether a different choice would have done better — it wouldn't have
-started trading it live otherwise.</div>
+@app.get("/backtest-lab", response_class=HTMLResponse)
+async def backtest_lab_page(request: Request):
+    lang = resolve_lang(request, get_logged_in_user(request))
+    ko = lang == "ko"
+
+    # This page got real user feedback that it wasn't clear what the two sliders were
+    # even for -- two independent range inputs read as unrelated controls rather than
+    # "together these define one band." A live plain-language sentence restating the
+    # current band in words, updated on every drag, does more to fix that than any
+    # amount of label tweaking would.
+    how_it_works = ('두 슬라이더는 함께 하나의 "눌림목 구간"을 정의해요 — 왼쪽은 하한, 오른쪽은 상한입니다. '
+                    '예를 들어 10%와 25%로 두면 "최근 고점 대비 10~25% 빠진 종목"만 매수 신호로 잡습니다. '
+                    '슬라이더를 움직이면 아래 문장과 결과가 실시간으로 바뀝니다.' if ko else
+                    'The two sliders together define one band — left is the low end, right is the high '
+                    'end. Set them to 10 and 25 and the rule becomes "a stock that pulled back 10-25% '
+                    'from its recent high." Drag either one and the sentence and results below update live.')
+    eyebrow = "직접 검증해보세요" if ko else "TRY IT YOURSELF"
+    h1 = "전략의 실제 숫자를 직접 테스트해보세요" if ko else "Test the strategy's own numbers"
+    sublead = ('QUANTIFY는 딱 하나의 규칙만 거래해요: 확인된 장기 상승 추세 안에서의 눌림목. 아래 슬라이더로 '
+              '그 규칙의 눌림목 구간만 바꿔서, 홈페이지 숫자의 근거가 된 것과 똑같은 2년치 실제 가격 데이터로 다시 돌려볼 수 있어요.' if ko else
+              "QUANTIFY only ever trades one rule: a pullback inside a confirmed long-term "
+              "uptrend. Drag the sliders below to re-run that same rule with a different pullback range, "
+              "against the same 2 years of real price history behind the numbers on the home page.")
+    band_note = ('QUANTIFY의 실제 전략은 <b>10~25%</b> 눌림목을 거래해요. 여기서 다른 값을 넣어보는 건 '
+                "\"다른 구간이 더 나았을까?\"를 직접 테스트해보는 거예요 — 더 나았다면애초에 그 구간으로 거래를 시작했겠죠." if ko else
+                "QUANTIFY's live strategy trades a <b>10-25%</b> pullback. Everything "
+                "else here is you testing whether a different choice would have done better — it wouldn't have "
+                "started trading it live otherwise.")
+    lbl_min = "눌림목 하한" if ko else "Pullback minimum"
+    lbl_max = "눌림목 상한" if ko else "Pullback maximum"
+    lbl_hold = "보유 기간" if ko else "Holding period"
+    lbl_days = "일" if ko else "Days"
+    reset_btn = "실제 10~25% 구간으로 리셋" if ko else "Reset to the live 10-25% band"
+    h2_method = "이건 어떻게 계산되나요" if ko else "How this is computed"
+    method_p = (f'홈페이지에 발표된 백테스트와 같은 표본이에요: S&amp;P 500 / 나스닥100 {BACKTEST_SAMPLE_SIZE}개 종목, '
+               '2년치 종가, 모든 신호에 매수·매도 왕복 비용 0.10%를 평균 내기 전에 미리 반영. 구간에 새로 진입한 순간만 '
+               '신호 1건으로 세고, 계속 구간 안에 머무는 날은 세지 않아요. 대상 종목은 오늘 기준 지수 구성을 과거에 그대로 '
+               '적용한 것이라, 그 기간에 지수에서 빠진 종목은 포함되지 않아요 — 이게 여기 모든 결과를 실제보다 좋게 보이게 '
+               '만드는데, 갖고 있는 데이터로는 얼마나인지 측정할 수 없어요.' if ko else
+               f"Same sample as the home page's published backtest: {BACKTEST_SAMPLE_SIZE} S&amp;P 500 / Nasdaq-100 "
+               "tickers, 2 years of daily closes, a 0.10% round-trip cost charged against every signal "
+               "before averaging. A signal only counts on a fresh crossing into the band, not every day a "
+               "stock happens to stay inside it. The universe is today's index membership applied to the "
+               "past, so companies removed from the index during that window are absent — this flatters "
+               "every result here by an amount that can't be measured with the data available.")
+    see_full = "전체 발표된 백테스트 보기 &rarr;" if ko else "See the full published backtest &rarr;"
+    disclaimer = ('<b>투자 조언이 아닙니다.</b> 이 페이지가 계산해주는 모든 숫자를 포함해, 과거 성과는 미래 수익을 예측하지 '
+                 '않습니다. QUANTIFY는 정보 제공 및 교육용 도구입니다. 이 중 어떤 것도 특정 증권을 사거나 팔라는 추천이 아닙니다.' if ko else
+                 "<b>Not investment advice.</b> Past results — including every number "
+                 "this page computes for you — do not predict future returns. QUANTIFY is informational and "
+                 "educational only. Nothing here is a recommendation to buy or sell any security.")
+
+    body = f'''<div class="eyebrow">{eyebrow}</div>
+<h1>{h1}</h1>
+<p class="sublead">{sublead}</p>
+<div class="bt-how">{how_it_works}</div>
+<div class="bt-band-note">{band_note}</div>
 <div class="bt-controls">
-<div class="bt-slider-group"><label>Pullback minimum <span id="btMinVal">10</span>%</label>
+<div class="bt-slider-group"><label>{lbl_min} <span id="btMinVal">10</span>%</label>
 <input type="range" id="btMin" min="0" max="59" value="10" step="1"></div>
-<div class="bt-slider-group"><label>Pullback maximum <span id="btMaxVal">25</span>%</label>
+<div class="bt-slider-group"><label>{lbl_max} <span id="btMaxVal">25</span>%</label>
 <input type="range" id="btMax" min="1" max="60" value="25" step="1"></div>
-<div class="bt-horizon-group"><label>Holding period</label>
+<div id="btLive" class="bt-live"></div>
+<div class="bt-horizon-group"><label>{lbl_hold}</label>
 <div class="bt-horizon-toggle">
-<button type="button" class="bt-h-btn active" data-h="30">30 Days</button>
-<button type="button" class="bt-h-btn" data-h="60">60 Days</button>
-<button type="button" class="bt-h-btn" data-h="90">90 Days</button>
+<button type="button" class="bt-h-btn active" data-h="30">30 {lbl_days}</button>
+<button type="button" class="bt-h-btn" data-h="60">60 {lbl_days}</button>
+<button type="button" class="bt-h-btn" data-h="90">90 {lbl_days}</button>
 </div></div>
 </div>
 <div id="btSummary" class="bt-summary"></div>
-<p class="bt-reset"><button type="button" onclick="btReset()">Reset to the live 10-25% band</button></p>
-<h2>How this is computed</h2>
-<p>Same sample as the home page's published backtest: {tickers} S&amp;P 500 / Nasdaq-100
-tickers, 2 years of daily closes, a 0.10% round-trip cost charged against every signal
-before averaging. A signal only counts on a fresh crossing into the band, not every day a
-stock happens to stay inside it. The universe is today's index membership applied to the
-past, so companies removed from the index during that window are absent — this flatters
-every result here by an amount that can't be measured with the data available.</p>
-<p><a href="/#proof">See the full published backtest &rarr;</a></p>
-<div class="disclaimer"><b>Not investment advice.</b> Past results — including every number
-this page computes for you — do not predict future returns. QUANTIFY is informational and
-educational only. Nothing here is a recommendation to buy or sell any security.</div>
+<p class="bt-reset"><button type="button" onclick="btReset()">{reset_btn}</button></p>
+<h2>{h2_method}</h2>
+<p>{method_p}</p>
+<p><a href="/#proof">{see_full}</a></p>
+<div class="disclaimer">{disclaimer}</div>
 <script>
 (function(){{
   const btMin=document.getElementById('btMin'), btMax=document.getElementById('btMax');
   const btMinVal=document.getElementById('btMinVal'), btMaxVal=document.getElementById('btMaxVal');
-  const summary=document.getElementById('btSummary');
+  const summary=document.getElementById('btSummary'), live=document.getElementById('btLive');
   let horizon=30, timer=null;
+  const KO={str(ko).lower()};
 
   function fmtPct(v){{return v==null?'—':(v>=0?'+':'')+v+'%'}}
+  function labels(){{
+    return KO?{{avg:'평균 수익률',win:'승률',sig:'신호 수',bench:'같은 기간 S&amp;P',right:'맞았을 때',wrong:'틀렸을 때',
+               empty:'이 구간에서는 표본 기간 동안 신호가 없었어요 — 더 넓은 구간을 시도해보세요.',
+               fail:'시뮬레이터에 연결할 수 없어요 — 잠시 후 다시 시도해주세요.'}}
+             :{{avg:'Avg Return',win:'Win Rate',sig:'Signals',bench:'vs S&amp;P, same span',right:'When Right',wrong:'When Wrong',
+               empty:'No signals fired in this range over the sample window — try a wider band.',
+               fail:'Could not reach the simulator — try again in a moment.'}};
+  }}
+
+  function updateLive(min,max){{
+    live.textContent = KO
+      ? `지금 설정: 최근 고점 대비 ${{min}}~${{max}}% 빠졌고 200일 이평선 위인 종목을, ${{horizon}}일 보유했다고 가정`
+      : `Currently testing: a stock ${{min}}-${{max}}% below its recent high, above its 200-day trend, held for ${{horizon}} days`;
+  }}
 
   function render(data){{
+    const L=labels();
     const s=data.strategy;
-    if(!s){{summary.innerHTML='<div class="bt-empty">No signals fired in this range over the sample window — try a wider band.</div>';return}}
+    if(!s){{summary.innerHTML='<div class="bt-empty">'+L.empty+'</div>';return}}
     const b=data.benchmark;
     summary.innerHTML=
-      '<div class="bt-box"><div class="k">Avg Return</div><div class="v '+(s.avg_return_pct>=0?'up':'down')+'">'+fmtPct(s.avg_return_pct)+'</div></div>'+
-      '<div class="bt-box"><div class="k">Win Rate</div><div class="v">'+s.win_rate_pct+'%</div></div>'+
-      '<div class="bt-box"><div class="k">Signals</div><div class="v">'+s.n+'</div></div>'+
-      '<div class="bt-box"><div class="k">vs S&amp;P, same span</div><div class="v">'+fmtPct(b?b.avg_return_pct:null)+'</div></div>'+
-      '<div class="bt-box"><div class="k">When Right</div><div class="v up">'+fmtPct(s.avg_win_pct)+'</div></div>'+
-      '<div class="bt-box"><div class="k">When Wrong</div><div class="v down">'+fmtPct(s.avg_loss_pct)+'</div></div>';
+      '<div class="bt-box"><div class="k">'+L.avg+'</div><div class="v '+(s.avg_return_pct>=0?'up':'down')+'">'+fmtPct(s.avg_return_pct)+'</div></div>'+
+      '<div class="bt-box"><div class="k">'+L.win+'</div><div class="v">'+s.win_rate_pct+'%</div></div>'+
+      '<div class="bt-box"><div class="k">'+L.sig+'</div><div class="v">'+s.n+'</div></div>'+
+      '<div class="bt-box"><div class="k">'+L.bench+'</div><div class="v">'+fmtPct(b?b.avg_return_pct:null)+'</div></div>'+
+      '<div class="bt-box"><div class="k">'+L.right+'</div><div class="v up">'+fmtPct(s.avg_win_pct)+'</div></div>'+
+      '<div class="bt-box"><div class="k">'+L.wrong+'</div><div class="v down">'+fmtPct(s.avg_loss_pct)+'</div></div>';
   }}
 
   async function update(src){{
@@ -8792,10 +8929,11 @@ educational only. Nothing here is a recommendation to buy or sell any security.<
       if(src==='max'){{min=max-1;btMin.value=min}}else{{max=min+1;btMax.value=max}}
     }}
     btMinVal.textContent=min; btMaxVal.textContent=max;
+    updateLive(min,max);
     try{{
       const res=await fetch('/api/backtest-sim?pullback_min='+min+'&pullback_max='+max+'&horizon='+horizon);
       render(await res.json());
-    }}catch(e){{summary.innerHTML='<div class="bt-empty">Could not reach the simulator — try again in a moment.</div>'}}
+    }}catch(e){{summary.innerHTML='<div class="bt-empty">'+labels().fail+'</div>'}}
   }}
   function debounced(src){{return function(){{clearTimeout(timer);timer=setTimeout(function(){{update(src)}},120)}}}}
 
@@ -8806,26 +8944,30 @@ educational only. Nothing here is a recommendation to buy or sell any security.<
       document.querySelectorAll('.bt-h-btn').forEach(function(x){{x.classList.remove('active')}});
       btn.classList.add('active');
       horizon=parseInt(btn.dataset.h,10);
+      updateLive(parseInt(btMin.value,10),parseInt(btMax.value,10));
       update();
     }});
   }});
   window.btReset=function(){{btMin.value=10;btMax.value=25;update()}};
   update();
 }})();
-</script>'''.replace("{tickers}", str(BACKTEST_SAMPLE_SIZE))
+</script>'''
 
     return render_marketing_page(
-        "Try the backtest yourself",
+        "Try the backtest yourself" if not ko else "백테스트 직접 해보기",
         "Drag the sliders to re-run QUANTIFY's pullback-in-uptrend rule against a different "
         "range, using the same 2 years of real price history behind the published backtest.",
         body,
-        path="/backtest",
+        path="/backtest-lab",
         extra_head=f"<style>{BACKTEST_PAGE_CSS}</style>",
+        lang=lang,
     )
 
 
 @app.get("/stocks", response_class=HTMLResponse)
-async def stocks_index():
+async def stocks_index(request: Request):
+    lang = resolve_lang(request, get_logged_in_user(request))
+    ko = lang == "ko"
     conn = db()
     latest = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
     rows = conn.execute("""
@@ -8849,20 +8991,29 @@ async def stocks_index():
         sections.append(f'<h2>{html_lib.escape(uni)} <span style="color:var(--dim);font-size:16px;font-weight:500">({len(items)})</span></h2>'
                         f'<div class="stock-index">{links}</div>')
 
-    body = f'''<h1>Every stock QUANTIFY covers</h1>
-<p class="sublead">Quant score, AI verdict and a plain-English breakdown for all
-{len(rows)} tickers in the S&amp;P 500 and Nasdaq-100 — updated four times each trading day.</p>
-{"".join(sections) if sections else "<p>The first scan has not completed yet — check back shortly.</p>"}
-<div class="disclaimer"><b>Not investment advice.</b> QUANTIFY is informational and educational only.
-Nothing here is a recommendation to buy or sell any security.</div>'''
+    h1 = "QUANTIFY가 다루는 모든 종목" if ko else "Every stock QUANTIFY covers"
+    sublead = (f'S&amp;P 500과 나스닥100 {len(rows)}개 종목 전체의 퀀트 점수, AI 판정, 쉬운 말 설명 — 거래일마다 네 번 갱신됩니다.' if ko else
+              f"Quant score, AI verdict and a plain-English breakdown for all "
+              f"{len(rows)} tickers in the S&amp;P 500 and Nasdaq-100 — updated four times each trading day.")
+    empty_note = "아직 첫 스캔이 끝나지 않았어요 — 잠시 후 다시 확인해주세요." if ko else "The first scan has not completed yet — check back shortly."
+    disclaimer = ('<b>투자 조언이 아닙니다.</b> QUANTIFY는 정보 제공 및 교육용 도구입니다. '
+                 '여기 어떤 것도 특정 증권을 사거나 팔라는 추천이 아닙니다.' if ko else
+                 "<b>Not investment advice.</b> QUANTIFY is informational and educational only. "
+                 "Nothing here is a recommendation to buy or sell any security.")
+
+    body = f'''<h1>{h1}</h1>
+<p class="sublead">{sublead}</p>
+{"".join(sections) if sections else f"<p>{empty_note}</p>"}
+<div class="disclaimer">{disclaimer}</div>'''
 
     return render_marketing_page(
-        "Every stock we cover",
+        "Every stock we cover" if not ko else "우리가 다루는 모든 종목",
         f"Quant scores and plain-English breakdowns for all {len(rows)} S&P 500 and Nasdaq-100 "
         "tickers QUANTIFY scans, updated four times every trading day.",
         body,
         path="/stocks",
         extra_head=f"<style>{STOCK_PAGE_CSS}</style>",
+        lang=lang,
     )
 
 
