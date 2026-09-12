@@ -100,6 +100,7 @@ CONSTITUENT_HTTP_TIMEOUT = 12
 DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 UNIVERSE_FILE = DATA_DIR / "universe_cache.json"
 BACKTEST_FILE = DATA_DIR / "backtest_cache.json"
+SIM_CACHE_FILE = DATA_DIR / "backtest_sim_cache.pkl"
 HISTORICAL_SNAPSHOT_FILE = DATA_DIR / "historical_snapshot.pkl"
 SECTOR_FILE = DATA_DIR / "sector_cache.json"
 SECTOR_TTL = 7 * 24 * 3600  # sector/market-cap barely changes -- weekly refresh is plenty
@@ -120,6 +121,10 @@ BACKTEST_ROUND_TRIP_COST_PCT = 0.10
 # numbers whose methodology no longer matches what the page says it did.
 BACKTEST_SCHEMA_VERSION = 2
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
+# Tiny derived-array byproduct of the same backtest run, kept so the /backtest simulator
+# can re-score any pullback band the visitor picks without re-downloading price history --
+# see SIM_CACHE_FILE and simulate_backtest() below.
+_SIM_CACHE_STATE = {"data": None, "mtime": None}
 MARKET_AI_SUMMARY_FILE = DATA_DIR / "market_ai_summary_cache.json"
 MARKET_AI_SUMMARY_CACHE = {"scan_date": None, "generated_at": None, "headline": None, "summary": None, "error": None}
 HIGH_SCORE_ALERT_THRESHOLD = 90
@@ -3221,6 +3226,54 @@ def _summarize_returns(returns, cost_pct: float = 0.0):
     }
 
 
+def _load_backtest_sim_cache() -> dict:
+    """Lazy, mtime-checked load of SIM_CACHE_FILE -- same pattern as
+    _get_persisted_snapshot() for the historical-price snapshot. A freshly finished
+    backtest run already updates _SIM_CACHE_STATE directly (see _run_backtest_locked),
+    so this only actually reads the file after a process restart."""
+    try:
+        if not SIM_CACHE_FILE.exists():
+            return _SIM_CACHE_STATE["data"] or {}
+        mtime = SIM_CACHE_FILE.stat().st_mtime
+        if _SIM_CACHE_STATE["data"] is None or _SIM_CACHE_STATE["mtime"] != mtime:
+            with open(SIM_CACHE_FILE, "rb") as f:
+                _SIM_CACHE_STATE["data"] = pickle.load(f)
+            _SIM_CACHE_STATE["mtime"] = mtime
+        return _SIM_CACHE_STATE["data"] or {}
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Backtest simulator cache load error: {exc}")
+        return {}
+
+
+def simulate_backtest(pullback_min_pct: float, pullback_max_pct: float, horizon: int) -> dict:
+    """Re-scores every ticker in the cached backtest sample against an arbitrary pullback
+    band, entirely from the small derived arrays _run_backtest_locked() already saved --
+    no price download, no network call. The entry rule mirrors _run_backtest_locked()
+    exactly (above the 200-day trend, inside the band, only a fresh crossing counts as one
+    signal), so a band matching the live PULLBACK_MIN/PULLBACK_MAX reproduces the published
+    homepage numbers exactly -- both read the same close/high series through the same rule.
+    """
+    cache = _load_backtest_sim_cache()
+    pmin, pmax = pullback_min_pct / 100.0, pullback_max_pct / 100.0
+    returns: list = []
+    for ticker, d in cache.items():
+        fwd = d["fwd_ret"].get(horizon)
+        if fwd is None:
+            continue
+        pct_off_high = d["pct_off_high"]
+        above_trend = d["above_trend"]
+        in_zone = above_trend & (pct_off_high >= pmin) & (pct_off_high <= pmax)
+        prev = np.concatenate(([False], in_zone[:-1]))
+        entries = in_zone & ~prev
+        rets = fwd[entries]
+        rets = rets[~np.isnan(rets)]
+        if len(rets):
+            returns.extend(rets.tolist())
+    stats = _summarize_returns(returns, BACKTEST_ROUND_TRIP_COST_PCT)
+    bench = ((BACKTEST_CACHE.get("results") or {}).get("horizons") or {}).get(str(horizon), {}).get("benchmark")
+    return {"strategy": stats, "benchmark": bench, "tickers_covered": len(cache)}
+
+
 async def run_backtest():
     # Share BATCH_LOCK with the regular market scan so the two never run at the same
     # time — both do a large batch of downloads, and holding two full price-history
@@ -3255,6 +3308,12 @@ async def _run_backtest_locked():
     bench_matched = {h: [] for h in horizons}
     signal_dates = []
     signal_count = 0
+    # Byproduct of this same loop, kept for the /backtest simulator: the pullback
+    # distance and trend series don't depend on PULLBACK_MIN/MAX at all, and neither do
+    # the forward returns -- only the entry rule built from them does. Caching these
+    # small derived arrays (not the raw OHLCV DataFrame) lets a slider re-score any band
+    # instantly later without ever re-downloading price history.
+    sim_cache: dict = {}
     for i_ticker, ticker in enumerate(sample):
         try:
             # cache=False: this loop touches every ticker in the universe exactly once
@@ -3270,6 +3329,12 @@ async def _run_backtest_locked():
             if len(close) < 300:
                 continue
             high = normalize_series(df, "High").reindex(close.index)
+            hh20_prior = high.rolling(20).max().shift(1)
+            sim_cache[ticker] = {
+                "pct_off_high": (1.0 - close / hh20_prior).to_numpy(),
+                "above_trend": (close > close.rolling(200).mean()).to_numpy(),
+                "fwd_ret": {h: ((close.shift(-h) / close - 1) * 100).to_numpy() for h in horizons},
+            }
             scores = calculate_alpha_score_series(close, high)
             passed = (scores >= QUANT_PASS_THRESHOLD).to_numpy()
             n = len(close)
@@ -3362,6 +3427,16 @@ async def _run_backtest_locked():
         tmp.replace(BACKTEST_FILE)
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] Backtest cache save error: {exc}")
+    try:
+        SIM_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_sim = SIM_CACHE_FILE.with_suffix(".tmp")
+        with open(tmp_sim, "wb") as f:
+            pickle.dump(sim_cache, f)
+        tmp_sim.replace(SIM_CACHE_FILE)
+        _SIM_CACHE_STATE["data"] = sim_cache
+        _SIM_CACHE_STATE["mtime"] = time.time()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Backtest simulator cache save error: {exc}")
     gc.collect()
 
 
@@ -4959,6 +5034,19 @@ async def api_run_backtest(request: Request, token: Optional[str] = None):
     return {"message": "Backtest started."}
 
 
+@app.get("/api/backtest-sim")
+async def api_backtest_sim(pullback_min: float = 10.0, pullback_max: float = 25.0, horizon: int = 30):
+    # Public, no auth -- this is pure in-memory arithmetic over an already-loaded, tiny
+    # (~few MB) derived cache, never a price download or an AI call, so it's safe under
+    # anonymous traffic by construction. See simulate_backtest().
+    if horizon not in (30, 60, 90):
+        return JSONResponse({"error": "horizon must be 30, 60, or 90"}, status_code=400)
+    if not (0 <= pullback_min < pullback_max <= 60):
+        return JSONResponse({"error": "pullback_min must be less than pullback_max, both within 0-60"}, status_code=400)
+    result = await asyncio.to_thread(simulate_backtest, pullback_min, pullback_max, horizon)
+    return result
+
+
 @app.get("/api/admin/stats")
 async def api_admin_stats(request: Request, token: Optional[str] = None):
     if not _require_admin_token(token):
@@ -6551,7 +6639,8 @@ def _render_proof_section() -> tuple[str, str, str, str]:
     note = (f'<p class="proof-note">Based on {results.get("signal_count","-")} historical signals across '
             f'{tickers_sampled if tickers_sampled is not None else "-"} tickers. Last computed: {computed_str}.<br>'
             f'Past performance does not guarantee future results. This is historical, informational analysis — '
-            f'not a forecast, and not investment advice.</p>')
+            f'not a forecast, and not investment advice.<br>'
+            f'<a href="/backtest">Try the simulator yourself &rarr;</a></p>')
     return "".join(cards_html), note, _render_validation_note(results), _render_universe_note(tickers_sampled)
 
 
@@ -6820,7 +6909,7 @@ async def llms_txt():
 @app.get("/sitemap.xml")
 async def sitemap_xml(request: Request):
     base = str(request.base_url).rstrip("/")
-    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/stocks", "/record", "/terms", "/privacy"]
+    urls = ["/", "/login", "/signup", "/pricing", "/faq", "/about", "/demo", "/stocks", "/record", "/backtest", "/terms", "/privacy"]
     try:
         conn = db()
         latest = conn.execute("SELECT MAX(scan_date) FROM daily_scans").fetchone()[0]
@@ -8587,6 +8676,125 @@ decision, and its outcome, is your own.</div>'''
         body,
         path="/record",
         extra_head=f"<style>{RECORD_PAGE_CSS}</style>",
+    )
+
+
+BACKTEST_PAGE_CSS = """
+.bt-band-note{background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin:18px 0 30px;font-size:14.5px;color:var(--dim2)}
+.bt-band-note b{color:var(--head)}
+.bt-controls{border:1px solid var(--border);background:var(--panel2);border-radius:14px;padding:26px 28px;margin-bottom:26px}
+.bt-slider-group{margin-bottom:22px}
+.bt-slider-group:last-of-type{margin-bottom:0}
+.bt-slider-group label{display:block;font-size:13px;font-weight:700;color:var(--dim2);text-transform:uppercase;letter-spacing:.3px;margin-bottom:10px}
+.bt-slider-group label span{color:var(--green);font-weight:800;font-size:15px}
+.bt-slider-group input[type=range]{width:100%;accent-color:var(--green)}
+.bt-horizon-group label{display:block;font-size:13px;font-weight:700;color:var(--dim2);text-transform:uppercase;letter-spacing:.3px;margin-bottom:10px}
+.bt-horizon-toggle{display:flex;gap:8px}
+.bt-h-btn{flex:1;padding:10px;border:1px solid var(--border);background:var(--panel);border-radius:8px;font-weight:700;font-size:14px;color:var(--dim2);cursor:pointer;font-family:inherit}
+.bt-h-btn.active{border-color:var(--green);background:var(--green);color:#fff}
+.bt-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:8px}
+.bt-box{border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:15px 16px}
+.bt-box .k{font-size:11.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.3px;font-weight:700}
+.bt-box .v{color:var(--head);font-weight:800;font-size:21px;margin-top:5px}
+.bt-box .v.up{color:var(--green)}.bt-box .v.down{color:var(--red)}
+.bt-empty{color:var(--dim);font-size:15px;padding:8px 2px}
+.bt-reset{margin-top:6px;font-size:14px;color:var(--dim)}
+.bt-reset button{background:none;border:none;color:var(--green);text-decoration:underline;cursor:pointer;font:inherit;padding:0}
+"""
+
+
+@app.get("/backtest", response_class=HTMLResponse)
+async def backtest_page():
+    body = '''<div class="eyebrow">TRY IT YOURSELF</div>
+<h1>Test the strategy's own numbers</h1>
+<p class="sublead">QUANTIFY only ever trades one rule: a pullback inside a confirmed long-term
+uptrend. Drag the sliders below to re-run that same rule with a different pullback range,
+against the same 2 years of real price history behind the numbers on the home page.</p>
+<div class="bt-band-note">QUANTIFY's live strategy trades a <b>10-25%</b> pullback. Everything
+else here is you testing whether a different choice would have done better — it wouldn't have
+started trading it live otherwise.</div>
+<div class="bt-controls">
+<div class="bt-slider-group"><label>Pullback minimum <span id="btMinVal">10</span>%</label>
+<input type="range" id="btMin" min="0" max="59" value="10" step="1"></div>
+<div class="bt-slider-group"><label>Pullback maximum <span id="btMaxVal">25</span>%</label>
+<input type="range" id="btMax" min="1" max="60" value="25" step="1"></div>
+<div class="bt-horizon-group"><label>Holding period</label>
+<div class="bt-horizon-toggle">
+<button type="button" class="bt-h-btn active" data-h="30">30 Days</button>
+<button type="button" class="bt-h-btn" data-h="60">60 Days</button>
+<button type="button" class="bt-h-btn" data-h="90">90 Days</button>
+</div></div>
+</div>
+<div id="btSummary" class="bt-summary"></div>
+<p class="bt-reset"><button type="button" onclick="btReset()">Reset to the live 10-25% band</button></p>
+<h2>How this is computed</h2>
+<p>Same sample as the home page's published backtest: {tickers} S&amp;P 500 / Nasdaq-100
+tickers, 2 years of daily closes, a 0.10% round-trip cost charged against every signal
+before averaging. A signal only counts on a fresh crossing into the band, not every day a
+stock happens to stay inside it. The universe is today's index membership applied to the
+past, so companies removed from the index during that window are absent — this flatters
+every result here by an amount that can't be measured with the data available.</p>
+<p><a href="/#proof">See the full published backtest &rarr;</a></p>
+<div class="disclaimer"><b>Not investment advice.</b> Past results — including every number
+this page computes for you — do not predict future returns. QUANTIFY is informational and
+educational only. Nothing here is a recommendation to buy or sell any security.</div>
+<script>
+(function(){{
+  const btMin=document.getElementById('btMin'), btMax=document.getElementById('btMax');
+  const btMinVal=document.getElementById('btMinVal'), btMaxVal=document.getElementById('btMaxVal');
+  const summary=document.getElementById('btSummary');
+  let horizon=30, timer=null;
+
+  function fmtPct(v){{return v==null?'—':(v>=0?'+':'')+v+'%'}}
+
+  function render(data){{
+    const s=data.strategy;
+    if(!s){{summary.innerHTML='<div class="bt-empty">No signals fired in this range over the sample window — try a wider band.</div>';return}}
+    const b=data.benchmark;
+    summary.innerHTML=
+      '<div class="bt-box"><div class="k">Avg Return</div><div class="v '+(s.avg_return_pct>=0?'up':'down')+'">'+fmtPct(s.avg_return_pct)+'</div></div>'+
+      '<div class="bt-box"><div class="k">Win Rate</div><div class="v">'+s.win_rate_pct+'%</div></div>'+
+      '<div class="bt-box"><div class="k">Signals</div><div class="v">'+s.n+'</div></div>'+
+      '<div class="bt-box"><div class="k">vs S&amp;P, same span</div><div class="v">'+fmtPct(b?b.avg_return_pct:null)+'</div></div>'+
+      '<div class="bt-box"><div class="k">When Right</div><div class="v up">'+fmtPct(s.avg_win_pct)+'</div></div>'+
+      '<div class="bt-box"><div class="k">When Wrong</div><div class="v down">'+fmtPct(s.avg_loss_pct)+'</div></div>';
+  }}
+
+  async function update(src){{
+    let min=parseInt(btMin.value,10), max=parseInt(btMax.value,10);
+    if(min>=max){{
+      if(src==='max'){{min=max-1;btMin.value=min}}else{{max=min+1;btMax.value=max}}
+    }}
+    btMinVal.textContent=min; btMaxVal.textContent=max;
+    try{{
+      const res=await fetch('/api/backtest-sim?pullback_min='+min+'&pullback_max='+max+'&horizon='+horizon);
+      render(await res.json());
+    }}catch(e){{summary.innerHTML='<div class="bt-empty">Could not reach the simulator — try again in a moment.</div>'}}
+  }}
+  function debounced(src){{return function(){{clearTimeout(timer);timer=setTimeout(function(){{update(src)}},120)}}}}
+
+  btMin.addEventListener('input',debounced('min'));
+  btMax.addEventListener('input',debounced('max'));
+  document.querySelectorAll('.bt-h-btn').forEach(function(btn){{
+    btn.addEventListener('click',function(){{
+      document.querySelectorAll('.bt-h-btn').forEach(function(x){{x.classList.remove('active')}});
+      btn.classList.add('active');
+      horizon=parseInt(btn.dataset.h,10);
+      update();
+    }});
+  }});
+  window.btReset=function(){{btMin.value=10;btMax.value=25;update()}};
+  update();
+}})();
+</script>'''.replace("{tickers}", str(BACKTEST_SAMPLE_SIZE))
+
+    return render_marketing_page(
+        "Try the backtest yourself",
+        "Drag the sliders to re-run QUANTIFY's pullback-in-uptrend rule against a different "
+        "range, using the same 2 years of real price history behind the published backtest.",
+        body,
+        path="/backtest",
+        extra_head=f"<style>{BACKTEST_PAGE_CSS}</style>",
     )
 
 
