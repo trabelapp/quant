@@ -104,6 +104,14 @@ SIM_CACHE_FILE = DATA_DIR / "backtest_sim_cache.pkl"
 HISTORICAL_SNAPSHOT_FILE = DATA_DIR / "historical_snapshot.pkl"
 SECTOR_FILE = DATA_DIR / "sector_cache.json"
 SECTOR_TTL = 7 * 24 * 3600  # sector/market-cap barely changes -- weekly refresh is plenty
+
+# "Today's Market Briefing" -- SEC EDGAR filings, filtered to QUANTIFY's own universe.
+# SEC's fair-access policy requires a descriptive User-Agent identifying the requester;
+# an unidentified/generic one risks a 403 rather than just a strongly-worded warning.
+SEC_TICKER_CIK_FILE = DATA_DIR / "sec_ticker_cik.json"
+SEC_TICKER_CIK_TTL = 7 * 24 * 3600  # ticker<->CIK mapping barely changes -- weekly is plenty
+SEC_FILING_TYPES = ("8-K", "10-Q", "10-K")
+SEC_EDGAR_HEADERS = {"User-Agent": f"QUANTIFY {CONTACT_NOTIFY_EMAIL}"}
 BACKTEST_SAMPLE_SIZE = 200  # Reverted from a brief full-universe (600) experiment: that roughly
                              # doubled our total yfinance request volume (regular scan + backtest
                              # both hitting ~518 tickers), which is the likely trigger for yfinance
@@ -687,6 +695,21 @@ def init_db():
         CREATE TABLE IF NOT EXISTS trial_ledger (
             email_hash TEXT PRIMARY KEY,
             first_trial_at REAL NOT NULL
+        );
+        -- SEC EDGAR filings for QUANTIFY's own universe only (filtered by CIK at fetch
+        -- time, see _fetch_sec_filings_once) -- the daily-index file this is built from
+        -- covers every US filer, so without the filter this would be a firehose of
+        -- micro-caps with no relation to what QUANTIFY actually scans.
+        CREATE TABLE IF NOT EXISTS sec_filings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cik INTEGER NOT NULL,
+            ticker TEXT NOT NULL,
+            company_name TEXT,
+            form_type TEXT NOT NULL,
+            filed_date TEXT NOT NULL,
+            doc_url TEXT NOT NULL,
+            fetched_at REAL NOT NULL,
+            UNIQUE(cik, form_type, filed_date, doc_url)
         );
         """)
         # Channel attribution. page_views.utm_source is per-visit; users.signup_utm_source
@@ -1777,6 +1800,10 @@ UI_STRINGS = {
     "ai_market_summary": {"en": "AI Market Summary", "ko": "AI 마켓 서머리"},
     "market_summary": {"en": "Market Summary", "ko": "마켓 서머리"},
     "by_universe": {"en": "By Universe", "ko": "지수별 현황"},
+    "sec_briefing": {"en": "Today's Market Briefing", "ko": "오늘의 증시 요약"},
+    "sec_briefing_hint": {"en": "SEC filings, QUANTIFY's own universe only", "ko": "SEC 공시, QUANTIFY가 다루는 종목만"},
+    "sec_briefing_empty": {"en": "No 8-K/10-Q/10-K filings from QUANTIFY's universe today.", "ko": "오늘은 QUANTIFY가 다루는 종목 중 8-K/10-Q/10-K 공시가 없습니다."},
+    "sec_briefing_failed": {"en": "Could not load today's filings.", "ko": "오늘의 공시를 불러오지 못했습니다."},
     "heatmap": {"en": "Heatmap", "ko": "히트맵"},
     "heatmap_hint": {"en": "click any tile to open its chart — bigger tiles are larger-cap", "ko": "타일을 클릭하면 차트가 열립니다 — 큰 타일일수록 시가총액이 큰 종목입니다"},
     "group_by": {"en": "Group by", "ko": "그룹 기준"},
@@ -3914,6 +3941,170 @@ async def gumroad_reconcile_scheduler():
 
 
 # -----------------------------------------------------------------------------
+# "Today's Market Briefing" -- SEC EDGAR filings for QUANTIFY's own universe
+#
+# SEC EDGAR has no filtered-by-ticker feed and no API key at all -- what it has for free
+# is (1) a once-a-day, complete, fixed index of every filing made that date, and (2) a
+# free ticker<->CIK map. Fetching the daily index and filtering it ourselves to CIKs in
+# UNIVERSE is one small request a day, not a live feed to poll -- deliberately not the
+# market-wide "latest filings" RSS/Atom feed, which is a rolling window across every US
+# filer (thousands of 8-Ks/day, almost all unrelated micro-caps) and easy to miss entries
+# from if polled at the wrong cadence.
+# -----------------------------------------------------------------------------
+_SEC_TICKER_CIK_STATE = {"data": None, "mtime": None}
+
+
+def _load_sec_ticker_cik_map() -> dict:
+    try:
+        if not SEC_TICKER_CIK_FILE.exists():
+            return _SEC_TICKER_CIK_STATE["data"] or {}
+        mtime = SEC_TICKER_CIK_FILE.stat().st_mtime
+        if _SEC_TICKER_CIK_STATE["data"] is None or _SEC_TICKER_CIK_STATE["mtime"] != mtime:
+            _SEC_TICKER_CIK_STATE["data"] = json.loads(SEC_TICKER_CIK_FILE.read_text(encoding="utf-8"))
+            _SEC_TICKER_CIK_STATE["mtime"] = mtime
+        return _SEC_TICKER_CIK_STATE["data"] or {}
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] SEC ticker/CIK map load error: {exc}", flush=True)
+        return {}
+
+
+def _refresh_sec_ticker_map() -> dict:
+    """SEC's own free ticker->CIK->name map, reversed and filtered down to QUANTIFY's
+    own UNIVERSE. Run through normalize_ticker() -- the same normalization UNIVERSE
+    itself is built with -- so a format quirk (BRK.B vs BRK-B) doesn't silently drop a
+    real match."""
+    try:
+        resp = requests.get("https://www.sec.gov/files/company_tickers.json",
+                            headers=SEC_EDGAR_HEADERS, timeout=15)
+        resp.raise_for_status()
+        raw = resp.json()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] SEC ticker/CIK map fetch failed: {exc}", flush=True)
+        return _load_sec_ticker_cik_map()
+
+    universe = set(UNIVERSE)
+    mapping = {}
+    for row in raw.values():
+        ticker = normalize_ticker(str(row.get("ticker", "")))
+        if ticker in universe:
+            mapping[ticker] = int(row["cik_str"])
+
+    missed = len(universe) - len(mapping)
+    print(f"[sec] Ticker/CIK map refreshed: {len(mapping)}/{len(universe)} universe tickers matched "
+          f"({missed} missed -- usually a ticker-format quirk, not a real gap).", flush=True)
+    try:
+        SEC_TICKER_CIK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SEC_TICKER_CIK_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(mapping), encoding="utf-8")
+        tmp.replace(SEC_TICKER_CIK_FILE)
+        _SEC_TICKER_CIK_STATE.update({"data": mapping, "mtime": time.time()})
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] SEC ticker/CIK map save error: {exc}", flush=True)
+    return mapping
+
+
+def _latest_sec_daily_index_date() -> Optional[str]:
+    """Which daily-index file actually exists yet, per SEC's own directory listing --
+    a real check instead of guessing a filename and retrying into 404s. Returns
+    YYYYMMDD or None."""
+    today = datetime.now(ZoneInfo("America/New_York"))
+    for months_back in (0, 1):
+        probe = today.replace(day=1) - timedelta(days=1) if months_back else today
+        year, quarter = probe.year, (probe.month - 1) // 3 + 1
+        try:
+            resp = requests.get(
+                f"https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{quarter}/index.json",
+                headers=SEC_EDGAR_HEADERS, timeout=15)
+            resp.raise_for_status()
+            names = [item["name"] for item in resp.json().get("directory", {}).get("item", [])
+                    if item["name"].startswith("master.") and item["name"].endswith(".idx")]
+            if names:
+                # main.YYYYMMDD.idx -- sorting the filename sorts the date, no parsing needed.
+                return sorted(names)[-1].removeprefix("master.").removesuffix(".idx")
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] SEC daily-index listing failed for {year}Q{quarter}: {exc}", flush=True)
+    return None
+
+
+def _fetch_sec_filings_once():
+    stale = (not SEC_TICKER_CIK_FILE.exists()
+             or time.time() - SEC_TICKER_CIK_FILE.stat().st_mtime > SEC_TICKER_CIK_TTL)
+    ticker_cik = _refresh_sec_ticker_map() if stale else _load_sec_ticker_cik_map()
+    if not ticker_cik:
+        print("[sec] No ticker/CIK map available -- skipping filing fetch.", flush=True)
+        return
+    cik_to_ticker = {cik: ticker for ticker, cik in ticker_cik.items()}
+
+    date_str = _latest_sec_daily_index_date()
+    if not date_str:
+        print("[sec] Could not determine the latest available daily-index date -- skipping.", flush=True)
+        return
+    filed_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+
+    conn = db()
+    already = conn.execute("SELECT 1 FROM sec_filings WHERE filed_date=? LIMIT 1", (filed_date,)).fetchone()
+    if already:
+        conn.close()
+        return  # already ingested this date -- repeated scheduler ticks are free no-ops
+
+    year, quarter = int(date_str[:4]), (int(date_str[4:6]) - 1) // 3 + 1
+    try:
+        resp = requests.get(
+            f"https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{quarter}/master.{date_str}.idx",
+            headers=SEC_EDGAR_HEADERS, timeout=30)
+        resp.raise_for_status()
+        lines = resp.text.splitlines()
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] SEC daily-index fetch failed for {date_str}: {exc}", flush=True)
+        conn.close()
+        return
+
+    inserted = 0
+    now = time.time()
+    for line in lines:
+        parts = line.split("|")
+        if len(parts) != 5:
+            continue  # header/comment lines before the actual data rows
+        cik_str, company_name, form_type, _date_filed, file_name = parts
+        if form_type not in SEC_FILING_TYPES:
+            continue
+        try:
+            cik = int(cik_str)
+        except ValueError:
+            continue
+        ticker = cik_to_ticker.get(cik)
+        if not ticker:
+            continue
+        # file_name from the index already reads "edgar/data/.../....txt" -- prepending
+        # another "edgar/" here produced a real (verified) broken /edgar/edgar/ URL.
+        doc_url = f"https://www.sec.gov/Archives/{file_name}"
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO sec_filings(cik,ticker,company_name,form_type,filed_date,doc_url,fetched_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (cik, ticker, company_name, form_type, filed_date, doc_url, now),
+        )
+        inserted += cur.rowcount
+    conn.commit()
+    conn.close()
+    print(f"[sec] Ingested {filed_date}: {inserted} filings from QUANTIFY's universe "
+          f"(types: {', '.join(SEC_FILING_TYPES)}).", flush=True)
+
+
+async def sec_filings_scheduler():
+    # SEC publishes each day's index at an unpredictable time rather than a fixed hour,
+    # so a few checks a day (each one cheap -- just an index.json listing unless there's
+    # genuinely a new date to ingest) catches it promptly without guessing an exact time.
+    # Runs once immediately on startup for the same reason gumroad_reconcile_scheduler
+    # does: don't wait a full cycle after a fresh deploy before the first real check.
+    while True:
+        try:
+            await asyncio.to_thread(_fetch_sec_filings_once)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] SEC filings scheduler error: {exc}", flush=True)
+        await asyncio.sleep(3 * 3600)
+
+
+# -----------------------------------------------------------------------------
 # Daily X (Twitter) post -- today's top-scoring detected ticker, using data the scan
 # already computed. No new API call to build the post, only to publish it; skips
 # quietly (not an error) until TWITTER_* is configured.
@@ -4174,6 +4365,7 @@ async def startup():
     asyncio.create_task(backtest_scheduler())
     asyncio.create_task(trial_lifecycle_scheduler())
     asyncio.create_task(gumroad_reconcile_scheduler())
+    asyncio.create_task(sec_filings_scheduler())
     asyncio.create_task(fundamentals_scheduler())
     asyncio.create_task(daily_tweet_scheduler())
     asyncio.create_task(asyncio.to_thread(check_email_config))
@@ -4795,6 +4987,21 @@ async def api_heatmap(request: Request):
                 d["timing_verdict"] = None
                 d["locked"] = True
     return {"tiles": tiles}
+
+
+@app.get("/api/sec-filings")
+async def api_sec_filings(request: Request):
+    blocked = api_access_error(request, require_disclaimer=False)
+    if blocked is not None:
+        return blocked
+    conn = db()
+    latest = conn.execute("SELECT MAX(filed_date) FROM sec_filings").fetchone()[0]
+    rows = conn.execute(
+        "SELECT ticker,company_name,form_type,filed_date,doc_url,fetched_at FROM sec_filings "
+        "WHERE filed_date=? ORDER BY fetched_at DESC", (latest,)
+    ).fetchall() if latest else []
+    conn.close()
+    return {"filed_date": latest, "filings": [dict(r) for r in rows]}
 
 
 @app.get("/api/demo/score-history")
@@ -7542,6 +7749,14 @@ h1.page-title{color:var(--head);font-size:25px;font-weight:800;margin:2px 0 18px
 .badge-warn{background:#fbf1e0;color:var(--orange)}
 .badge-danger{background:#fbe6e2;color:var(--red)}
 .badge-pending{background:var(--panel2);color:var(--dim)}
+.sec-list{display:flex;flex-direction:column;max-height:420px;overflow-y:auto}
+.sec-row{display:flex;align-items:center;gap:10px;padding:10px 6px;text-decoration:none;color:var(--head);border-bottom:1px solid var(--border);font-size:13.5px}
+.sec-row:last-child{border-bottom:none}
+.sec-row:hover{background:var(--panel2)}
+.sec-row b{min-width:52px;flex-shrink:0}
+.sec-row .badge{flex-shrink:0}
+.sec-name{flex:1;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sec-date{color:var(--dim);font-size:12px;white-space:nowrap;flex-shrink:0}
 button{background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:9px 16px;font:14.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;cursor:pointer;border-radius:7px;font-weight:600}
 button:hover{background:var(--border)}
 input[type=text],input[type=number]{background:var(--panel);border:1px solid var(--border);color:var(--head);padding:10px 12px;border-radius:7px;font-size:15px}
@@ -9710,6 +9925,7 @@ async def market_page(request: Request):
 <section class="panel"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>By Universe</h3><div id="byUniverseBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart — bigger tiles are larger-cap</small></h3><div class="groupby-row"><span style="font-size:11.5px;color:var(--dim)">Group by</span><select id="heatGroupKey" onchange="renderHeatmap()"><option value="universe">Index</option><option value="sector">Sector</option></select></div><div id="heatmapBody"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel"><h3>Today's Market Briefing <small style="color:var(--dim);font-weight:normal;text-transform:none">SEC filings, QUANTIFY's own universe only</small></h3><div id="secBriefingBody"><div class="empty-hint">Loading...</div></div></section>
 <script>
 let lastHeatTiles=[];
 function heatColor(chg){if(chg==null)return '#333';const c=Math.max(-5,Math.min(5,chg));const t=(c+5)/10;const r=Math.round(239+(38-239)*t),g=Math.round(83+(166-83)*t),b=Math.round(80+(154-80)*t);return `rgb(${r},${g},${b})`}
@@ -9731,7 +9947,9 @@ document.getElementById('marketSummaryBody').innerHTML=`
 <div class="summary-tile"><div class="label">Favorable</div><div class="value gain">${d.verdict_breakdown?.Favorable??0}</div></div>
 <div class="summary-tile"><div class="label">Caution / Risk</div><div class="value loss">${(d.verdict_breakdown?.Caution??0)+(d.verdict_breakdown?.Risk??0)}</div></div>`;
 const bu=d.by_universe||{};const names=Object.keys(bu);document.getElementById('byUniverseBody').innerHTML=names.length?names.map(name=>`<div class="summary-tile"><div class="label">${name}</div><div class="value">${bu[name].count} scanned</div><div style="margin-top:6px;font-size:11px;color:var(--dim)">${bu[name].advancers} up &middot; ${bu[name].decliners} down &middot; avg <span class="${cls(bu[name].avg_change_pct)}">${chg(bu[name].avg_change_pct)}</span></div></div>`).join(''):'<div class="empty-hint">No data yet.</div>'}catch(e){console.error('Market summary load failed',e)}}
-loadMarketSummary();loadHeatmap();setInterval(()=>{loadMarketSummary();loadHeatmap()},60000);
+function secBadgeClass(formType){return formType==='8-K'?'badge-warn':formType==='10-Q'?'badge-ok':'badge-pending'}
+async function loadSecBriefing(){const el=document.getElementById('secBriefingBody');try{const r=await fetch('/api/sec-filings');if(r.status===402){location.href='/subscription';return}const d=await r.json();const filings=d.filings||[];if(!filings.length){el.innerHTML='<div class="empty-hint">No 8-K/10-Q/10-K filings from QUANTIFY&#39;s universe today.</div>';return}el.innerHTML='<div class="sec-list">'+filings.map(f=>`<a class="sec-row" href="${f.doc_url}" target="_blank" rel="noopener"><span class="badge ${secBadgeClass(f.form_type)}">${f.form_type}</span><b>${f.ticker}</b><span class="sec-name">${f.company_name||''}</span><span class="sec-date">${f.filed_date}</span></a>`).join('')+'</div>'}catch(e){el.innerHTML='<div class="notice">Could not load today&#39;s filings.</div>';console.error('SEC briefing load failed',e)}}
+loadMarketSummary();loadHeatmap();loadSecBriefing();setInterval(()=>{loadMarketSummary();loadHeatmap()},60000);
 </script>
 """
     body = translate_body(body, lang, [
@@ -9741,6 +9959,10 @@ loadMarketSummary();loadHeatmap();setInterval(()=>{loadMarketSummary();loadHeatm
         (">By Universe<", f">{t('by_universe', lang)}<"),
         (">Heatmap <", f">{t('heatmap', lang)} <"),
         ("click any tile to open its chart — bigger tiles are larger-cap", t("heatmap_hint", lang)),
+        (">Today's Market Briefing <", f">{t('sec_briefing', lang)} <"),
+        ("SEC filings, QUANTIFY's own universe only", t("sec_briefing_hint", lang)),
+        ("No 8-K/10-Q/10-K filings from QUANTIFY&#39;s universe today.", t("sec_briefing_empty", lang)),
+        ("Could not load today&#39;s filings.", t("sec_briefing_failed", lang)),
         (">Group by<", f">{t('group_by', lang)}<"),
         ('value="universe">Index<', f'value="universe">{t("opt_index", lang)}<'),
         ('value="sector">Sector<', f'value="sector">{t("opt_sector", lang)}<'),
