@@ -1804,6 +1804,11 @@ UI_STRINGS = {
     "sec_briefing_hint": {"en": "SEC filings, QUANTIFY's own universe only", "ko": "SEC 공시, QUANTIFY가 다루는 종목만"},
     "sec_briefing_empty": {"en": "No 8-K/10-Q/10-K filings from QUANTIFY's universe today.", "ko": "오늘은 QUANTIFY가 다루는 종목 중 8-K/10-Q/10-K 공시가 없습니다."},
     "sec_briefing_failed": {"en": "Could not load today's filings.", "ko": "오늘의 공시를 불러오지 못했습니다."},
+    "sec_types_help": {"en": "8-K: a company reporting a major, one-off event (new CEO, M&A, restructuring). 10-Q: a quarterly earnings report. 10-K: a full annual report. These are the original filings straight from the SEC, not analysis or a stock tip — click one to read it yourself.",
+                       "ko": "8-K: 회사에 중요한 일이 갑자기 생겼을 때 즉시 내는 신고서예요 (CEO 교체, 인수합병, 구조조정 등). 10-Q: 분기 실적 보고서. 10-K: 연간 실적 보고서. 전부 SEC에 직접 제출된 공시 원문이지, 분석이나 매수 추천이 아니에요 — 궁금하면 클릭해서 직접 읽어보세요."},
+    "sec_form_8k": {"en": "Major event", "ko": "주요 이슈 신고"},
+    "sec_form_10q": {"en": "Quarterly earnings", "ko": "분기 실적"},
+    "sec_form_10k": {"en": "Annual report", "ko": "연간 실적"},
     "heatmap": {"en": "Heatmap", "ko": "히트맵"},
     "heatmap_hint": {"en": "click any tile to open its chart — bigger tiles are larger-cap", "ko": "타일을 클릭하면 차트가 열립니다 — 큰 타일일수록 시가총액이 큰 종목입니다"},
     "group_by": {"en": "Group by", "ko": "그룹 기준"},
@@ -7757,6 +7762,10 @@ h1.page-title{color:var(--head);font-size:25px;font-weight:800;margin:2px 0 18px
 .sec-row .badge{flex-shrink:0}
 .sec-name{flex:1;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sec-date{color:var(--dim);font-size:12px;white-space:nowrap;flex-shrink:0}
+.sec-type{color:var(--dim);font-size:12px;flex-shrink:0;white-space:nowrap}
+.help-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--panel2);border:1px solid var(--border);color:var(--dim);font-size:11px;font-weight:700;cursor:help;margin-left:5px;position:relative;vertical-align:middle}
+.help-icon .tip-bubble{display:none;position:absolute;bottom:calc(100% + 6px);left:0;background:var(--panel);border:1px solid var(--border);color:var(--head);padding:10px 12px;border-radius:8px;font-size:13px;font-weight:400;line-height:1.55;width:260px;white-space:normal;z-index:60;box-shadow:0 10px 24px rgba(18,32,26,.18);text-align:left}
+.help-icon:hover .tip-bubble,.help-icon.open .tip-bubble{display:block}
 button{background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:9px 16px;font:14.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;cursor:pointer;border-radius:7px;font-weight:600}
 button:hover{background:var(--border)}
 input[type=text],input[type=number]{background:var(--panel);border:1px solid var(--border);color:var(--head);padding:10px 12px;border-radius:7px;font-size:15px}
@@ -9925,7 +9934,7 @@ async def market_page(request: Request):
 <section class="panel"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>By Universe</h3><div id="byUniverseBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart — bigger tiles are larger-cap</small></h3><div class="groupby-row"><span style="font-size:11.5px;color:var(--dim)">Group by</span><select id="heatGroupKey" onchange="renderHeatmap()"><option value="universe">Index</option><option value="sector">Sector</option></select></div><div id="heatmapBody"><div class="empty-hint">Loading...</div></div></section>
-<section class="panel"><h3>Today's Market Briefing <small style="color:var(--dim);font-weight:normal;text-transform:none">SEC filings, QUANTIFY's own universe only</small></h3><div id="secBriefingBody"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel"><h3>Today's Market Briefing<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">8-K: a company reporting a major, one-off event (new CEO, M&amp;A, restructuring). 10-Q: a quarterly earnings report. 10-K: a full annual report. These are the original filings straight from the SEC, not analysis or a stock tip — click one to read it yourself.</span></span> <small style="color:var(--dim);font-weight:normal;text-transform:none">SEC filings, QUANTIFY's own universe only</small></h3><div id="secBriefingBody"><div class="empty-hint">Loading...</div></div></section>
 <script>
 let lastHeatTiles=[];
 function heatColor(chg){if(chg==null)return '#333';const c=Math.max(-5,Math.min(5,chg));const t=(c+5)/10;const r=Math.round(239+(38-239)*t),g=Math.round(83+(166-83)*t),b=Math.round(80+(154-80)*t);return `rgb(${r},${g},${b})`}
@@ -9948,8 +9957,10 @@ document.getElementById('marketSummaryBody').innerHTML=`
 <div class="summary-tile"><div class="label">Caution / Risk</div><div class="value loss">${(d.verdict_breakdown?.Caution??0)+(d.verdict_breakdown?.Risk??0)}</div></div>`;
 const bu=d.by_universe||{};const names=Object.keys(bu);document.getElementById('byUniverseBody').innerHTML=names.length?names.map(name=>`<div class="summary-tile"><div class="label">${name}</div><div class="value">${bu[name].count} scanned</div><div style="margin-top:6px;font-size:11px;color:var(--dim)">${bu[name].advancers} up &middot; ${bu[name].decliners} down &middot; avg <span class="${cls(bu[name].avg_change_pct)}">${chg(bu[name].avg_change_pct)}</span></div></div>`).join(''):'<div class="empty-hint">No data yet.</div>'}catch(e){console.error('Market summary load failed',e)}}
 function secBadgeClass(formType){return formType==='8-K'?'badge-warn':formType==='10-Q'?'badge-ok':'badge-pending'}
-async function loadSecBriefing(){const el=document.getElementById('secBriefingBody');try{const r=await fetch('/api/sec-filings');if(r.status===402){location.href='/subscription';return}const d=await r.json();const filings=d.filings||[];if(!filings.length){el.innerHTML='<div class="empty-hint">No 8-K/10-Q/10-K filings from QUANTIFY&#39;s universe today.</div>';return}el.innerHTML='<div class="sec-list">'+filings.map(f=>`<a class="sec-row" href="${f.doc_url}" target="_blank" rel="noopener"><span class="badge ${secBadgeClass(f.form_type)}">${f.form_type}</span><b>${f.ticker}</b><span class="sec-name">${f.company_name||''}</span><span class="sec-date">${f.filed_date}</span></a>`).join('')+'</div>'}catch(e){el.innerHTML='<div class="notice">Could not load today&#39;s filings.</div>';console.error('SEC briefing load failed',e)}}
+function secFormLabel(formType){return formType==='8-K'?'Major event':formType==='10-Q'?'Quarterly earnings':formType==='10-K'?'Annual report':formType}
+async function loadSecBriefing(){const el=document.getElementById('secBriefingBody');try{const r=await fetch('/api/sec-filings');if(r.status===402){location.href='/subscription';return}const d=await r.json();const filings=d.filings||[];if(!filings.length){el.innerHTML='<div class="empty-hint">No 8-K/10-Q/10-K filings from QUANTIFY&#39;s universe today.</div>';return}el.innerHTML='<div class="sec-list">'+filings.map(f=>`<a class="sec-row" href="${f.doc_url}" target="_blank" rel="noopener"><span class="badge ${secBadgeClass(f.form_type)}">${f.form_type}</span><b>${f.ticker}</b><span class="sec-type">${secFormLabel(f.form_type)}</span><span class="sec-name">${f.company_name||''}</span><span class="sec-date">${f.filed_date}</span></a>`).join('')+'</div>'}catch(e){el.innerHTML='<div class="notice">Could not load today&#39;s filings.</div>';console.error('SEC briefing load failed',e)}}
 loadMarketSummary();loadHeatmap();loadSecBriefing();setInterval(()=>{loadMarketSummary();loadHeatmap()},60000);
+document.addEventListener('click',(e)=>{document.querySelectorAll('.help-icon.open').forEach(el=>{if(!el.contains(e.target))el.classList.remove('open')})});
 </script>
 """
     body = translate_body(body, lang, [
@@ -9959,8 +9970,13 @@ loadMarketSummary();loadHeatmap();loadSecBriefing();setInterval(()=>{loadMarketS
         (">By Universe<", f">{t('by_universe', lang)}<"),
         (">Heatmap <", f">{t('heatmap', lang)} <"),
         ("click any tile to open its chart — bigger tiles are larger-cap", t("heatmap_hint", lang)),
-        (">Today's Market Briefing <", f">{t('sec_briefing', lang)} <"),
+        (">Today's Market Briefing<", f">{t('sec_briefing', lang)}<"),
+        ("8-K: a company reporting a major, one-off event (new CEO, M&amp;A, restructuring). 10-Q: a quarterly earnings report. 10-K: a full annual report. These are the original filings straight from the SEC, not analysis or a stock tip — click one to read it yourself.",
+         t("sec_types_help", lang)),
         ("SEC filings, QUANTIFY's own universe only", t("sec_briefing_hint", lang)),
+        ("'Major event'", f"'{t('sec_form_8k', lang)}'"),
+        ("'Quarterly earnings'", f"'{t('sec_form_10q', lang)}'"),
+        ("'Annual report'", f"'{t('sec_form_10k', lang)}'"),
         ("No 8-K/10-Q/10-K filings from QUANTIFY&#39;s universe today.", t("sec_briefing_empty", lang)),
         ("Could not load today&#39;s filings.", t("sec_briefing_failed", lang)),
         (">Group by<", f">{t('group_by', lang)}<"),
