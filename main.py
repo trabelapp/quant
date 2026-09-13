@@ -557,6 +557,12 @@ def init_db():
             created_at REAL NOT NULL,
             UNIQUE(scan_date, ticker)
         );
+        -- The UNIQUE(scan_date, ticker) constraint above indexes that pair, but several
+        -- real call sites look up a ticker's most recent row across ALL dates (stock
+        -- detail pages, alert/portfolio price refreshes) -- without this, that query has
+        -- no usable index and gets a full table scan that only gets slower as more scans
+        -- accumulate (this table is never pruned, unlike scan_history).
+        CREATE INDEX IF NOT EXISTS idx_daily_scans_ticker_date ON daily_scans(ticker, scan_date DESC);
         CREATE TABLE IF NOT EXISTS scan_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             scan_date TEXT NOT NULL,
@@ -625,6 +631,11 @@ def init_db():
             created_at REAL NOT NULL,
             FOREIGN KEY(email) REFERENCES users(email)
         );
+        CREATE INDEX IF NOT EXISTS idx_user_alerts_email ON user_alerts(email, created_at DESC);
+        -- Partial index: the scheduled alert-checker only ever scans is_sent=0 rows, and
+        -- this stays tiny forever (only currently-pending alerts) instead of growing with
+        -- every alert ever sent, unlike a plain index on the whole column would.
+        CREATE INDEX IF NOT EXISTS idx_user_alerts_unsent ON user_alerts(id) WHERE is_sent=0;
         CREATE TABLE IF NOT EXISTS portfolio_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
@@ -642,6 +653,7 @@ def init_db():
             saved_at REAL NOT NULL,
             FOREIGN KEY(email) REFERENCES users(email)
         );
+        CREATE INDEX IF NOT EXISTS idx_portfolio_items_email ON portfolio_items(email, saved_at DESC);
         CREATE TABLE IF NOT EXISTS watchlist_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
@@ -1153,6 +1165,12 @@ def set_subscription_status(conn, email: str, new_status: str, source: str, deta
 # -----------------------------------------------------------------------------
 def normalize_ticker(ticker: str) -> str:
     return ticker.strip().upper().replace("/", "-").replace(".", "-")
+
+
+# Shared ticker-shape validator, applied after normalize_ticker() -- was previously the
+# same regex literal copy-pasted at 7 separate call sites, which meant a future change
+# (or a fix) would need to be made consistently in all 7 by hand instead of once here.
+TICKER_PARAM_RE = re.compile(r"[A-Z0-9.\-^=]{1,15}")
 
 
 def load_universe_cache():
@@ -5013,7 +5031,7 @@ async def api_sec_filings(request: Request):
 @app.get("/api/score-history")
 async def api_score_history(request: Request, ticker: str = "AAPL"):
     ticker = normalize_ticker(ticker)
-    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+    if not TICKER_PARAM_RE.fullmatch(ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     blocked = api_access_error(request, ticker=ticker, require_disclaimer=False)
     if blocked is not None:
@@ -5584,7 +5602,7 @@ async def api_batch_status(request: Request, token: Optional[str] = None):
 @app.get("/api/terminal-data-fast")
 async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: str = "1d"):
     ticker = normalize_ticker(ticker)
-    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+    if not TICKER_PARAM_RE.fullmatch(ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     if timeframe not in ("1h", "1d", "1wk", "1mo"):
         return JSONResponse({"error": "Invalid timeframe"}, status_code=400)
@@ -5671,7 +5689,7 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
 @app.get("/api/terminal-data-ai")
 async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "Long-Term Momentum Pullback", language: str = "en"):
     ticker=normalize_ticker(ticker)
-    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}",ticker):
+    if not TICKER_PARAM_RE.fullmatch(ticker):
         return JSONResponse({"error":"Invalid ticker"},status_code=400)
     blocked = api_access_error(request, ticker=ticker)
     if blocked is not None:
@@ -5815,7 +5833,7 @@ async def set_alert(request: Request, ticker: str = Form(...), target_price: flo
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using price alerts."}, status_code=402)
     ticker = normalize_ticker(ticker)
     direction = direction if direction in ("above", "below") else "above"
-    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker) or target_price <= 0:
+    if not TICKER_PARAM_RE.fullmatch(ticker) or target_price <= 0:
         return JSONResponse({"error": "Invalid alert"}, status_code=400)
     try:
         conn = db(); conn.execute("INSERT INTO user_alerts(email,ticker,target_price,direction,created_at) VALUES(?,?,?,?,?)", (user,ticker,target_price,direction,time.time())); conn.commit(); conn.close()
@@ -5854,7 +5872,7 @@ async def portfolio_save(request: Request, ticker: str = Form(...), note: str = 
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your portfolio."}, status_code=402)
     ticker = normalize_ticker(ticker)
-    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+    if not TICKER_PARAM_RE.fullmatch(ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     shares_val = None
     if shares.strip() != "":
@@ -5965,7 +5983,7 @@ async def watchlist_add(request: Request, ticker: str = Form(...)):
     if not has_active_access(user):
         return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your watchlist."}, status_code=402)
     ticker = normalize_ticker(ticker)
-    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+    if not TICKER_PARAM_RE.fullmatch(ticker):
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     try:
         conn = db()
@@ -8060,6 +8078,7 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
     email = email.strip().lower()
     if _is_locked_out(LOGIN_ATTEMPTS, email, LOGIN_MAX_ATTEMPTS):
         return RedirectResponse("/login?error=Too+many+failed+attempts.+Try+again+later.", status_code=303)
+    conn = None
     try:
         conn = db()
         row = conn.execute(
@@ -8072,6 +8091,8 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
         ).fetchone()
     except Exception as e:
         print(f"[Error: {type(e).__name__}] Login lookup error: {e}")
+        if conn is not None:
+            conn.close()
         return RedirectResponse("/login?error=Database+error", status_code=303)
 
     if row is None:
@@ -8675,7 +8696,7 @@ def _latest_scan_row(ticker):
 @app.get("/stock/{ticker}", response_class=HTMLResponse)
 async def stock_page(request: Request, ticker: str):
     ticker = normalize_ticker(ticker)
-    if not re.fullmatch(r"[A-Z0-9.\-^=]{1,15}", ticker):
+    if not TICKER_PARAM_RE.fullmatch(ticker):
         return HTMLResponse("Not found", status_code=404)
     d = _latest_scan_row(ticker)
     if not d:
