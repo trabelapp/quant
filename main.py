@@ -124,10 +124,15 @@ BACKTEST_REFRESH_SECONDS = 7 * 24 * 3600
 # deliberately on the pessimistic side for names this liquid -- a backtest should not
 # flatter itself on the one assumption nobody can check.
 BACKTEST_ROUND_TRIP_COST_PCT = 0.10
+# Used only to compute Sharpe/Sortino on backtested returns (subtracted as a per-holding-
+# period hurdle, scaled by horizon_days/365 below) -- an approximate long-run T-bill yield,
+# not pulled live, since a basis point of drift here doesn't change which strategy looks
+# better and isn't worth a network dependency.
+RISK_FREE_ANNUAL_PCT = 4.5
 # Bump when the shape or meaning of the results changes. A cached result from an older
 # version is discarded and recomputed rather than rendered, so the site never shows
 # numbers whose methodology no longer matches what the page says it did.
-BACKTEST_SCHEMA_VERSION = 2
+BACKTEST_SCHEMA_VERSION = 3
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 # Tiny derived-array byproduct of the same backtest run, kept so the /backtest simulator
 # can re-score any pullback band the visitor picks without re-downloading price history --
@@ -418,8 +423,18 @@ NEAR_MISS_COUNT = int(os.getenv("NEAR_MISS_COUNT", "5"))
 # rate 62.1% vs 54.5%, 90d 74.6% vs 62.6%, n=905/639 vs n=574/348).
 PULLBACK_MIN = 0.10
 PULLBACK_MAX = 0.25
-PULLBACK_CENTER = (PULLBACK_MIN + PULLBACK_MAX) / 2
-PULLBACK_HALF_WIDTH = (PULLBACK_MAX - PULLBACK_MIN) / 2
+# Regime-adaptive band: when a ticker's own recent volatility is running hot, the normal
+# 10-25% band gets crossed by noise, not just genuine pullbacks -- widening the required
+# dip to 20-40% in that regime was validated with a proper walk-forward test (rolling
+# 12-month out-of-sample folds, full universe, see regime_adaptive_stress.py) before this
+# was ever turned on live: it beat the fixed band's out-of-sample average return, win
+# rate, Sharpe AND Sortino at all three horizons (30/60/90d) and across every fold except
+# two near-ties, and held up across a 3x range of ATR_REGIME_LOOKBACK choices (126-378
+# days) rather than being tuned to one lucky number.
+PULLBACK_MIN_ELEVATED = 0.20
+PULLBACK_MAX_ELEVATED = 0.40
+ATR_REGIME_WINDOW = 14
+ATR_REGIME_LOOKBACK = 252
 OVERALL_SCORE_THRESHOLD = float(os.getenv("OVERALL_SCORE_THRESHOLD", "50"))
 AI_PROMPT_VERSION = 4
 # Scans run multiple times a day now, but the AI pass only used to re-run once per
@@ -1415,14 +1430,31 @@ def calculate_macd(close, fast=12, slow=26, signal=9):
     return macd, signal_line, macd - signal_line
 
 
-def calculate_alpha_score(close, high):
-    """Pullback-in-uptrend: price 10-25% below its own prior 20-day high (using the
-    high through yesterday, not today, to avoid a stock's own gap-up day counting as
-    its own pullback reference point), and price above its 200-day SMA. Score is 83-100
-    inside the validated zone (peaking at the 17.5% mid-point), and always below the
-    83 pass threshold outside it or below the 200d trend -- so QUANT_PASS_THRESHOLD
-    reproduces the exact AND-gate that was backtested, with the in-zone gradient used
-    only to order results, not as a separately validated claim."""
+def _elevated_regime_series(close, high, low):
+    """True on days where a ticker's own ATR(ATR_REGIME_WINDOW), as a % of price, is
+    running above its own trailing ATR_REGIME_LOOKBACK-day median (through yesterday,
+    same shift(1)-before-comparing convention as hh20_prior below, so today's own
+    reading can't inflate the threshold it's being measured against). Per-ticker rather
+    than a market-wide index (VIX) so a quiet stock isn't forced into the wider band
+    just because the broader market is choppy, and vice versa. NaN (not enough history
+    yet for a stable median) resolves to False -- the long-running default band -- same
+    as any other feature here that needs a warmup period."""
+    prev_close = close.shift(1)
+    true_range = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    atr_pct = true_range.rolling(ATR_REGIME_WINDOW).mean() / close
+    regime_ref = atr_pct.rolling(ATR_REGIME_LOOKBACK).median().shift(1)
+    return (atr_pct > regime_ref).fillna(False)
+
+
+def calculate_alpha_score(close, high, low):
+    """Pullback-in-uptrend: price below its own prior 20-day high (using the high
+    through yesterday, not today, to avoid a stock's own gap-up day counting as its own
+    pullback reference point) by an amount that depends on the ticker's current
+    volatility regime (see _elevated_regime_series), and price above its 200-day SMA.
+    Score is 83-100 inside the validated zone (peaking at the band's mid-point), and
+    always below the 83 pass threshold outside it or below the 200d trend -- so
+    QUANT_PASS_THRESHOLD reproduces the exact AND-gate that was backtested, with the
+    in-zone gradient used only to order results, not as a separately validated claim."""
     if len(close) < 200 or len(high) < 21:
         return None
     try:
@@ -1436,30 +1468,40 @@ def calculate_alpha_score(close, high):
         if price <= float(sma200):
             return 40.0
         pct_off_high = 1.0 - price / hh20_prior
-        if pct_off_high < PULLBACK_MIN or pct_off_high > PULLBACK_MAX:
-            dist = max(PULLBACK_MIN - pct_off_high, pct_off_high - PULLBACK_MAX, 0.0)
+        elevated = bool(_elevated_regime_series(close, high, low).iloc[-1])
+        pmin, pmax = (PULLBACK_MIN_ELEVATED, PULLBACK_MAX_ELEVATED) if elevated else (PULLBACK_MIN, PULLBACK_MAX)
+        center, half_width = (pmin + pmax) / 2, (pmax - pmin) / 2
+        if pct_off_high < pmin or pct_off_high > pmax:
+            dist = max(pmin - pct_off_high, pct_off_high - pmax, 0.0)
             return round(max(0.0, 60.0 - dist * 100), 1)
-        centering = max(0.0, 1.0 - abs(pct_off_high - PULLBACK_CENTER) / PULLBACK_HALF_WIDTH)
+        centering = max(0.0, 1.0 - abs(pct_off_high - center) / half_width)
         return round(83.0 + centering * 17.0, 1)
     except Exception as e:
         print(f"[Error: {type(e).__name__}] Alpha score calculation error: {e}")
         return None
 
 
-def calculate_alpha_score_series(close, high):
+def calculate_alpha_score_series(close, high, low):
     """Vectorized replay of calculate_alpha_score() across an entire price history,
     used only for the backtest — must stay numerically identical to the per-row version."""
     hh20_prior = high.rolling(20).max().shift(1)
     sma200 = close.rolling(200).mean()
     above_trend = close > sma200
     pct_off_high = 1.0 - close / hh20_prior
-    in_zone = (pct_off_high >= PULLBACK_MIN) & (pct_off_high <= PULLBACK_MAX)
 
-    centering = (1.0 - (pct_off_high - PULLBACK_CENTER).abs() / PULLBACK_HALF_WIDTH).clip(lower=0.0)
+    elevated = _elevated_regime_series(close, high, low)
+    pmin = elevated.map({True: PULLBACK_MIN_ELEVATED, False: PULLBACK_MIN})
+    pmax = elevated.map({True: PULLBACK_MAX_ELEVATED, False: PULLBACK_MAX})
+    center = (pmin + pmax) / 2
+    half_width = (pmax - pmin) / 2
+
+    in_zone = (pct_off_high >= pmin) & (pct_off_high <= pmax)
+
+    centering = (1.0 - (pct_off_high - center).abs() / half_width).clip(lower=0.0)
     in_zone_score = 83.0 + centering * 17.0
 
-    below_min = (PULLBACK_MIN - pct_off_high).clip(lower=0.0)
-    above_max = (pct_off_high - PULLBACK_MAX).clip(lower=0.0)
+    below_min = (pmin - pct_off_high).clip(lower=0.0)
+    above_max = (pct_off_high - pmax).clip(lower=0.0)
     dist_outside = below_min.where(below_min > 0, above_max)
     out_of_zone_score = (60.0 - dist_outside * 100.0).clip(lower=0.0)
 
@@ -1840,17 +1882,21 @@ UI_STRINGS = {
     "methodology": {"en": "Methodology", "ko": "방법론"},
     "backtest_methodology_body": {
         "en": ("QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have "
-               "pulled back 10-25% from their own recent 20-day high. This exact rule was chosen by backtesting "
-               "thousands of alternative entry rules against two years of real price history, ranking them on the "
-               "first 70% of that window only, then validating the leaders on the untouched final 30% — the "
-               "out-of-sample numbers below are that validation, not the numbers used to pick the rule. Returns are "
-               "net of a 0.10% round-trip cost, and the S&amp;P comparison is measured over the same windows the "
+               "pulled back from their own recent 20-day high — 10-25% in normal conditions, or a deeper 20-40% when "
+               "the stock's own recent volatility (ATR) is running above its own trailing-year median, so a genuinely "
+               "choppy stretch needs a bigger dip before it counts as a signal. This exact rule was chosen by "
+               "backtesting thousands of alternative entry rules against two years of real price history, ranking "
+               "them on the first 70% of that window only, then validating the leaders on the untouched final 30% — "
+               "the out-of-sample numbers below are that validation, not the numbers used to pick the rule. Returns "
+               "are net of a 0.10% round-trip cost, and the S&amp;P comparison is measured over the same windows the "
                "strategy traded, not over every day in the period."),
-        "ko": ("QUANTIFY는 장기 상승 추세(200일 이동평균선 위)에 있으면서 최근 20일 고점 대비 10~25% 눌린 종목을 찾습니다. "
-               "이 규칙은 2년치 실제 가격 데이터로 수천 개의 대안 진입 규칙을 백테스트해서, 앞쪽 70% 구간에서만 순위를 매긴 뒤 "
-               "손대지 않은 마지막 30% 구간에서 상위 규칙들을 검증해 선택했습니다. 아래 out-of-sample 수치가 그 검증 결과이며, "
-               "규칙을 고르는 데 쓴 수치가 아닙니다. 수익률은 왕복 0.10% 비용을 뺀 값이고, S&amp;P 비교는 전체 기간 평균이 아니라 "
-               "전략이 실제로 진입한 것과 같은 구간에서 측정했습니다."),
+        "ko": ("QUANTIFY는 장기 상승 추세(200일 이동평균선 위)에 있으면서 최근 20일 고점 대비 눌린 종목을 찾습니다 — 평소에는 "
+               "10~25%, 그 종목 자체의 최근 변동성(ATR)이 자기 지난 1년 평균보다 높아졌을 때는 더 깊은 20~40% 눌림을 요구해서, "
+               "진짜 변동성이 큰 구간에서는 더 확실한 눌림만 신호로 잡습니다. 이 규칙은 2년치 실제 가격 데이터로 수천 개의 대안 "
+               "진입 규칙을 백테스트해서, 앞쪽 70% 구간에서만 순위를 매긴 뒤 손대지 않은 마지막 30% 구간에서 상위 규칙들을 검증해 "
+               "선택했습니다. 아래 out-of-sample 수치가 그 검증 결과이며, 규칙을 고르는 데 쓴 수치가 아닙니다. 수익률은 왕복 "
+               "0.10% 비용을 뺀 값이고, S&amp;P 비교는 전체 기간 평균이 아니라 전략이 실제로 진입한 것과 같은 구간에서 "
+               "측정했습니다."),
     },
     "sp500_avg_matched": {"en": "S&P 500, same windows", "ko": "S&P 500 (동일 구간)"},
     # Terminal action bar + score card. Added in this session's earlier work and shipped
@@ -1972,6 +2018,8 @@ UI_STRINGS = {
     "strategy_win_rate": {"en": "Strategy win rate", "ko": "전략 승률"},
     "when_right_wrong": {"en": "When right / wrong", "ko": "적중 / 실패 시"},
     "worst_case": {"en": "Worst case", "ko": "최악의 경우"},
+    "sharpe_ratio": {"en": "Sharpe ratio", "ko": "샤프 지수"},
+    "sortino_ratio": {"en": "Sortino ratio", "ko": "소르티노 지수"},
     "sp500_avg": {"en": "S&amp;P 500 avg (same period)", "ko": "S&amp;P 500 평균 (동일 기간)"},
     "page_portfolio": {"en": "Portfolio", "ko": "포트폴리오"},
     "page_subscription": {"en": "Subscription", "ko": "구독"},
@@ -2443,11 +2491,12 @@ def analyze_dataframe(ticker, df):
         if len(close) < 70:
             return None
         high = normalize_series(df, "High").reindex(close.index)
+        low = normalize_series(df, "Low").reindex(close.index)
         rsi_series = calculate_rsi(close)
         _, _, macd_hist = calculate_macd(close)
         price = float(close.iloc[-1]); prev = float(close.iloc[-2])
         change = (price / prev - 1) * 100 if prev else 0.0
-        score = calculate_alpha_score(close, high)
+        score = calculate_alpha_score(close, high, low)
         if score is None:
             return None
 
@@ -2502,7 +2551,7 @@ def analyze_dataframe(ticker, df):
 #
 # The harder honesty problem: only three of these five actually move the score.
 # calculate_alpha_score() decides on exactly two things (is price above the 200-day SMA,
-# and how centred the pullback is in the 10-25% band), and the AI's timing_score is the
+# and how centred the pullback is in the current regime's band), and the AI's timing_score is the
 # other half of the overall. Room and Momentum are context the reader may want but they
 # do not score anything. Each axis carries scored=True/False and the UI shows the
 # difference, because a five-axis chart that implies five inputs would be the exact kind
@@ -3258,24 +3307,52 @@ def load_high_score_digest_state():
         return False
 
 
-def _summarize_returns(returns, cost_pct: float = 0.0):
+def _summarize_returns(returns, cost_pct: float = 0.0, horizon_days: Optional[int] = None):
     """cost_pct is a round-trip cost subtracted from every observation before anything
     is averaged, so the win rate moves too -- a trade that made less than the spread was
-    not a win. Passing 0 gives the raw gross numbers."""
+    not a win. Passing 0 gives the raw gross numbers.
+
+    horizon_days, when known, scales RISK_FREE_ANNUAL_PCT down to a per-holding-period
+    hurdle for Sharpe/Sortino (each observation here is one full-horizon trade return,
+    not a daily one, so the classic sqrt(252)-annualized daily Sharpe doesn't apply --
+    this is a per-trade reward-to-risk ratio instead). Omitting it (e.g. for a pooled
+    sample that mixes horizons) just skips the risk-free subtraction rather than guessing.
+
+    t_stat and low_confidence exist for the exact failure mode a walk-forward test on
+    this site's own data surfaced: an in-sample "best" combo with n=2 posted a +130%
+    average that fell apart out-of-sample. avg_return_pct alone can't be told apart from
+    noise at a glance; t_stat (mean / (stdev/sqrt(n))) shrinks toward zero as n shrinks
+    even when the average return doesn't, and low_confidence is a blunt, n<30 (the usual
+    rule-of-thumb minimum before a sample mean is treated as roughly normal) flag callers
+    can use to visibly caveat a figure instead of presenting it at face value.
+    """
     if not returns:
         return None
     net = [x - cost_pct for x in returns] if cost_pct else list(returns)
     wins = [x for x in net if x > 0]
     losses = [x for x in net if x <= 0]
-    win_rate = len(wins) / len(net) * 100
+    n = len(net)
+    win_rate = len(wins) / n * 100
+    arr = np.asarray(net, dtype=float)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=1)) if n > 1 else 0.0
+    hurdle = RISK_FREE_ANNUAL_PCT * (horizon_days / 365.0) if horizon_days else 0.0
+    sharpe = round((mean - hurdle) / std, 2) if std > 0 else None
+    downside_dev = float(np.sqrt(np.mean(np.minimum(arr - hurdle, 0.0) ** 2)))
+    sortino = round((mean - hurdle) / downside_dev, 2) if downside_dev > 0 else None
+    t_stat = round(mean / (std / (n ** 0.5)), 2) if std > 0 and n > 1 else None
     return {
-        "avg_return_pct": round(sum(net) / len(net), 2),
+        "avg_return_pct": round(mean, 2),
         "win_rate_pct": round(win_rate, 1),
-        "n": len(net),
+        "n": n,
         "avg_win_pct": round(sum(wins) / len(wins), 2) if wins else None,
         "avg_loss_pct": round(sum(losses) / len(losses), 2) if losses else None,
         "worst_pct": round(min(net), 2),
         "cost_pct_applied": cost_pct or 0.0,
+        "sharpe": sharpe,
+        "sortino": sortino,
+        "t_stat": t_stat,
+        "low_confidence": n < 30,
     }
 
 
@@ -3322,7 +3399,7 @@ def simulate_backtest(pullback_min_pct: float, pullback_max_pct: float, horizon:
         rets = rets[~np.isnan(rets)]
         if len(rets):
             returns.extend(rets.tolist())
-    stats = _summarize_returns(returns, BACKTEST_ROUND_TRIP_COST_PCT)
+    stats = _summarize_returns(returns, BACKTEST_ROUND_TRIP_COST_PCT, horizon_days=horizon)
     bench = ((BACKTEST_CACHE.get("results") or {}).get("horizons") or {}).get(str(horizon), {}).get("benchmark")
     return {"strategy": stats, "benchmark": bench, "tickers_covered": len(cache)}
 
@@ -3382,13 +3459,14 @@ async def _run_backtest_locked():
             if len(close) < 300:
                 continue
             high = normalize_series(df, "High").reindex(close.index)
+            low = normalize_series(df, "Low").reindex(close.index)
             hh20_prior = high.rolling(20).max().shift(1)
             sim_cache[ticker] = {
                 "pct_off_high": (1.0 - close / hh20_prior).to_numpy(),
                 "above_trend": (close > close.rolling(200).mean()).to_numpy(),
                 "fwd_ret": {h: ((close.shift(-h) / close - 1) * 100).to_numpy() for h in horizons},
             }
-            scores = calculate_alpha_score_series(close, high)
+            scores = calculate_alpha_score_series(close, high, low)
             passed = (scores >= QUANT_PASS_THRESHOLD).to_numpy()
             n = len(close)
             split_idx = int(n * 0.7)
@@ -3449,16 +3527,16 @@ async def _run_backtest_locked():
             str(h): {
                 # Headline numbers are net of cost -- the gross ones are kept alongside
                 # so the difference is inspectable rather than hidden.
-                "strategy": _summarize_returns(forward_returns[h], cost),
-                "strategy_gross": _summarize_returns(forward_returns[h]),
-                "benchmark": _summarize_returns(bench_returns[h]),
-                "benchmark_matched": _summarize_returns(bench_matched[h]),
+                "strategy": _summarize_returns(forward_returns[h], cost, horizon_days=h),
+                "strategy_gross": _summarize_returns(forward_returns[h], horizon_days=h),
+                "benchmark": _summarize_returns(bench_returns[h], horizon_days=h),
+                "benchmark_matched": _summarize_returns(bench_matched[h], horizon_days=h),
             }
             for h in horizons
         },
         "validation": {
-            **{f"in_sample_{h}d": _summarize_returns(in_sample[h], cost) for h in horizons},
-            **{f"out_of_sample_{h}d": _summarize_returns(out_sample[h], cost) for h in horizons},
+            **{f"in_sample_{h}d": _summarize_returns(in_sample[h], cost, horizon_days=h) for h in horizons},
+            **{f"out_of_sample_{h}d": _summarize_returns(out_sample[h], cost, horizon_days=h) for h in horizons},
         },
         "assumptions": {
             "round_trip_cost_pct": cost,
@@ -6283,6 +6361,8 @@ section{padding:80px 24px;border-top:1px solid var(--border)}
 .proof-card .compare{color:var(--dim2);font-size:14.5px}
 .proof-card .risk-row{color:var(--dim);font-size:13px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
 .proof-card .worst-case{color:var(--red);font-size:14px;font-weight:700;margin-top:5px}
+.proof-card .risk-adj-row{color:var(--dim2);font-size:13px;margin-top:8px;font-weight:600}
+.proof-card .low-confidence-note{color:var(--red);font-size:11.5px;margin-top:8px;line-height:1.4}
 .proof-note{max-width:680px;margin:0 auto;text-align:center;color:var(--dim);font-size:14px;line-height:1.75}
 .methodology{max-width:740px;margin:30px auto 0;background:var(--panel2);border:1px solid var(--border);padding:24px 28px;border-radius:12px}
 .methodology h4{color:var(--head);font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:14px}
@@ -6523,7 +6603,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div class="diff-col for">
 <h4>QUANTIFY</h4>
 <div class="diff-item"><span class="mark">&#10003;</span><span>Full backtest published on this page — wins and losses, in-sample and out-of-sample</span></div>
-<div class="diff-item"><span class="mark">&#10003;</span><span>One entry rule, plainly disclosed: long-term uptrend, pulled back 10-25% from its recent high</span></div>
+<div class="diff-item"><span class="mark">&#10003;</span><span>One entry rule, plainly disclosed: long-term uptrend, pulled back from its recent high (10-25%, deeper in high-volatility stretches)</span></div>
 <div class="diff-item"><span class="mark">&#10003;</span><span>Every pick ships with the AI's actual reasoning and the two failure modes it checked</span></div>
 <div class="diff-item"><span class="mark">&#10003;</span><span>One plan. Every subscriber sees the same data, the same day.</span></div>
 </div>
@@ -6882,11 +6962,22 @@ def _render_proof_section() -> tuple[str, str, str, str]:
         if avg_win is not None and avg_loss is not None:
             risk_row = (f'<div class="risk-row">When right: +{avg_win}% avg &middot; When wrong: {avg_loss}% avg</div>'
                         + (f'<div class="worst-case">Worst single case: {worst}%</div>' if worst is not None else ""))
+        sharpe, sortino = strat.get("sharpe"), strat.get("sortino")
+        risk_adj_row = ""
+        if sharpe is not None or sortino is not None:
+            parts = []
+            if sharpe is not None:
+                parts.append(f"Sharpe {sharpe}")
+            if sortino is not None:
+                parts.append(f"Sortino {sortino}")
+            risk_adj_row = f'<div class="risk-adj-row">{" &middot; ".join(parts)}</div>'
+        confidence_note = (f'<div class="low-confidence-note">Only {strat.get("n")} signals at this horizon — '
+                            f'treat this number as indicative, not reliable.</div>' if strat.get("low_confidence") else "")
         cards_html.append(
             f'<div class="proof-card"><div class="horizon">{h}-Day Forward Return</div>'
             f'<div class="num">{sign}{avg}%</div>'
             f'<div class="compare">vs {bench_sign}{bench_avg}% for {bench_label} &middot; {strat.get("win_rate_pct","-")}% win rate</div>'
-            f'{risk_row}</div>'
+            f'{risk_row}{risk_adj_row}{confidence_note}</div>'
         )
     cards_html.append("</div>")
     computed_at = BACKTEST_CACHE.get("computed_at")
@@ -7333,8 +7424,8 @@ PUBLIC_KO: dict[str, str] = {
     "Pay more for \"VIP\" or \"premium\" picks other subscribers don't see": "다른 구독자는 못 보는 \"VIP\"·\"프리미엄\" 추천에 추가 결제",
     "Full backtest published on this page — wins and losses, in-sample and out-of-sample":
         "이 페이지에 백테스트 전문 공개 — 수익과 손실, in-sample과 out-of-sample 모두",
-    "One entry rule, plainly disclosed: long-term uptrend, pulled back 10-25% from its recent high":
-        "진입 규칙 하나를 그대로 공개: 장기 상승 추세, 최근 고점 대비 10~25% 하락",
+    "One entry rule, plainly disclosed: long-term uptrend, pulled back from its recent high (10-25%, deeper in high-volatility stretches)":
+        "진입 규칙 하나를 그대로 공개: 장기 상승 추세, 최근 고점 대비 하락 (평소 10~25%, 변동성이 클 때는 더 깊게)",
     "Every pick ships with the AI's actual reasoning and the two failure modes it checked":
         "모든 종목에 AI의 실제 판단 근거와 점검한 두 가지 실패 유형을 함께 제공",
     "One plan. Every subscriber sees the same data, the same day.": "요금제 하나. 모든 구독자가 같은 날 같은 데이터를 봅니다.",
@@ -7636,7 +7727,7 @@ async def faq_page(request: Request):
     faq_items = [
         ("Is this financial advice?", "No. QUANTIFY is an informational and educational tool. The quant score, badges, and AI commentary are a mathematical model's output on available data, and they can be wrong. Nothing here is a recommendation to buy or sell anything — consult a licensed financial advisor before making investment decisions."),
         ("What do the Favorable / Caution / Risk badges mean?", "<b>Favorable</b> means the AI's entry-timing check found the setup clean. <b>Caution</b> means it found some risk worth knowing about before you look closer. <b>Risk</b> means it found something that argues for skipping or waiting. None of the three is ever a buy or sell order — they're a starting point for your own research."),
-        ("What's the strategy behind the scan?", 'QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have pulled back 10-25% from their own recent 20-day high — a "buy the dip in an uptrend" pattern, not a breakout or momentum chase. This exact rule was validated by backtesting thousands of alternative entry rules against two years of real price history and comparing in-sample results against a held-out out-of-sample period never used for tuning. See the full numbers on the <a href="/#proof">home page</a>.'),
+        ("What's the strategy behind the scan?", 'QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have pulled back from their own recent 20-day high — a "buy the dip in an uptrend" pattern, not a breakout or momentum chase. The pullback required is 10-25% in normal conditions, or a deeper 20-40% when the stock\'s own recent volatility (ATR) is running above its own trailing-year median, so a genuinely choppy stretch needs a bigger dip before it counts as a signal. This exact rule was validated by backtesting thousands of alternative entry rules against two years of real price history and comparing in-sample results against a held-out out-of-sample period never used for tuning. See the full numbers on the <a href="/#proof">home page</a>.'),
         ("How often does the data update?", "The full S&amp;P 500 + Nasdaq-100 scan recomputes four times a day on trading days — before the open, at the open, about an hour in, and after the close — using a licensed market data feed."),
         ("Can I run my own custom screener?", "Not yet — today there's one validated strategy, and you can filter the results by badge and by index (S&amp;P 500 / Nasdaq-100). A configurable multi-strategy screener is on the roadmap."),
         ("Is my payment information secure?", "Yes. Billing is handled by Gumroad — QUANTIFY never sees or stores your card details."),
@@ -7803,6 +7894,7 @@ input[type=text],input[type=number]{background:var(--panel);border:1px solid var
 .backtest-row{display:flex;justify-content:space-between;padding:6px 0;font-size:14.5px}
 .backtest-row b.gain{color:var(--green)}
 .backtest-row b.loss{color:var(--red)}
+.backtest-row.low-confidence{display:block;color:var(--red);font-size:12px;line-height:1.5;padding-top:8px;margin-top:6px;border-top:1px solid var(--border)}
 .backtest-meta{font-size:13px;color:var(--dim);margin-top:12px;line-height:1.7}
 @media(max-width:900px){
   body{padding-left:14px;padding-bottom:70px}
@@ -9049,6 +9141,7 @@ BACKTEST_PAGE_CSS = """
 .bt-box .v{color:var(--head);font-weight:800;font-size:21px;margin-top:5px}
 .bt-box .v.up{color:var(--green)}.bt-box .v.down{color:var(--red)}
 .bt-empty{color:var(--dim);font-size:15px;padding:8px 2px}
+.bt-low-confidence{grid-column:1/-1;color:var(--red);font-size:13px;line-height:1.5;padding:10px 12px;border:1px solid var(--red);border-radius:8px}
 .bt-reset{margin-top:6px;font-size:14px;color:var(--dim)}
 .bt-reset button{background:none;border:none;color:var(--green);text-decoration:underline;cursor:pointer;font:inherit;padding:0}
 """
@@ -9077,16 +9170,20 @@ async def backtest_lab_page(request: Request):
               "QUANTIFY only ever trades one rule: a pullback inside a confirmed long-term "
               "uptrend. Drag the sliders below to re-run that same rule with a different pullback range, "
               "against the same 2 years of real price history behind the numbers on the home page.")
-    band_note = ('QUANTIFY의 실제 전략은 <b>10~25%</b> 눌림목을 거래해요. 여기서 다른 값을 넣어보는 건 '
-                "\"다른 구간이 더 나았을까?\"를 직접 테스트해보는 거예요 — 더 나았다면애초에 그 구간으로 거래를 시작했겠죠." if ko else
-                "QUANTIFY's live strategy trades a <b>10-25%</b> pullback. Everything "
-                "else here is you testing whether a different choice would have done better — it wouldn't have "
-                "started trading it live otherwise.")
+    band_note = ('QUANTIFY의 실제 전략은 평소 <b>10~25%</b> 눌림목을 거래하고, 그 종목의 최근 변동성(ATR)이 '
+                "자기 지난 1년 평균보다 높아지면 <b>20~40%</b>로 더 깊게 요구해요 — 이 슬라이더는 그 변동성 조정 없이 "
+                "구간 하나를 표본 기간 내내 고정해서 테스트해요, 그래서 \"평소 구간 대신 다른 고정 구간을 썼으면 "
+                "더 나았을까?\"를 답해주는 거예요." if ko else
+                "QUANTIFY's live strategy normally trades a <b>10-25%</b> pullback, widening to <b>20-40%</b> when "
+                "that stock's own recent volatility (ATR) is running above its own trailing-year average. This "
+                "slider tests one fixed band for the whole sample period, without that volatility adjustment — "
+                "so it answers \"would a different fixed choice have beaten the normal-regime band\", not a "
+                "byte-for-byte replay of the live rule.")
     lbl_min = "눌림목 하한" if ko else "Pullback minimum"
     lbl_max = "눌림목 상한" if ko else "Pullback maximum"
     lbl_hold = "보유 기간" if ko else "Holding period"
     lbl_days = "일" if ko else "Days"
-    reset_btn = "실제 10~25% 구간으로 리셋" if ko else "Reset to the live 10-25% band"
+    reset_btn = "평소 구간(10~25%)으로 리셋" if ko else "Reset to the normal-regime 10-25% band"
     h2_method = "이건 어떻게 계산되나요" if ko else "How this is computed"
     method_p = (f'홈페이지에 발표된 백테스트와 같은 표본이에요: S&amp;P 500 / 나스닥100 {BACKTEST_SAMPLE_SIZE}개 종목, '
                '2년치 종가, 모든 신호에 매수·매도 왕복 비용 0.10%를 평균 내기 전에 미리 반영. 구간에 새로 진입한 순간만 '
@@ -9141,9 +9238,13 @@ async def backtest_lab_page(request: Request):
   function fmtPct(v){{return v==null?'—':(v>=0?'+':'')+v+'%'}}
   function labels(){{
     return KO?{{avg:'평균 수익률',win:'승률',sig:'신호 수',bench:'같은 기간 S&amp;P',right:'맞았을 때',wrong:'틀렸을 때',
+               sharpe:'샤프 지수',sortino:'소르티노 지수',
+               lowConf:(n)=>`신호가 ${{n}}건뿐이에요 — 표본이 너무 적어서 이 수익률은 우연일 가능성이 높습니다. 참고만 하세요.`,
                empty:'이 구간에서는 표본 기간 동안 신호가 없었어요 — 더 넓은 구간을 시도해보세요.',
                fail:'시뮬레이터에 연결할 수 없어요 — 잠시 후 다시 시도해주세요.'}}
              :{{avg:'Avg Return',win:'Win Rate',sig:'Signals',bench:'vs S&amp;P, same span',right:'When Right',wrong:'When Wrong',
+               sharpe:'Sharpe Ratio',sortino:'Sortino Ratio',
+               lowConf:(n)=>`Only ${{n}} signal${{n===1?'':'s'}} — too small a sample to trust this return. Treat it as a curiosity, not a result.`,
                empty:'No signals fired in this range over the sample window — try a wider band.',
                fail:'Could not reach the simulator — try again in a moment.'}};
   }}
@@ -9154,18 +9255,24 @@ async def backtest_lab_page(request: Request):
       : `Currently testing: a stock ${{min}}-${{max}}% below its recent high, above its 200-day trend, held for ${{horizon}} days`;
   }}
 
+  function fmtRatio(v){{return v==null?'—':v}}
+
   function render(data){{
     const L=labels();
     const s=data.strategy;
     if(!s){{summary.innerHTML='<div class="bt-empty">'+L.empty+'</div>';return}}
     const b=data.benchmark;
+    const warn=s.low_confidence?'<div class="bt-low-confidence">⚠ '+L.lowConf(s.n)+'</div>':'';
     summary.innerHTML=
       '<div class="bt-box"><div class="k">'+L.avg+'</div><div class="v '+(s.avg_return_pct>=0?'up':'down')+'">'+fmtPct(s.avg_return_pct)+'</div></div>'+
       '<div class="bt-box"><div class="k">'+L.win+'</div><div class="v">'+s.win_rate_pct+'%</div></div>'+
       '<div class="bt-box"><div class="k">'+L.sig+'</div><div class="v">'+s.n+'</div></div>'+
       '<div class="bt-box"><div class="k">'+L.bench+'</div><div class="v">'+fmtPct(b?b.avg_return_pct:null)+'</div></div>'+
       '<div class="bt-box"><div class="k">'+L.right+'</div><div class="v up">'+fmtPct(s.avg_win_pct)+'</div></div>'+
-      '<div class="bt-box"><div class="k">'+L.wrong+'</div><div class="v down">'+fmtPct(s.avg_loss_pct)+'</div></div>';
+      '<div class="bt-box"><div class="k">'+L.wrong+'</div><div class="v down">'+fmtPct(s.avg_loss_pct)+'</div></div>'+
+      '<div class="bt-box"><div class="k">'+L.sharpe+'</div><div class="v">'+fmtRatio(s.sharpe)+'</div></div>'+
+      '<div class="bt-box"><div class="k">'+L.sortino+'</div><div class="v">'+fmtRatio(s.sortino)+'</div></div>'+
+      warn;
   }}
 
   async function update(src){{
@@ -9671,6 +9778,7 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 .backtest-row{{display:flex;justify-content:space-between;padding:6px 0;font-size:14.5px}}
 .backtest-row b.gain{{color:var(--green)}}
 .backtest-row b.loss{{color:var(--red)}}
+.backtest-row.low-confidence{{display:block;color:var(--red);font-size:12px;line-height:1.5;padding-top:8px;margin-top:6px;border-top:1px solid var(--border)}}
 .backtest-meta{{font-size:13px;color:var(--dim);margin-top:12px;line-height:1.6}}
 @media(max-width:900px){{
   body{{padding:10px;height:auto;overflow-y:auto}}
@@ -10049,17 +10157,22 @@ async def backtest_page(request: Request):
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer", status_code=303)
     if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended", status_code=303)
     lang = get_user_lang(user)
-    body = """
+    ko_js = str(lang == "ko").lower()
+    body = f"""
 <section class="panel"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">%%BT_METHOD%% %%BT_FAQ%%</p></section>
 <script>
-async function load(){try{const r=await fetch('/api/backtest-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${h}-Day Forward Return</h4>
-<div class="backtest-row"><span>Strategy avg</span><b class="${cls(v.strategy?.avg_return_pct)}">${fmtPct(v.strategy?.avg_return_pct)}</b></div>
-<div class="backtest-row"><span>Strategy win rate</span><b>${v.strategy?.win_rate_pct??'-'}%</b></div>
-<div class="backtest-row"><span>When right / wrong</span><b>${fmtPct(v.strategy?.avg_win_pct)} / ${fmtPct(v.strategy?.avg_loss_pct)}</b></div>
-<div class="backtest-row"><span>Worst case</span><b class="loss">${fmtPct(v.strategy?.worst_pct)}</b></div>
-<div class="backtest-row"><span>S&amp;P 500, same windows</span><b class="${cls((v.benchmark_matched||v.benchmark)?.avg_return_pct)}">${fmtPct((v.benchmark_matched||v.benchmark)?.avg_return_pct)}</b></div>
-</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${h}d`]&&val?.[`out_of_sample_${h}d`]).map(h=>{const i=val[`in_sample_${h}d`],o=val[`out_of_sample_${h}d`];return `${h}d: in-sample ${fmtPct(i.avg_return_pct)} / ${i.win_rate_pct}% win (n=${i.n}) vs out-of-sample ${fmtPct(o.avg_return_pct)} / ${o.win_rate_pct}% win (n=${o.n})`});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${valParts.join(' &middot; ')}.`:'';const universeText=res.tickers_sampled>=500?`All ${res.tickers_sampled} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${res.tickers_sampled} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${cards}</div><div class="backtest-meta">${universeText}, ${res.signal_count} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which flatters results. Returns are net of a 0.10% round-trip cost for spread and slippage; taxes are not modelled. The S&amp;P figure is its return over the same windows the strategy traded, not its average over the whole period. ${valLine} Last computed: ${d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}. Past performance does not guarantee future results.</div>`}catch(e){console.error('Backtest load failed',e)}}
+const KO={ko_js};
+async function load(){{try{{const r=await fetch('/api/backtest-summary');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){{el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const fmtRatio=(v)=>v==null?'-':v;const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const lowConfRow=(s)=>s?.low_confidence?`<div class="backtest-row low-confidence">${{KO?`⚠ 신호 ${{s.n}}건뿐 — 이 수익률은 표본이 너무 적어 신뢰하기 어렵습니다.`:`⚠ Only ${{s.n}} signal${{s.n===1?'':'s'}} — too small a sample to trust this number.`}}</div>`:'';const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${{h}}-Day Forward Return</h4>
+<div class="backtest-row"><span>Strategy avg</span><b class="${{cls(v.strategy?.avg_return_pct)}}">${{fmtPct(v.strategy?.avg_return_pct)}}</b></div>
+<div class="backtest-row"><span>Strategy win rate</span><b>${{v.strategy?.win_rate_pct??'-'}}%</b></div>
+<div class="backtest-row"><span>When right / wrong</span><b>${{fmtPct(v.strategy?.avg_win_pct)}} / ${{fmtPct(v.strategy?.avg_loss_pct)}}</b></div>
+<div class="backtest-row"><span>Worst case</span><b class="loss">${{fmtPct(v.strategy?.worst_pct)}}</b></div>
+<div class="backtest-row"><span>Sharpe ratio</span><b>${{fmtRatio(v.strategy?.sharpe)}}</b></div>
+<div class="backtest-row"><span>Sortino ratio</span><b>${{fmtRatio(v.strategy?.sortino)}}</b></div>
+<div class="backtest-row"><span>S&amp;P 500, same windows</span><b class="${{cls((v.benchmark_matched||v.benchmark)?.avg_return_pct)}}">${{fmtPct((v.benchmark_matched||v.benchmark)?.avg_return_pct)}}</b></div>
+${{lowConfRow(v.strategy)}}
+</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';const universeText=res.tickers_sampled>=500?`All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${{res.tickers_sampled}} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">${{universeText}}, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which flatters results. Returns are net of a 0.10% round-trip cost for spread and slippage; taxes are not modelled. The S&amp;P figure is its return over the same windows the strategy traded, not its average over the whole period. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
 load();
 </script>
 """
