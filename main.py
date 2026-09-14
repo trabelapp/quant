@@ -6608,14 +6608,14 @@ footer a{color:var(--dim2);text-decoration:underline}
 .lang-toggle:hover{border-color:var(--green);color:var(--green)}
 [data-reveal]{opacity:0}
 [data-reveal].is-visible{opacity:1}
-[data-reveal].is-visible>*{opacity:0;transform:translateY(26px);animation:revealChild .7s cubic-bezier(.16,1,.3,1) forwards}
+[data-reveal].is-visible>*{opacity:0;transform:translateY(46px) scale(.96);filter:blur(5px);animation:revealChild .85s cubic-bezier(.16,1,.3,1) forwards}
 [data-reveal].is-visible>*:nth-child(1){animation-delay:.05s}
-[data-reveal].is-visible>*:nth-child(2){animation-delay:.13s}
-[data-reveal].is-visible>*:nth-child(3){animation-delay:.21s}
-[data-reveal].is-visible>*:nth-child(4){animation-delay:.29s}
-[data-reveal].is-visible>*:nth-child(5){animation-delay:.37s}
-[data-reveal].is-visible>*:nth-child(n+6){animation-delay:.45s}
-@keyframes revealChild{to{opacity:1;transform:translateY(0)}}
+[data-reveal].is-visible>*:nth-child(2){animation-delay:.15s}
+[data-reveal].is-visible>*:nth-child(3){animation-delay:.25s}
+[data-reveal].is-visible>*:nth-child(4){animation-delay:.35s}
+[data-reveal].is-visible>*:nth-child(5){animation-delay:.45s}
+[data-reveal].is-visible>*:nth-child(n+6){animation-delay:.55s}
+@keyframes revealChild{to{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}}
 .hero-in{opacity:0;transform:translateY(20px);animation:heroIn .5s cubic-bezier(.16,1,.3,1) forwards}
 /* Kept the stagger, cut the total: the primary CTA used to finish animating in at ~1.2s
    even though the HTML arrives in ~0.26s. Now it is fully on screen by ~0.7s. */
@@ -6625,7 +6625,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 .hero-in-4{animation-delay:.21s}
 .hero-in-5{animation-delay:.3s}
 @keyframes heroIn{to{opacity:1;transform:translateY(0)}}
-@media(prefers-reduced-motion:reduce){[data-reveal],[data-reveal].is-visible>*,.hero-in{animation:none;transition:none;opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){[data-reveal],[data-reveal].is-visible>*,.hero-in{animation:none;transition:none;opacity:1;transform:none;filter:none}}
 .btn{transition:transform .15s ease,box-shadow .15s ease}
 .btn:hover{transform:translateY(-1px);box-shadow:0 10px 24px -10px rgba(14,138,95,.45)}
 .btn-hero{padding:17px 32px;font-size:17.5px;animation:heroPulse 2.6s ease-in-out infinite}
