@@ -4974,8 +4974,15 @@ def is_demo_request(request: Request) -> bool:
 
 
 def api_access_error(request: Request, ticker: Optional[str] = None,
-                     require_disclaimer: bool = True) -> Optional[JSONResponse]:
+                     require_disclaimer: bool = True, require_active_access: bool = True) -> Optional[JSONResponse]:
     """Account gate for a terminal API, or the demo whitelist when called on /api/demo/.
+
+    require_active_access=False is for the always-open half of the paywall (the ranked
+    list and a ticker's own quant score, chart and technicals) -- any logged-in account
+    keeps seeing those after its trial ends, only the AI report/financials/snowflake
+    deep-dive and portfolio/alerts stay behind has_active_access. This is a deliberate
+    revenue-structure change (confirmed directly, not inferred), not the previous
+    all-or-nothing trial gate.
 
     Returns None when the request may proceed, otherwise the response to send back.
     """
@@ -4990,15 +4997,16 @@ def api_access_error(request: Request, ticker: Optional[str] = None,
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     if require_disclaimer and not disclaimer_accepted(user):
         return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
-    if not has_active_access(user):
-        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using QUANTIFY."}, status_code=402)
+    if require_active_access and not has_active_access(user):
+        return JSONResponse({"error": "This is part of the All-in-One Hub. Start your 7-day free trial to unlock it.",
+                             "feature_locked": True}, status_code=402)
     return None
 
 
 @app.get("/api/demo/scan")
 @app.get("/api/scan")
 async def api_scan(request: Request):
-    blocked = api_access_error(request)
+    blocked = api_access_error(request, require_active_access=False)
     if blocked is not None:
         return blocked
     demo = is_demo_request(request)
@@ -5058,7 +5066,7 @@ async def api_scan(request: Request):
 @app.get("/api/demo/heatmap")
 @app.get("/api/heatmap")
 async def api_heatmap(request: Request):
-    blocked = api_access_error(request, require_disclaimer=False)
+    blocked = api_access_error(request, require_disclaimer=False, require_active_access=False)
     if blocked is not None:
         return blocked
     demo = is_demo_request(request)
@@ -5684,9 +5692,29 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         return JSONResponse({"error": "Invalid ticker"}, status_code=400)
     if timeframe not in ("1h", "1d", "1wk", "1mo"):
         return JSONResponse({"error": "Invalid timeframe"}, status_code=400)
-    blocked = api_access_error(request, ticker=ticker)
+    blocked = api_access_error(request, ticker=ticker, require_active_access=False)
     if blocked is not None:
         return blocked
+    # The quant score itself is part of the always-open half of the paywall now (only the
+    # AI report/financials/snowflake deep-dive is gated) -- fetched here rather than left
+    # to the AI endpoint so the score shows immediately, with no trial/subscription check
+    # standing in front of it.
+    quant_row = None
+    try:
+        qconn = db()
+        q_scan_date = display_scan_date(qconn) or today_str()
+        quant_row = qconn.execute(
+            "SELECT alpha_score,quant_pass FROM daily_scans WHERE scan_date=? AND ticker=? ORDER BY id DESC LIMIT 1",
+            (q_scan_date, ticker),
+        ).fetchone()
+        qconn.close()
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] terminal_data_fast quant-score lookup failed ({ticker}): {e}")
+    alpha_score = quant_row["alpha_score"] if quant_row else None
+    quant_pass = bool(quant_row["quant_pass"]) if quant_row else False
+    demo_req = is_demo_request(request)
+    logged_in_user = None if demo_req else get_logged_in_user(request)
+    access_active = has_active_access(logged_in_user) if logged_in_user else False
     df, earnings = await asyncio.gather(download_stock(ticker, timeframe), get_earnings(ticker))
     if df is None or df.empty:
         # The in-memory historical cache doesn't survive a restart, so if yfinance has
@@ -5708,6 +5736,7 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
                 "above_200d_sma": bool(row["above_200d_sma"]) if row["above_200d_sma"] is not None else None,
                 "rsi": row["rsi"], "macd": row["macd"], "earnings": None, "chart": [],
                 "stale_db_date": row["scan_date"],
+                "alpha_score": alpha_score, "quant_pass": quant_pass, "has_active_access": access_active,
             }}
         return {"fast": {"ticker": ticker, "data_ok": False, "error": "Could not fetch real market data."}}
     try:
@@ -5757,7 +5786,8 @@ async def terminal_data_fast(request: Request, ticker: str = "AAPL", timeframe: 
         return {"fast": {"ticker": ticker, "data_ok": True, "price": round(price, 2), "change": round(change, 2),
             "pct_from_52w_high": pct_from_high, "pct_from_52w_low": pct_from_low, "above_200d_sma": above_trend,
             "rsi": round(float(rsi.iloc[-1]), 2), "macd": round(float(macd_hist.iloc[-1]), 4),
-            "earnings": earnings, "chart": chart, "stale_as_of": stale_as_of}}
+            "earnings": earnings, "chart": chart, "stale_as_of": stale_as_of,
+            "alpha_score": alpha_score, "quant_pass": quant_pass, "has_active_access": access_active}}
     except Exception as e:
         print(f"[Error: {type(e).__name__}] terminal_data_fast processing error ({ticker}): {e}")
         return {"fast": {"ticker": ticker, "data_ok": False, "error": f"Data processing error: {type(e).__name__}"}}
@@ -5876,7 +5906,23 @@ async def terminal_data_ai(request: Request, ticker: str = "AAPL", mode: str = "
     # Reads the fundamentals table and the peer ladders, so it goes to a worker thread
     # rather than blocking the loop on this request path.
     snowflake = await asyncio.to_thread(_snowflake_axes, row, ticker, language)
-    return {"ai":{
+    # Raw fundamentals for the Financials tab -- the same table _snowflake_axes() already
+    # reads to rank these against sector peers, just surfaced here as plain numbers
+    # instead of a percentile. This whole response is behind require_active_access, so
+    # no separate gating is needed for this field.
+    financials = None
+    try:
+        fconn = db()
+        fin_row = fconn.execute(
+            "SELECT market_cap,trailing_pe,price_to_book,ev_ebitda,return_on_equity,profit_margin,"
+            "revenue_growth,earnings_growth,debt_to_equity,current_ratio,dividend_yield,fetched_at "
+            "FROM fundamentals WHERE ticker=?", (ticker,),
+        ).fetchone()
+        fconn.close()
+        financials = dict(fin_row) if fin_row else None
+    except Exception as e:
+        print(f"[Error: {type(e).__name__}] Financials lookup failed ({ticker}): {e}")
+    return {"financials": financials, "ai":{
         "ai_report": row["ai_report"] if row else None,
         "report_sections": report_sections,
         "timing_score": timing_score,
@@ -9503,7 +9549,10 @@ async def dashboard(request: Request):
     user=get_logged_in_user(request)
     if not user: return RedirectResponse("/login",status_code=303)
     if not disclaimer_accepted(user): return RedirectResponse("/accept-disclaimer",status_code=303)
-    if not has_active_access(user): return RedirectResponse("/subscription?reason=trial_ended",status_code=303)
+    # The scanner list and every ticker's own quant score are the always-open half of
+    # the paywall now -- trial-ended no longer locks this page out entirely, only the
+    # AI report/financials/snowflake deep-dive and portfolio/alerts stay gated (see
+    # api_access_error's require_active_access and the tab-lock UI below).
     conn=db(); prefs=conn.execute("SELECT pref_theme,pref_language,pref_default_sort,pref_default_view,trial_ends_at FROM users WHERE email=?",(user,)).fetchone(); conn.close()
     theme = prefs["pref_theme"] if prefs and prefs["pref_theme"] in ("dark","light") else "light"
     pref_language = prefs["pref_language"] if prefs and prefs["pref_language"] in LANGUAGE_NAMES else "en"
@@ -9565,6 +9614,10 @@ def render_terminal_page(*, user: str, avatar_letter: str, theme: str, lang: str
                         '<a href="/logout" class="danger-text">Log out</a></div></div>')
         demo_bar = ""
         demo_cta = ""
+    # The upsell overlay's CTA: a real Gumroad checkout link (pre-filled with this
+    # account's email, same as /subscription) for a logged-in visitor, or straight to
+    # signup for a demo visitor who has no account/email to check out with yet.
+    trial_checkout_url = "/signup" if demo else (_checkout_url_for(user) or "/subscription")
     html = f'''<!doctype html><html lang="{lang}" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{FAVICON_LINKS_HTML}<title>{page_title}</title>{head_extra}<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script><style>
 :root{{--bg:#ffffff;--panel:#ffffff;--panel2:#f5f7f6;--border:#e2e6e3;--border2:#ececec;--text:#3a4440;--head:#12201a;--dim:#77837e;--green:#0e8a5f;--red:#c8402c;--orange:#a8660a;--grid-line:#eef1ef;
 --sb-bg:#12181b;--sb-border:#232b2f;--sb-text:#9aa7ac;--sb-text-active:#ffffff;--sb-hover:#1b2327;--sb-danger:#e57373}}
@@ -9689,6 +9742,25 @@ h3{{font-size:14px;color:var(--dim);border-bottom:1px solid var(--border);paddin
 .metric{{background:var(--panel2);border:1px solid var(--border);padding:10px;text-align:center;border-radius:7px}}
 .metric>div:first-child{{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.2px}}
 .val{{color:var(--head);font-weight:700;margin-top:5px;font-size:15px}}
+.detail-tabs{{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap}}
+.detail-tab{{background:var(--panel2);border:1px solid var(--border);color:var(--dim2,var(--dim));padding:8px 14px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px}}
+.detail-tab.active{{background:var(--green);border-color:var(--green);color:#fff}}
+.tab-lock{{font-size:11px;opacity:.75}}
+.detail-tab.active .tab-lock{{opacity:.9}}
+.quant-score-line{{display:flex;align-items:center;gap:10px;margin-bottom:10px}}
+.quant-score-line .qs-num{{font-size:26px;font-weight:800;color:var(--head)}}
+.quant-score-line .qs-outof{{color:var(--dim);font-size:13px}}
+.fin-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:6px}}
+.fin-metric{{background:var(--panel2);border:1px solid var(--border);padding:12px;border-radius:8px}}
+.fin-metric .k{{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.2px}}
+.fin-metric .v{{color:var(--head);font-weight:700;margin-top:5px;font-size:16px}}
+.upsell-overlay{{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px}}
+.upsell-card{{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:32px;max-width:420px;width:100%;position:relative;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.3)}}
+.upsell-card h3{{margin:0 0 12px;font-size:19px;color:var(--head);border:0;padding:0;text-transform:none;letter-spacing:0}}
+.upsell-card p{{color:var(--text);font-size:14.5px;line-height:1.7;margin:0 0 22px}}
+.upsell-close{{position:absolute;top:12px;right:14px;background:none;border:none;font-size:22px;line-height:1;color:var(--dim);cursor:pointer;padding:4px}}
+.upsell-cta{{display:block;background:var(--green);color:#fff;padding:13px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px}}
+.upsell-dismiss{{display:block;width:100%;background:none;border:none;color:var(--dim);font-size:13px;margin-top:12px;cursor:pointer;padding:6px;font-family:inherit}}
 .notice{{padding:14px;background:var(--panel2);border:1px solid var(--border);margin-bottom:10px;line-height:1.6;border-radius:8px}}
 a{{color:var(--green);text-decoration:underline}}
 .badge{{padding:4px 11px;border-radius:12px;font-weight:700;display:inline-block;font-size:13px}}
@@ -9831,7 +9903,20 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 <div class="action-row"><input id="portfolioShares" type="number" placeholder="Shares" style="width:76px" title="How many shares you own or are tracking"><input id="portfolioPrice" type="number" placeholder="Entry price $" style="width:104px" title="What you paid — defaults to today's scan price if left blank"><button class="action-btn" onclick="savePortfolio()" title="Add this ticker to My Portfolio">Save to Portfolio</button></div>
 <span class="action-hint">Leave entry price blank to use today's scan price. Not sure how many shares? <a href="/portfolio#sizing">Position sizing calculator</a></span>
 </div>
-</div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div><div class="score-card" id="scoreCard" style="display:none">
+</div><div class="tf-group"><button class="tf-btn" data-tf="1h" onclick="changeTF('1h')">1H</button><button class="tf-btn active" data-tf="1d" onclick="changeTF('1d')">1D</button><button class="tf-btn" data-tf="1wk" onclick="changeTF('1wk')">1W</button><button class="tf-btn" data-tf="1mo" onclick="changeTF('1mo')">1M</button></div></div></div>
+<div class="detail-tabs" id="detailTabs">
+<button class="detail-tab active" data-tab="score" onclick="switchDetailTab('score')">Quant Score</button>
+<button class="detail-tab" data-tab="ai" onclick="switchDetailTab('ai')">AI Report <span class="tab-lock" id="lock-ai">&#128274;</span></button>
+<button class="detail-tab" data-tab="financials" onclick="switchDetailTab('financials')">Financials <span class="tab-lock" id="lock-financials">&#128274;</span></button>
+<button class="detail-tab" data-tab="snowflake" onclick="switchDetailTab('snowflake')">Snowflake <span class="tab-lock" id="lock-snowflake">&#128274;</span></button>
+</div>
+<div class="tab-pane" id="tabPane-score">
+<div id="quantScoreLine" class="quant-score-line"></div>
+<div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div>
+</div>
+<div class="tab-pane" id="tabPane-ai" style="display:none"><h3 style="margin-top:0">AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="scoreDrift" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange)"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></div>
+<div class="tab-pane" id="tabPane-financials" style="display:none"><h3 style="margin-top:0">Financials</h3><div id="financialsBody" class="scroll">Loading financials...</div></div>
+<div class="tab-pane" id="tabPane-snowflake" style="display:none"><div class="score-card" id="scoreCard" style="display:none">
 <div class="score-head">
 <div class="snowflake-wrap"><svg id="snowflake" viewBox="-30 -14 260 232" role="img" aria-label="Score breakdown radar"></svg></div>
 <div class="score-main">
@@ -9842,9 +9927,20 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 </div>
 <div class="score-axes" id="scoreAxes"></div>
 <div class="score-note" id="scoreNote"></div>
+</div></div>
+</section></div>{demo_cta}
+<div class="toast" id="toast"></div>
+<div class="upsell-overlay" id="upsellOverlay" style="display:none" onclick="if(event.target===this)closeUpsell()">
+<div class="upsell-card">
+<button class="upsell-close" onclick="closeUpsell()" aria-label="Close">&times;</button>
+<h3>All-in-One Hub</h3>
+<p>Start your 7-day free trial and get unlimited AI analysis, financials, news and the Snowflake breakdown for every ticker — all in one place.</p>
+<a href="{trial_checkout_url}" class="upsell-cta">Start Free Trial</a>
+<button type="button" class="upsell-dismiss" onclick="closeUpsell()">Not now</button>
 </div>
-<div id="staleWarning" style="display:none;background:rgba(255,152,0,.12);border:1px solid rgba(255,152,0,.4);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;font-weight:600;margin-bottom:6px"></div><div id="chart" class="chart"></div><div class="legend"><span><i style="background:var(--head)"></i>SMA 20</span><span><i style="background:var(--orange)"></i>SMA 50</span><span><i style="background:var(--red)"></i>SMA 200</span><span><i class="dash"></i>Bollinger Bands</span><span><i style="background:var(--green)"></i>Volume</span></div><div class="earnings-info" id="earningsInfo">Earnings: -</div><div class="idx-row"><div class="idx-box"><div class="idx-label"><span>S&amp;P 500 · 60D</span><span id="idx-sp500-val"></span></div><div id="idx-sp500" class="idx-chart"></div></div><div class="idx-box"><div class="idx-label"><span>NASDAQ-100 · 60D</span><span id="idx-ndx-val"></span></div><div id="idx-ndx" class="idx-chart"></div></div></div><div class="metrics"><div class="metric"><div>RSI / MACD<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">RSI: below 30 usually means oversold, above 70 usually means overbought. MACD: positive means upward momentum, negative means downward.</span></span></div><div id="rsi" class="val">-</div></div><div class="metric"><div>52W High<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is below its highest point in the last 52 weeks. Closer to 0% means near the high.</span></span></div><div id="high52" class="val">-</div></div><div class="metric"><div>52W Low<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How far the price is above its lowest point in the last 52 weeks.</span></span></div><div id="low52" class="val">-</div></div><div class="metric"><div>Trend<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">Whether the price is above (Uptrend) or below (Downtrend) its 200-day moving average — a common gauge of the long-term direction.</span></span></div><div id="trend" class="val">-</div></div><div class="metric"><div>Score Trend (Today)<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">How this ticker's quant score has moved since today's first scan — rising or falling.</span></span></div><div id="scoretrend" class="val">-</div></div></div></section><section class="panel"><h3>AI Quant Report <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiTldr" class="ai-tldr" style="display:none"></div><div id="verdict" style="display:none;margin-bottom:10px"></div><div id="scoreDrift" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange)"></div><div id="ai" class="scroll">Loading AI analysis based on real data...</div><div class="usage-tip">This flags entry timing on a single ticker, not a full plan. Many investors cap any one pick at a small slice of their total portfolio and spread bets across several signals rather than one — sizing and diversification are on you, not this tool.</div><h3 style="margin-top:12px">News</h3><div id="news" class="scroll">Waiting for news...</div></section></div>{demo_cta}
-<div class="toast" id="toast"></div><script>
+</div>
+<script src="https://gumroad.com/js/gumroad.js"></script>
+<script>
 const DEMO={demo_js};
 const API={api_root_js};
 const DEMO_TEXT={demo_text_js};
@@ -9863,6 +9959,31 @@ const DEFAULT_VIEW='{pref_default_view}';
 const TRIAL_ENDS_STR='{trial_ends_str}';
 const STRATEGY_MODE='Long-Term Momentum Pullback';
 let ticker='AAPL',tf='1d',chart,candle,volume,smaLines={{}},idxCharts={{}},bbLines={{}},currentView='list',lastSignals=[],lastUpdated=null;
+let hasActiveAccess=true,trialNudgeChecked=false;
+function updateLockIcons(){{['ai','financials','snowflake'].forEach(n=>{{const icon=document.getElementById('lock-'+n);if(icon)icon.style.display=hasActiveAccess?'none':'inline'}})}}
+function showUpsell(){{const el=document.getElementById('upsellOverlay');if(el)el.style.display='flex'}}
+function closeUpsell(){{const el=document.getElementById('upsellOverlay');if(el)el.style.display='none'}}
+function switchDetailTab(name){{
+  if(name!=='score'&&!hasActiveAccess){{showUpsell();return}}
+  document.querySelectorAll('.detail-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  ['score','ai','financials','snowflake'].forEach(n=>{{const el=document.getElementById('tabPane-'+n);if(el)el.style.display=n===name?'block':'none'}});
+  if(name==='score'){{const cEl=document.getElementById('chart');if(cEl&&cEl.clientWidth&&cEl.clientHeight&&chart){{chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent()}}}}
+}}
+function fmtFinPct(v){{return v==null?'—':(v*100).toFixed(1)+'%'}}
+function fmtFinRatio(v){{return v==null?'—':Number(v).toFixed(2)+'x'}}
+function fmtFinCap(v){{if(v==null)return '—';if(v>=1e12)return '$'+(v/1e12).toFixed(2)+'T';if(v>=1e9)return '$'+(v/1e9).toFixed(2)+'B';if(v>=1e6)return '$'+(v/1e6).toFixed(2)+'M';return '$'+v}}
+function renderFinancials(fin){{
+  const el=document.getElementById('financialsBody');
+  if(!el)return;
+  if(!fin){{el.innerHTML='<div class="notice">No financials data available for this ticker yet.</div>';return}}
+  const rows=[['Market Cap',fmtFinCap(fin.market_cap)],['P/E (TTM)',fmtFinRatio(fin.trailing_pe)],
+    ['Price/Book',fmtFinRatio(fin.price_to_book)],['EV/EBITDA',fmtFinRatio(fin.ev_ebitda)],
+    ['Return on Equity',fmtFinPct(fin.return_on_equity)],['Profit Margin',fmtFinPct(fin.profit_margin)],
+    ['Revenue Growth',fmtFinPct(fin.revenue_growth)],['Earnings Growth',fmtFinPct(fin.earnings_growth)],
+    ['Debt/Equity',fmtFinRatio(fin.debt_to_equity)],['Current Ratio',fmtFinRatio(fin.current_ratio)],
+    ['Dividend Yield',fmtFinPct(fin.dividend_yield)]];
+  el.innerHTML='<div class="fin-grid">'+rows.map(([k,v])=>`<div class="fin-metric"><div class="k">${{k}}</div><div class="v">${{v}}</div></div>`).join('')+'</div>';
+}}
 function showToast(msg,isErr,duration){{const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(isErr?' err':'');clearTimeout(window._toastTimer);window._toastTimer=setTimeout(()=>t.classList.remove('show'),duration||3500)}}
 function demoGate(what){{showToast(DEMO_TEXT.demo_gate.replace('{{what}}',what),false,2600);setTimeout(()=>{{location.href='/signup'}},1100)}}
 function toggleActionBar(){{document.getElementById('actionBar').classList.toggle('open')}}
@@ -9873,6 +9994,8 @@ function toggleAvatarMenu(){{const m=document.getElementById('avatarMenu');m.sty
 document.addEventListener('click',()=>{{const m=document.getElementById('avatarMenu');if(m)m.style.display='none'}});
 function showView(v){{currentView=v;document.getElementById('tabList').classList.toggle('active',v==='list');document.getElementById('tabHeatmap').classList.toggle('active',v==='heatmap');document.getElementById('sortbar').style.display=v==='list'?'flex':'none';document.getElementById('list').style.display=v==='list'?'block':'none';document.getElementById('heatmap').style.display=v==='heatmap'?'flex':'none';if(v==='heatmap')loadHeatmap()}}
 const HEAT_FLOOR_CAP=3e9;
+const HEAT_AREA_PER_TILE=780;
+const HEAT_COLOR_CLAMP=2.5;
 // Squarified treemap (Bruls/Huizing/van Wijk 1999) -- see the /market page's copy of
 // this same function for the full explanation of why squarify (not slice-and-dice)
 // matters once weights are as skewed as market cap.
@@ -9915,11 +10038,29 @@ function squarify(items,x,y,w,h){{
 function heatHex2rgb(hex){{hex=(hex||'').trim().replace('#','');if(hex.length===3)hex=hex.split('').map(c=>c+c).join('');const n=parseInt(hex,16)||0;return [(n>>16)&255,(n>>8)&255,n&255]}}
 function heatColor(chg){{
   const cs=getComputedStyle(document.documentElement);
-  const green=heatHex2rgb(cs.getPropertyValue('--green')||'#26a69a');
-  const red=heatHex2rgb(cs.getPropertyValue('--red')||'#ef5350');
-  const neutral=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
+  const panel2=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
+  const isDark=(panel2[0]+panel2[1]+panel2[2])/3<128;
+  // This app's brand --green (#26a69a, a muted teal picked for text/UI accents) and
+  // --panel2 (near-black) are what the linear-vs-curve fix above was tuned against, but
+  // even at full saturation a muted teal still reads as muted -- it was never going to
+  // look like Finviz's vivid mosaic. On dark theme (the only theme Finviz-style heatmaps
+  // are really meant for), use a purpose-built vivid pair and a visibly-grey neutral
+  // instead of near-black, so a genuine 0% tile still reads as "a tile," not a gap. Light
+  // theme keeps the brand colors -- a neon green/red pair would be harsh, not vivid, on
+  // a white background, and the muted brand pair already has plenty of contrast there.
+  const green=isDark?[0,200,120]:heatHex2rgb(cs.getPropertyValue('--green')||'#0e8a5f');
+  const red=isDark?[255,69,58]:heatHex2rgb(cs.getPropertyValue('--red')||'#c8402c');
+  const neutral=isDark?[40,43,46]:panel2;
   const rgb=chg==null?neutral:(()=>{{
-    const t=Math.min(1,Math.abs(chg)/4);
+    // A real trading day's moves cluster tightly around 0 (this app's own universe: p75
+    // is ~1.5%, median ~0.5%) -- a linear scale clamped at +/-4% left over half the
+    // grid nearly the same muddy neutral shade, which is what actually made this look
+    // bad, not tile sizing. HEAT_COLOR_CLAMP is tuned to where the interesting spread
+    // of a typical day actually lives, and the ^0.6 curve (not a straight line) lifts
+    // small-to-mid moves toward visible color faster than it lifts large ones, so a
+    // 0.5% mover still reads as clearly colored instead of nearly invisible.
+    const ratio=Math.min(1,Math.abs(chg)/HEAT_COLOR_CLAMP);
+    const t=Math.pow(ratio,0.6);
     const target=chg>=0?green:red;
     return neutral.map((n,i)=>Math.round(n+(target[i]-n)*t));
   }})();
@@ -9935,7 +10076,16 @@ function renderHeatmap2(){{
   const el=document.getElementById('heatmap');
   if(!lastHeatTiles2.length){{el.innerHTML='<div class="notice">No scan data yet.</div>';return}}
   const groups=groupByUniverse(lastHeatTiles2);
-  const W=el.clientWidth||300,H=Math.max(280,el.clientHeight||420);
+  // Take whichever is taller: the panel's own available flex height, or enough height
+  // to keep each tile's average area reasonable for the current ticker count -- on a
+  // narrow phone the panel's natural height is capped short (see the #heatmap
+  // max-height mobile rule), so without this floor a long list gets squeezed into a
+  // fraction of its needed area; the outer .heatmap box already scrolls, so growing
+  // taller here just makes the extra rows reachable by scroll instead of illegible.
+  const W=el.clientWidth||300;
+  const naturalH=Math.max(280,el.clientHeight||420);
+  const areaH=Math.round(HEAT_AREA_PER_TILE*lastHeatTiles2.length/W);
+  const H=Math.max(naturalH,Math.min(2600,areaH));
   const groupItems=Object.entries(groups).map(([name,items])=>({{name,items,value:items.reduce((a,t)=>a+(t.market_cap||HEAT_FLOOR_CAP),0)}}));
   const groupRects=squarify(groupItems,0,0,W,H);
   let html=`<div class="heatmap-tree" style="height:${{H}}px">`;
@@ -10071,7 +10221,7 @@ function renderSnowflake(sf){{
                         :`<div class="sf-foot">${{SF_TEXT.sf_no_data}}</div>`;
 }}
 
-async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';document.getElementById('aiTldr').style.display='none';document.getElementById('scoreDrift').style.display='none';document.getElementById('scoreCard').style.display='none';const fastPromise=fetch(API+`/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(API+`/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}if(DEMO&&fastRes.status===403){{aiPromise.catch(()=>{{}});return demoGate(ticker)}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}const sw=document.getElementById('staleWarning');if(d.fast.stale_as_of){{const asOfDate=new Date(d.fast.stale_as_of*1000);sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing last known data from ${{asOfDate.toLocaleString()}}.`}}else if(d.fast.stale_db_date){{sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing indicators from the last scan on ${{d.fast.stale_db_date}}. No chart available for this snapshot.`}}else{{sw.style.display='none'}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('portfolioPrice').value=d.fast.price??'';document.getElementById('portfolioShares').value='';renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{location.href='/subscription';return}}const x=await aiRes.json();renderSnowflake(x.ai?.snowflake);const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';const reviewedNote=x.ai.updated_at?` <span style="color:var(--dim);font-size:11px" title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter">· AI reviewed ${{new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}})}}</span>`:'';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100${{reviewedNote}}`;const tldrEl=document.getElementById('aiTldr');const verdictPhrase={{Favorable:'looks like a reasonable entry point',Caution:'has some risk worth reading below',Risk:'looks risky right now'}}[x.ai.timing_verdict]||'has been reviewed';const trendPhrase=d.fast.above_200d_sma?'still in a long-term uptrend':'below its long-term trend';const pullbackPhrase=d.fast.pct_from_52w_high!=null?`, ${{Math.abs(d.fast.pct_from_52w_high)}}% off its 52-week high`:'';tldrEl.innerHTML=`<b>Bottom line:</b> ${{ticker}} ${{verdictPhrase}} — ${{trendPhrase}}${{pullbackPhrase}}. Score ${{x.ai.overall_score??'-'}}/100.<div class="tldr-next">Not a decision you need to make now — <b style="color:var(--head)">Set Alert</b> above to get emailed if it hits your price, or <b style="color:var(--head)">Save to Portfolio</b> to track it alongside your other picks.</div>`;tldrEl.style.display='block'}}else{{vEl.style.display='none';document.getElementById('aiTldr').style.display='none'}}const driftEl=document.getElementById('scoreDrift');if(x.ai?.scan_price&&d.fast?.price){{const drift=(d.fast.price-x.ai.scan_price)/x.ai.scan_price*100;if(Math.abs(drift)>=2){{const scanTimeStr=x.ai.updated_at?new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}}):'earlier today';driftEl.innerHTML=`⚠ This score was computed at $${{x.ai.scan_price}} (${{scanTimeStr}}) — price has moved ${{drift>=0?'+':''}}${{drift.toFixed(1)}}% since then, now $${{d.fast.price}}. The setup may no longer look the same.`;driftEl.style.display='block'}}else{{driftEl.style.display='none'}}}}else{{driftEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');const langMismatch=x.ai?.language&&x.ai.language!==x.ai.language_requested;const langNote=langMismatch?`<div class="notice" style="margin-bottom:8px;font-size:12px">Showing in ${{x.ai.language==='ko'?'Korean':'English'}} — today's AI usage limit was reached before this could be regenerated in your preferred language. It switches automatically once quota resets.</div>`:'';if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=langNote+Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=!x.ai?.quant_pass?'AI analysis only runs for tickers that clear the daily quant scan — this one did not make the list today.':(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':(x.ai?.quota_exhausted?"Today's AI usage limit has been reached, so this review couldn't be generated right now — a shared daily limit, unrelated to your language setting. It resumes automatically tomorrow.":'AI analysis is unavailable.'))}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
+async function loadTicker(t){{ticker=t.toUpperCase().trim();document.getElementById('title').innerText=ticker;document.getElementById('ai').innerText='Loading AI analysis based on real data...';document.getElementById('news').innerText='Waiting for news...';document.getElementById('verdict').style.display='none';document.getElementById('aiTldr').style.display='none';document.getElementById('scoreDrift').style.display='none';document.getElementById('scoreCard').style.display='none';const fastPromise=fetch(API+`/terminal-data-fast?ticker=${{encodeURIComponent(ticker)}}&timeframe=${{tf}}`);const aiPromise=fetch(API+`/terminal-data-ai?ticker=${{encodeURIComponent(ticker)}}&mode=${{encodeURIComponent(STRATEGY_MODE)}}&language=${{USER_LANGUAGE}}`);let d;try{{const fastRes=await fastPromise;if(fastRes.status===402){{location.href='/subscription';return}}if(DEMO&&fastRes.status===403){{aiPromise.catch(()=>{{}});return demoGate(ticker)}}d=await fastRes.json()}}catch(e){{document.getElementById('rsi').innerText='Could not load chart data.';console.error('Chart data load failed',e);return}}if(!d.fast?.data_ok){{document.getElementById('rsi').innerText=d.fast?.error||'No data';return}}hasActiveAccess=!!d.fast.has_active_access;updateLockIcons();const qsEl=document.getElementById('quantScoreLine');if(qsEl){{qsEl.innerHTML=d.fast.alpha_score==null?'':`<span class="qs-num">${{d.fast.alpha_score}}</span><span class="qs-outof">/ 100</span><span class="badge ${{d.fast.quant_pass?'badge-ok':'badge-pending'}}">${{d.fast.quant_pass?'Cleared the bar':'Below the bar'}}</span>`}}if(!trialNudgeChecked){{trialNudgeChecked=true;if(!hasActiveAccess&&!DEMO){{let seenNudge=false;try{{seenNudge=localStorage.getItem('seenTrialNudge')==='1'}}catch(e){{}}if(!seenNudge){{try{{localStorage.setItem('seenTrialNudge','1')}}catch(e){{}}setTimeout(showUpsell,600)}}}}}}const sw=document.getElementById('staleWarning');if(d.fast.stale_as_of){{const asOfDate=new Date(d.fast.stale_as_of*1000);sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing last known data from ${{asOfDate.toLocaleString()}}.`}}else if(d.fast.stale_db_date){{sw.style.display='block';sw.innerText=`⚠ Live data temporarily unavailable — showing indicators from the last scan on ${{d.fast.stale_db_date}}. No chart available for this snapshot.`}}else{{sw.style.display='none'}}const cd=d.fast.chart.map(x=>({{time:x.time,open:x.open,high:x.high,low:x.low,close:x.close}}));const vd=d.fast.chart.map(x=>({{time:x.time,value:x.volume}}));candle.setData(cd);volume.setData(vd);['sma20','sma50','sma200'].forEach(k=>{{const pts=d.fast.chart.filter(x=>x[k]!=null).map(x=>({{time:x.time,value:x[k]}}));smaLines[k].setData(pts)}});bbLines.upper.setData(d.fast.chart.filter(x=>x.bb_upper!=null).map(x=>({{time:x.time,value:x.bb_upper}})));bbLines.lower.setData(d.fast.chart.filter(x=>x.bb_lower!=null).map(x=>({{time:x.time,value:x.bb_lower}})));const cEl=document.getElementById('chart');if(cEl.clientWidth&&cEl.clientHeight)chart.resize(cEl.clientWidth,cEl.clientHeight);chart.timeScale().fitContent();document.getElementById('rsi').innerText=`RSI ${{d.fast.rsi}} / MACD ${{d.fast.macd}}`;document.getElementById('high52').innerText=d.fast.pct_from_52w_high==null?'N/A':d.fast.pct_from_52w_high+'%';document.getElementById('low52').innerText=d.fast.pct_from_52w_low==null?'N/A':d.fast.pct_from_52w_low+'%';document.getElementById('trend').innerText=d.fast.above_200d_sma==null?'N/A':(d.fast.above_200d_sma?'Uptrend':'Downtrend');document.getElementById('portfolioPrice').value=d.fast.price??'';document.getElementById('portfolioShares').value='';renderEarnings(d.fast.earnings);loadScoreHistory(ticker);try{{const aiRes=await aiPromise;if(aiRes.status===402){{return}}const x=await aiRes.json();renderFinancials(x.financials);renderSnowflake(x.ai?.snowflake);const vEl=document.getElementById('verdict');if(x.ai?.timing_verdict){{vEl.style.display='block';const reviewedNote=x.ai.updated_at?` <span style="color:var(--dim);font-size:11px" title="Price/RSI/trend above refresh at each scan; this AI risk review only re-runs when the quant score has moved enough to matter">· AI reviewed ${{new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}})}}</span>`:'';vEl.innerHTML=`<span class="badge ${{verdictClass(x.ai.timing_verdict)}}">${{x.ai.timing_verdict}}</span> Score ${{x.ai.overall_score??'-'}} / 100${{reviewedNote}}`;const tldrEl=document.getElementById('aiTldr');const verdictPhrase={{Favorable:'looks like a reasonable entry point',Caution:'has some risk worth reading below',Risk:'looks risky right now'}}[x.ai.timing_verdict]||'has been reviewed';const trendPhrase=d.fast.above_200d_sma?'still in a long-term uptrend':'below its long-term trend';const pullbackPhrase=d.fast.pct_from_52w_high!=null?`, ${{Math.abs(d.fast.pct_from_52w_high)}}% off its 52-week high`:'';tldrEl.innerHTML=`<b>Bottom line:</b> ${{ticker}} ${{verdictPhrase}} — ${{trendPhrase}}${{pullbackPhrase}}. Score ${{x.ai.overall_score??'-'}}/100.<div class="tldr-next">Not a decision you need to make now — <b style="color:var(--head)">Set Alert</b> above to get emailed if it hits your price, or <b style="color:var(--head)">Save to Portfolio</b> to track it alongside your other picks.</div>`;tldrEl.style.display='block'}}else{{vEl.style.display='none';document.getElementById('aiTldr').style.display='none'}}const driftEl=document.getElementById('scoreDrift');if(x.ai?.scan_price&&d.fast?.price){{const drift=(d.fast.price-x.ai.scan_price)/x.ai.scan_price*100;if(Math.abs(drift)>=2){{const scanTimeStr=x.ai.updated_at?new Date(x.ai.updated_at*1000).toLocaleTimeString([],{{hour:'2-digit',minute:'2-digit'}}):'earlier today';driftEl.innerHTML=`⚠ This score was computed at $${{x.ai.scan_price}} (${{scanTimeStr}}) — price has moved ${{drift>=0?'+':''}}${{drift.toFixed(1)}}% since then, now $${{d.fast.price}}. The setup may no longer look the same.`;driftEl.style.display='block'}}else{{driftEl.style.display='none'}}}}else{{driftEl.style.display='none'}}const sec=x.ai?.report_sections;const aiEl=document.getElementById('ai');const langMismatch=x.ai?.language&&x.ai.language!==x.ai.language_requested;const langNote=langMismatch?`<div class="notice" style="margin-bottom:8px;font-size:12px">Showing in ${{x.ai.language==='ko'?'Korean':'English'}} — today's AI usage limit was reached before this could be regenerated in your preferred language. It switches automatically once quota resets.</div>`:'';if(sec){{const labels={{quant_review:'Quant Review',supply_demand:'Supply/Demand',risk_review:'Risk Review',news_analysis:'News Analysis',timing_reason:'Timing Rationale'}};aiEl.innerHTML=langNote+Object.keys(labels).filter(k=>sec[k]).map(k=>`<div class="section"><b>${{labels[k]}}</b>${{sec[k]}}</div>`).join('')}}else{{aiEl.innerText=!x.ai?.quant_pass?'AI analysis only runs for tickers that clear the daily quant scan — this one did not make the list today.':(x.ai?.status==='PENDING'||x.ai?.status==='RUNNING'?'Preparing AI analysis cache on the server...':(x.ai?.quota_exhausted?"Today's AI usage limit has been reached, so this review couldn't be generated right now — a shared daily limit, unrelated to your language setting. It resumes automatically tomorrow.":'AI analysis is unavailable.'))}}const news=x.ai?.news;if(!news)document.getElementById('news').innerText='Could not fetch a live news feed.';else document.getElementById('news').innerHTML=news.map(n=>`<div style="margin-bottom:8px"><a href="${{n.url}}" target="_blank" rel="noopener">${{n.title}}</a><br><small>${{n.published||''}}</small></div>`).join('')}}catch(e){{document.getElementById('ai').innerText='Could not load AI analysis. Please try again in a moment.';document.getElementById('news').innerText='Could not fetch a live news feed.';console.error('AI data load failed',e)}}}}
 async function setAlert(){{if(DEMO)return demoGate('Price alerts');const p=Number(document.getElementById('target').value);if(!(p>0))return showToast('Enter a target price first.',true);const dir=document.getElementById('targetDir').value;const f=new FormData();f.append('ticker',ticker);f.append('target_price',p);f.append('direction',dir);const r=await fetch('/api/alerts/set',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 async function savePortfolio(){{if(DEMO)return demoGate('Portfolio tracking');const sharesInput=document.getElementById('portfolioShares').value.trim();const priceInput=document.getElementById('portfolioPrice').value.trim();let shares='';if(sharesInput!==''){{const n=parseFloat(sharesInput);if(!isFinite(n)||n<=0){{showToast('Enter a positive number of shares, or leave it blank.',true);return}}shares=n}}let price='';if(priceInput!==''){{const p=parseFloat(priceInput);if(!isFinite(p)||p<=0){{showToast("Enter a positive entry price, or leave it blank to use today's scan price.",true);return}}price=p}}const f=new FormData();f.append('ticker',ticker);if(shares!=='')f.append('shares',shares);if(price!=='')f.append('price',price);const r=await fetch('/api/portfolio/save',{{method:'POST',body:f}});const d=await r.json();showToast(d.message||d.error,!r.ok)}}
 function changeTF(x){{tf=x;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tf===x));chart.timeScale().applyOptions({{timeVisible:x==='1h'}});loadTicker(ticker)}}
@@ -10157,11 +10307,13 @@ async def market_page(request: Request):
 <section class="panel"><h3>AI Market Summary <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiMarketSummaryBody"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>By Universe</h3><div id="byUniverseBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
-<section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart — bigger tiles are larger-cap</small></h3><div class="groupby-row"><span style="font-size:11.5px;color:var(--dim)">Group by</span><select id="heatGroupKey" onchange="renderHeatmap()"><option value="universe">Index</option><option value="sector">Sector</option></select></div><div id="heatmapBody"><div class="empty-hint">Loading...</div></div><div class="heat-legend"><span>−4%</span><span class="bar"></span><span>+4%</span></div></section>
+<section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart — bigger tiles are larger-cap</small></h3><div class="groupby-row"><span style="font-size:11.5px;color:var(--dim)">Group by</span><select id="heatGroupKey" onchange="renderHeatmap()"><option value="universe">Index</option><option value="sector">Sector</option></select></div><div id="heatmapBody"><div class="empty-hint">Loading...</div></div><div class="heat-legend"><span>−2.5%</span><span class="bar"></span><span>+2.5%</span></div></section>
 <section class="panel"><h3>Today's Market Briefing<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">8-K: a company reporting a major, one-off event (new CEO, M&amp;A, restructuring). 10-Q: a quarterly earnings report. 10-K: a full annual report. These are the original filings straight from the SEC, not analysis or a stock tip — click one to read it yourself.</span></span> <small style="color:var(--dim);font-weight:normal;text-transform:none">SEC filings, QUANTIFY's own universe only</small></h3><div id="secBriefingBody"><div class="empty-hint">Loading...</div></div></section>
 <script>
 let lastHeatTiles=[];
 const HEAT_FLOOR_CAP=3e9;
+const HEAT_AREA_PER_TILE=780;
+const HEAT_COLOR_CLAMP=2.5;
 // Squarified treemap (Bruls/Huizing/van Wijk 1999): packs items into a rectangle so
 // that area is proportional to `value` while keeping tiles as close to square as
 // possible -- this is what makes a Finviz-style heatmap read as a treemap rather than
@@ -10206,11 +10358,24 @@ function squarify(items,x,y,w,h){
 function heatHex2rgb(hex){hex=(hex||'').trim().replace('#','');if(hex.length===3)hex=hex.split('').map(c=>c+c).join('');const n=parseInt(hex,16)||0;return [(n>>16)&255,(n>>8)&255,n&255]}
 function heatColor(chg){
   const cs=getComputedStyle(document.documentElement);
-  const green=heatHex2rgb(cs.getPropertyValue('--green')||'#26a69a');
-  const red=heatHex2rgb(cs.getPropertyValue('--red')||'#ef5350');
-  const neutral=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
+  const panel2=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
+  const isDark=(panel2[0]+panel2[1]+panel2[2])/3<128;
+  // This app's brand --green (a muted teal picked for text/UI accents) never looks vivid
+  // even at full saturation. On dark theme use a purpose-built vivid pair and a visibly
+  // grey neutral instead of near-black, so a genuine 0% tile still reads as "a tile."
+  // Light theme keeps the brand colors -- neon on white would be harsh, not vivid.
+  const green=isDark?[0,200,120]:heatHex2rgb(cs.getPropertyValue('--green')||'#0e8a5f');
+  const red=isDark?[255,69,58]:heatHex2rgb(cs.getPropertyValue('--red')||'#c8402c');
+  const neutral=isDark?[40,43,46]:panel2;
   const rgb=chg==null?neutral:(()=>{
-    const t=Math.min(1,Math.abs(chg)/4);
+    // A real trading day's moves cluster tightly around 0 -- a linear scale clamped at
+    // +/-4% left over half the grid nearly the same muddy neutral shade, which is what
+    // actually made this look flat and lifeless, not tile sizing. HEAT_COLOR_CLAMP is
+    // tuned to where a typical day's spread actually lives, and the ^0.6 curve lifts
+    // small-to-mid moves toward visible color faster than a straight line would, so a
+    // 0.5% mover still reads as clearly colored instead of nearly invisible.
+    const ratio=Math.min(1,Math.abs(chg)/HEAT_COLOR_CLAMP);
+    const t=Math.pow(ratio,0.6);
     const target=chg>=0?green:red;
     return neutral.map((n,i)=>Math.round(n+(target[i]-n)*t));
   })();
@@ -10229,7 +10394,14 @@ function renderHeatmap(){
   if(!lastHeatTiles.length){el.innerHTML='<div class="notice">No scan data yet — check back after the next scan.</div>';return}
   const key=document.getElementById('heatGroupKey').value;
   const groups=groupTiles(lastHeatTiles,key);
-  const W=el.clientWidth||800,H=Math.max(420,Math.round(W*0.55));
+  // Height targets a roughly constant area per ticker instead of a flat number tuned
+  // for desktop's width -- on a phone, W shrinks a lot while the old flat ~420-470px
+  // height barely changed, so the same 500+ tickers got squeezed into a fraction of
+  // the area they get on desktop and turned into an illegible wall of slivers. Scaling
+  // height inversely with width keeps average tile size (and legibility) comparable
+  // across screen sizes, at the cost of a taller scroll on narrow phones -- which is
+  // the correct tradeoff for "see the whole market," not a flaw to hide.
+  const W=el.clientWidth||800,H=Math.max(360,Math.min(2600,Math.round(HEAT_AREA_PER_TILE*lastHeatTiles.length/W)));
   const groupItems=Object.entries(groups).map(([name,items])=>({name,items,value:items.reduce((a,t)=>a+(t.market_cap||HEAT_FLOOR_CAP),0)}));
   const groupRects=squarify(groupItems,0,0,W,H);
   let html=`<div class="heatmap-tree" style="height:${H}px">`;
