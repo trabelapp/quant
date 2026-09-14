@@ -132,7 +132,7 @@ RISK_FREE_ANNUAL_PCT = 4.5
 # Bump when the shape or meaning of the results changes. A cached result from an older
 # version is discarded and recomputed rather than rendered, so the site never shows
 # numbers whose methodology no longer matches what the page says it did.
-BACKTEST_SCHEMA_VERSION = 4
+BACKTEST_SCHEMA_VERSION = 5
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 # Tiny derived-array byproduct of the same backtest run, kept so the /backtest simulator
 # can re-score any pullback band the visitor picks without re-downloading price history --
@@ -3502,6 +3502,10 @@ async def _run_backtest_locked():
     # download.
     guardrail_fixed_returns: list = []
     guardrail_adaptive_returns: list = []
+    # Per-ticker 90d forward returns -- lets ranking be done on each ticker's OWN
+    # backtested reliability (t-stat, n) instead of only today's raw alpha_score. See
+    # results["ticker_reliability"] and /api/scan's t_stat/historical_n fields below.
+    per_ticker_returns_90d: dict = {}
     for i_ticker, ticker in enumerate(sample):
         try:
             # cache=False: this loop touches every ticker in the universe exactly once
@@ -3569,6 +3573,7 @@ async def _run_backtest_locked():
                         (in_sample[h] if i < split_idx else out_sample[h]).append(ret)
                         if h == 90:
                             (equity_events_in if i < split_idx else equity_events_out).append((entry_date, ret))
+                            per_ticker_returns_90d.setdefault(ticker, []).append(ret)
                         signal_dates.append((h, entry_date))
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Backtest ticker error ({ticker}): {exc}")
@@ -3627,6 +3632,16 @@ async def _run_backtest_locked():
         "equity_curve": {
             "in_sample": _build_equity_curve(equity_events_in, cost),
             "out_of_sample": _build_equity_curve(equity_events_out, cost),
+        },
+        # Per-ticker 90d backtested reliability -- t_stat/low_confidence per ticker from
+        # its OWN historical signal count, not the pooled strategy-wide numbers above.
+        # Joined onto /api/scan's live rows so the scanner can rank/flag by "has this
+        # specific name's pattern actually recurred enough times to trust," not just by
+        # today's raw score -- the exact distinction that mattered when a walk-forward
+        # test surfaced a n=2 in-sample "winner" earlier.
+        "ticker_reliability": {
+            tk: _summarize_returns(rets, cost, horizon_days=90)
+            for tk, rets in per_ticker_returns_90d.items()
         },
         "assumptions": {
             "round_trip_cost_pct": cost,
@@ -5179,6 +5194,19 @@ async def api_scan(request: Request):
                 sparkline = []
         d["sparkline"] = sparkline
         d["sector"] = (SECTOR_CACHE.get(d["ticker"]) or {}).get("sector")
+        # This ticker's OWN backtested reliability (t-stat/n on its historical 90d
+        # signals), not the pooled strategy-wide numbers -- lets "Sort: Statistical
+        # Confidence" rank a name with a long, robust history above one that only
+        # cleared the bar once or twice, even if the latter's raw score is higher today.
+        rel = ((BACKTEST_CACHE.get("results") or {}).get("ticker_reliability") or {}).get(d["ticker"])
+        d["t_stat"] = rel["t_stat"] if rel else None
+        d["historical_n"] = rel["n"] if rel else 0
+        d["low_confidence"] = rel["low_confidence"] if rel else True
+        # A raw t_stat sort could still let an n<30 outlier land near the top by luck --
+        # t_stat's own sqrt(n) term makes that unlikely but not impossible. Flooring
+        # every low_confidence row to the same sentinel makes "n<30 always sorts last"
+        # an explicit guarantee instead of something t_stat merely tends to do.
+        d["confidence_rank"] = -999.0 if d["low_confidence"] else (d["t_stat"] if d["t_stat"] is not None else -999.0)
         signals.append(d)
     demo_locked = 0
     if demo:
@@ -10037,7 +10065,7 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 }}
 </style></head><body class="{body_class}">
 {_render_sidebar("scanner", lang, demo=demo)}
-<header><a class="brand" href="{"/" if demo else "/terminal"}">QUANTIFY<span>.</span></a><div class="headerRight">{header_right}</div></header>{demo_bar}<div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div id="scanAsOf" style="display:none;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;margin-bottom:8px"></div>
+<header><a class="brand" href="{"/" if demo else "/terminal"}">QUANTIFY<span>.</span></a><div class="headerRight">{header_right}</div></header>{demo_bar}<div class="onboard-overlay" id="onboardOverlay"><div class="onboard-card"><h3>Quick guide to QUANTIFY</h3><div class="onboard-item"><span class="badge-demo"><span class="badge badge-ok">Favorable</span></span><p><b>Badges</b> are the AI's read on entry timing: <b>Favorable</b> (setup looks clean), <b>Caution</b> (some risk worth knowing about), or <b>Risk</b> (skip or wait). Never a buy/sell order.</p></div><div class="onboard-item"><span class="badge-demo">📊</span><p><b>Score (0-100)</b> combines the quant scan (is this a long-term uptrend that's pulled back to a good entry zone?) with the AI's risk check. Only names that clear the bar show up at all.</p></div><div class="onboard-item"><span class="badge-demo">🔍</span><p><b>The scanner list</b> updates a few times a day — tap any ticker to load its chart, technicals, and full AI report.</p></div><div class="onboard-item"><span class="badge-demo">❔</span><p>Little <b>?</b> icons next to unfamiliar terms (RSI, MACD, Trend...) explain what they mean — tap or hover any of them anytime.</p></div><button onclick="closeOnboarding()">Got it</button></div></div><button class="help-fab" onclick="openOnboarding()" title="Quick guide">?</button><div class="grid"><section class="panel"><h3>Market Scanner <span id="ucount"></span></h3><div class="tabs"><button class="tab active" id="tabList" onclick="showView('list')">List</button><button class="tab" id="tabHeatmap" onclick="showView('heatmap')">Heatmap</button></div><input id="tickerInput" placeholder="Jump to ticker (e.g. TSLA)" onkeydown="if(event.key==='Enter')loadTicker(this.value)"><div class="sortbar" id="sortbar"><select id="sortKey" onchange="renderList()"><option value="overall_score">Sort: Score</option><option value="change_pct">Sort: Change %</option><option value="confidence_rank">Sort: Statistical Confidence</option><option value="ticker">Sort: Ticker A-Z</option></select><select id="filterBadge" onchange="renderList()"><option value="">All Badges</option><option value="Favorable">Favorable</option><option value="Caution">Caution</option><option value="Risk">Risk</option></select><select id="filterUniverse" onchange="renderList()"><option value="">All Markets</option><option value="S&amp;P 500">S&amp;P 500</option><option value="Nasdaq-100">Nasdaq-100</option></select><select id="filterSector" onchange="renderList()"><option value="">All Sectors</option></select></div><div id="scanAsOf" style="display:none;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.35);color:var(--orange);padding:6px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;margin-bottom:8px"></div>
 <div class="list" id="list">Preparing constituent list...</div><div class="heatmap" id="heatmap" style="display:none"></div></section><section class="panel" id="detailPanel"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 id="title" style="border:0;margin:0;padding:0">AAPL</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="mobile-actions-toggle" onclick="toggleActionBar()">&#9733; Set an alert or add to portfolio</button><div class="action-bar" id="actionBar" title="Track this ticker without deciding anything right now">
 <div class="action-group">
 <span class="action-group-label">Price alert</span>
@@ -10267,7 +10295,7 @@ function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge
 function renderEarnings(e){{const el=document.getElementById('earningsInfo');if(!e||(!e.last&&!e.next)){{el.innerText='Earnings: no data available';return}}const parts=[];if(e.last){{const beat=e.last.beat;const cls=beat===true?'beat':beat===false?'miss':'';const label=beat===true?'Beat':beat===false?'Miss':'Met';const surprise=e.last.surprise_pct!=null?` (${{label}} ${{e.last.surprise_pct>0?'+':''}}${{e.last.surprise_pct}}%)`:'';parts.push(`Last earnings <b>${{e.last.date}}</b>: EPS $${{e.last.eps_actual}} vs $${{e.last.eps_estimate??'-'}} est.<span class="${{cls}}">${{surprise}}</span>`)}}if(e.next){{parts.push(`Next earnings: <b>${{e.next.date}}</b>`)}}el.innerHTML=parts.join(' &middot; ')}}
 function itemSigClass(v){{return v==='Favorable'?'sig-favorable':v==='Caution'?'sig-caution':v==='Risk'?'sig-risk':''}}
 function populateSectorFilter(){{const sel=document.getElementById('filterSector');const current=sel.value;const sectors=[...new Set(lastSignals.map(s=>s.sector).filter(Boolean))].sort();sel.innerHTML='<option value="">All Sectors</option>'+sectors.map(s=>`<option value="${{s}}">${{s}}</option>`).join('');if(sectors.includes(current))sel.value=current}}
-function renderList(){{if(!lastSignals.length)return;const badge=document.getElementById('filterBadge').value;const uni=document.getElementById('filterUniverse').value;const sector=document.getElementById('filterSector').value;const key=document.getElementById('sortKey').value;const filtered=lastSignals.filter(s=>(!badge||s.timing_verdict===badge)&&(!uni||s.universe===uni)&&(!sector||s.sector===sector));const sorted=[...filtered].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));document.getElementById('list').innerHTML=sorted.length?sorted.map(s=>`<div class="item ${{itemSigClass(s.timing_verdict)}}" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span style="display:flex;align-items:center;gap:6px">${{sparklineSVG(s.sparkline)}}<span style="text-align:right">${{s.price}} · ${{s.change_pct}}%<br><small>Score ${{s.overall_score}} · <span class="badge ${{verdictClass(s.timing_verdict)}}">${{s.timing_verdict||'Analyzing'}}</span></small></span></span></div>`).join(''):'<div class="notice">No tickers match this filter.</div>'}}
+function renderList(){{if(!lastSignals.length)return;const badge=document.getElementById('filterBadge').value;const uni=document.getElementById('filterUniverse').value;const sector=document.getElementById('filterSector').value;const key=document.getElementById('sortKey').value;const filtered=lastSignals.filter(s=>(!badge||s.timing_verdict===badge)&&(!uni||s.universe===uni)&&(!sector||s.sector===sector));const sorted=[...filtered].sort((a,b)=>key==='ticker'?a.ticker.localeCompare(b.ticker):(b[key]??-Infinity)-(a[key]??-Infinity));document.getElementById('list').innerHTML=sorted.length?sorted.map(s=>`<div class="item ${{itemSigClass(s.timing_verdict)}}" onclick="loadTicker('${{s.ticker}}')"><b>${{s.ticker}}</b><span style="display:flex;align-items:center;gap:6px">${{sparklineSVG(s.sparkline)}}<span style="text-align:right">${{s.price}} · ${{s.change_pct}}%<br><small>Score ${{s.overall_score}} · <span class="badge ${{verdictClass(s.timing_verdict)}}">${{s.timing_verdict||'Analyzing'}}</span>${{key==='confidence_rank'?` · <span style="color:${{s.low_confidence?'var(--red)':'var(--dim)'}}">${{s.low_confidence?'⚠ n='+s.historical_n:'t='+s.t_stat+' (n='+s.historical_n+')'}}</span>`:''}}</small></span></span></div>`).join(''):'<div class="notice">No tickers match this filter.</div>'}}
 const CHART_THEME=document.documentElement.getAttribute('data-theme')==='dark'?{{bg:'#000000',text:'#a8a8a8',grid:'#161616',up:'#26a69a',down:'#ef5350',sma20:'#e8e8e8',sma50:'#ff9800',sma200:'#ef5350',bb:'#9b6bff',vol:'rgba(38,166,154,.5)'}}:{{bg:'#ffffff',text:'#77837e',grid:'#eef1ef',up:'#0e8a5f',down:'#c8402c',sma20:'#4a5750',sma50:'#a8660a',sma200:'#c8402c',bb:'#7c5cd4',vol:'rgba(14,138,95,.4)'}};
 function watchChartSize(el){{
   // Nothing ever resized the main chart after init(), so it kept whatever height the
