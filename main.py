@@ -7900,10 +7900,8 @@ h1.page-title{color:var(--head);font-size:25px;font-weight:800;margin:2px 0 18px
 .heat-tile{position:absolute;z-index:1;box-sizing:border-box;border:1px solid var(--panel2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);line-height:1.2;transition:filter .1s;overflow:hidden}
 .heat-tile:hover{filter:brightness(1.22);z-index:5}
 .heat-tile.locked{opacity:.45}
-.heat-tile b{font-weight:800}
-.heat-tile.badge-favorable{box-shadow:0 0 0 2px #0e8a5f inset}
-.heat-tile.badge-caution{box-shadow:0 0 0 2px #a8660a inset}
-.heat-tile.badge-risk{box-shadow:0 0 0 2px #c8402c inset}
+.heat-tile b{font-weight:800;white-space:nowrap}
+.heat-tile span{white-space:nowrap}
 .heat-legend{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:11px;color:var(--dim)}
 .heat-legend .bar{flex:1;max-width:220px;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red),var(--panel2),var(--green))}
 .groupby-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
@@ -9783,9 +9781,8 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 .heat-group-label{{position:absolute;top:2px;left:3px;z-index:2;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.2px;color:#fff;background:rgba(0,0,0,.55);padding:1px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 6px)}}
 .heat-tile{{position:absolute;z-index:1;box-sizing:border-box;border:1px solid var(--panel2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);line-height:1.2;transition:filter .1s;overflow:hidden;font-weight:700;border-radius:0}}
 .heat-tile:hover{{filter:brightness(1.22);z-index:5}}
-.heat-tile.badge-favorable{{box-shadow:0 0 0 2px #0e8a5f inset}}
-.heat-tile.badge-caution{{box-shadow:0 0 0 2px #a8660a inset}}
-.heat-tile.badge-risk{{box-shadow:0 0 0 2px #c8402c inset}}
+.heat-tile b{{white-space:nowrap}}
+.heat-tile span{{white-space:nowrap}}
 .legend{{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin-top:8px}}
 .legend span{{display:inline-flex;align-items:center;gap:5px}}
 .legend i{{width:10px;height:2px;display:inline-block}}
@@ -10040,16 +10037,15 @@ function heatColor(chg){{
   const cs=getComputedStyle(document.documentElement);
   const panel2=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
   const isDark=(panel2[0]+panel2[1]+panel2[2])/3<128;
-  // This app's brand --green (#26a69a, a muted teal picked for text/UI accents) and
-  // --panel2 (near-black) are what the linear-vs-curve fix above was tuned against, but
-  // even at full saturation a muted teal still reads as muted -- it was never going to
-  // look like Finviz's vivid mosaic. On dark theme (the only theme Finviz-style heatmaps
-  // are really meant for), use a purpose-built vivid pair and a visibly-grey neutral
-  // instead of near-black, so a genuine 0% tile still reads as "a tile," not a gap. Light
-  // theme keeps the brand colors -- a neon green/red pair would be harsh, not vivid, on
-  // a white background, and the muted brand pair already has plenty of contrast there.
-  const green=isDark?[0,200,120]:heatHex2rgb(cs.getPropertyValue('--green')||'#0e8a5f');
-  const red=isDark?[255,69,58]:heatHex2rgb(cs.getPropertyValue('--red')||'#c8402c');
+  // Real reference heatmaps (Finviz, TradingView) use the same punchy, purpose-built
+  // red/green regardless of the page's own light/dark chrome -- the tiles are their own
+  // colored surface, not text sitting on the page background, so muting them for a
+  // light theme (an earlier attempt here) just made the whole grid look washed out
+  // instead of like a heatmap. These are the ColorBrewer RdYlGn diverging-scale
+  // endpoints, not an ad-hoc pick. Neutral still adapts to theme, since a 0% tile should
+  // read as "a visible, uncolored tile" against either background.
+  const green=[26,152,80];
+  const red=[215,48,39];
   const neutral=isDark?[40,43,46]:panel2;
   const rgb=chg==null?neutral:(()=>{{
     // A real trading day's moves cluster tightly around 0 (this app's own universe: p75
@@ -10097,7 +10093,13 @@ function renderHeatmap2(){{
     tileRects.forEach(tile=>{{
       const tw=tile.x1-tile.x0,th=tile.y1-tile.y0,area=tw*th;
       const left=g.x0+tile.x0,top=g.y0+tile.y0;
-      const showTicker=area>380,fontSize=Math.max(8,Math.min(13,Math.sqrt(area)/4.4));
+      // Gating on area alone let a tall, narrow sliver (small width, big height) pass
+      // the area check and then try to center a ticker symbol in a box too thin to hold
+      // it -- centered text overflowing a hidden box clips symmetrically from both
+      // sides (e.g. "GOOGL" turning into "OG"), which reads as broken, not just small.
+      // Requiring a real minimum width and height avoids that regardless of area.
+      const showTicker=tw>=26&&th>=16&&area>=400;
+      const fontSize=Math.max(8,Math.min(13,Math.min(tw/6,th/2.6)));
       const clickAttr=tile.locked?`demoGate('${{tile.ticker}}')`:`showView('list');loadTicker('${{tile.ticker}}')`;
       const c=heatColor(tile.change_pct);
       html+=`<div class="heat-tile${{tile.locked?' locked':''}}" style="left:${{left}}px;top:${{top}}px;width:${{tw}}px;height:${{th}}px;background:${{c.bg}};color:${{c.color}};text-shadow:${{c.shadow}};font-size:${{fontSize}}px" title="${{tile.ticker}} · ${{tile.change_pct??'-'}}%${{tile.locked?' · sign up to see the score':' · Alpha '+(tile.alpha_score??'-')}}" onclick="${{clickAttr}}">`+
@@ -10360,12 +10362,14 @@ function heatColor(chg){
   const cs=getComputedStyle(document.documentElement);
   const panel2=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
   const isDark=(panel2[0]+panel2[1]+panel2[2])/3<128;
-  // This app's brand --green (a muted teal picked for text/UI accents) never looks vivid
-  // even at full saturation. On dark theme use a purpose-built vivid pair and a visibly
-  // grey neutral instead of near-black, so a genuine 0% tile still reads as "a tile."
-  // Light theme keeps the brand colors -- neon on white would be harsh, not vivid.
-  const green=isDark?[0,200,120]:heatHex2rgb(cs.getPropertyValue('--green')||'#0e8a5f');
-  const red=isDark?[255,69,58]:heatHex2rgb(cs.getPropertyValue('--red')||'#c8402c');
+  // Real reference heatmaps (Finviz, TradingView) use the same punchy, purpose-built
+  // red/green regardless of the page's own light/dark chrome -- the tiles are their own
+  // colored surface, not text on the page background, so muting them for light theme (an
+  // earlier attempt here) just washed out the whole grid instead of looking like a
+  // heatmap. These are the ColorBrewer RdYlGn diverging-scale endpoints. Neutral still
+  // adapts to theme, since a 0% tile should read as "a visible, uncolored tile" either way.
+  const green=[26,152,80];
+  const red=[215,48,39];
   const neutral=isDark?[40,43,46]:panel2;
   const rgb=chg==null?neutral:(()=>{
     // A real trading day's moves cluster tightly around 0 -- a linear scale clamped at
@@ -10387,7 +10391,6 @@ function heatColor(chg){
   const light=luminance>150;
   return {bg:`rgb(${rgb.join(',')})`,color:light?'#12201a':'#fff',shadow:light?'0 1px 1px rgba(255,255,255,.6)':'0 1px 2px rgba(0,0,0,.55)'};
 }
-function badgeClass(v){return v==='Favorable'?'badge-favorable':v==='Caution'?'badge-caution':v==='Risk'?'badge-risk':''}
 function groupTiles(items,key){const groups={};items.forEach(t=>{const g=t[key]||'Other';(groups[g]=groups[g]||[]).push(t)});return groups}
 function renderHeatmap(){
   const el=document.getElementById('heatmapBody');
@@ -10413,10 +10416,15 @@ function renderHeatmap(){
     tileRects.forEach(tile=>{
       const tw=tile.x1-tile.x0,th=tile.y1-tile.y0,area=tw*th;
       const left=g.x0+tile.x0,top=g.y0+tile.y0;
-      const showTicker=area>420,showPct=area>1800;
-      const fontSize=Math.max(9,Math.min(15,Math.sqrt(area)/4.2));
+      // Gating on area alone let a tall, narrow sliver (small width, big height) pass
+      // the area check and then try to center a ticker symbol in a box too thin to hold
+      // it -- centered text overflowing a hidden box clips symmetrically from both
+      // sides (e.g. "GOOGL" turning into "OG"), which reads as broken, not just small.
+      // Requiring a real minimum width and height avoids that regardless of area.
+      const showTicker=tw>=28&&th>=18&&area>=450,showPct=tw>=34&&th>=32&&area>=1800;
+      const fontSize=Math.max(9,Math.min(15,Math.min(tw/6,th/2.8)));
       const c=heatColor(tile.change_pct);
-      html+=`<div class="heat-tile ${badgeClass(tile.timing_verdict)}" style="left:${left}px;top:${top}px;width:${tw}px;height:${th}px;background:${c.bg};color:${c.color};text-shadow:${c.shadow};font-size:${fontSize}px" title="${tile.ticker} · ${tile.change_pct??'-'}% · Score ${tile.alpha_score??'-'} · ${tile.timing_verdict||'Not yet reviewed'}${tile.sector?' · '+tile.sector:''}" onclick="location.href='/terminal?ticker=${tile.ticker}'">`+
+      html+=`<div class="heat-tile" style="left:${left}px;top:${top}px;width:${tw}px;height:${th}px;background:${c.bg};color:${c.color};text-shadow:${c.shadow};font-size:${fontSize}px" title="${tile.ticker} · ${tile.change_pct??'-'}% · Score ${tile.alpha_score??'-'} · ${tile.timing_verdict||'Not yet reviewed'}${tile.sector?' · '+tile.sector:''}" onclick="location.href='/terminal?ticker=${tile.ticker}'">`+
         (showTicker?`<b>${tile.ticker}</b>`:'')+
         (showPct?`<span>${tile.change_pct!=null?(tile.change_pct>=0?'+':'')+tile.change_pct+'%':''}</span>`:'')+
         `</div>`;
