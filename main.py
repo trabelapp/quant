@@ -5073,10 +5073,10 @@ async def api_heatmap(request: Request):
         d = dict(r)
         info = SECTOR_CACHE.get(d["ticker"]) or {}
         d["sector"] = info.get("sector")
-        cap = info.get("market_cap")
-        # Rough visual size tier (mega/large/mid+), not a precise market-cap definition --
-        # just enough to make the heatmap read as size-weighted rather than a flat grid.
-        d["cap_tier"] = 1 if cap and cap >= 200e9 else 2 if cap and cap >= 10e9 else 3
+        # Raw market cap, not a bucketed tier -- the treemap sizes each tile's actual
+        # area by this number (Finviz-style), so a coarse tier would make same-tier
+        # names indistinguishable in size for no reason.
+        d["market_cap"] = info.get("market_cap")
         tiles.append(d)
     if demo:
         # The grid itself is just today's price moves, which are public either way. The
@@ -7848,14 +7848,18 @@ h1.page-title{color:var(--head);font-size:25px;font-weight:800;margin:2px 0 18px
 .ai-market-summary .headline{color:var(--head);font-weight:800;font-size:18px;margin-bottom:10px;line-height:1.4}
 .ai-market-summary .body{font-size:15px;line-height:1.75;color:var(--text)}
 .ai-market-summary .meta{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);color:var(--dim);font-size:12.5px}
-.heat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(60px,1fr));gap:3px}
-.heat-tile{padding:9px 3px;text-align:center;font-size:11px;font-weight:700;cursor:pointer;color:#0a1f14;border-radius:5px}
+.heatmap-tree{position:relative;width:100%;border-radius:8px;overflow:hidden;background:var(--panel2)}
+.heat-group-box{position:absolute;box-sizing:border-box;border:2px solid var(--border);pointer-events:none}
+.heat-group-label{position:absolute;top:2px;left:3px;z-index:2;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:#fff;background:rgba(0,0,0,.55);padding:1px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 8px)}
+.heat-tile{position:absolute;z-index:1;box-sizing:border-box;border:1px solid var(--panel2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);line-height:1.2;transition:filter .1s;overflow:hidden}
+.heat-tile:hover{filter:brightness(1.22);z-index:5}
+.heat-tile.locked{opacity:.45}
+.heat-tile b{font-weight:800}
 .heat-tile.badge-favorable{box-shadow:0 0 0 2px #0e8a5f inset}
 .heat-tile.badge-caution{box-shadow:0 0 0 2px #a8660a inset}
 .heat-tile.badge-risk{box-shadow:0 0 0 2px #c8402c inset}
-.heat-tile.cap-1{grid-column:span 2;font-size:13px;padding-top:13px;padding-bottom:13px}
-.heat-tile.cap-2{font-size:11.5px}
-.heat-group-header{grid-column:1/-1;color:var(--dim);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin:14px 0 6px}
+.heat-legend{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:11px;color:var(--dim)}
+.heat-legend .bar{flex:1;max-width:220px;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red),var(--panel2),var(--green))}
 .groupby-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
 .groupby-row select{background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:7px 10px;border-radius:6px;font-size:14px}
 .badge{padding:4px 11px;border-radius:12px;font-weight:700;font-size:13px;display:inline-block}
@@ -9702,9 +9706,14 @@ html[data-theme="dark"] .badge-danger{{background:rgba(239,83,80,.15)}}
 .tab.active{{color:#fff;background:var(--green);border-color:var(--green)}}
 .sortbar{{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}}.sortbar select{{flex:1;min-width:100px;font-size:13px}}
 .heatmap{{overflow:auto;flex:1;display:flex;flex-direction:column;gap:4px}}
-.heat-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(52px,1fr));gap:3px}}
-.heat-tile{{padding:8px 3px;text-align:center;font-size:11px;font-weight:700;cursor:pointer;color:#0a1f14;border-radius:5px}}
-.group-header,.heat-group-header{{font-size:12px;color:var(--dim);background:var(--panel2);padding:6px 9px;letter-spacing:.3px;position:sticky;top:0;z-index:1;text-transform:uppercase;font-weight:700}}
+.heatmap-tree{{position:relative;width:100%;border-radius:8px;overflow:hidden;background:var(--panel2)}}
+.heat-group-box{{position:absolute;box-sizing:border-box;border:2px solid var(--border);pointer-events:none}}
+.heat-group-label{{position:absolute;top:2px;left:3px;z-index:2;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.2px;color:#fff;background:rgba(0,0,0,.55);padding:1px 5px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 6px)}}
+.heat-tile{{position:absolute;z-index:1;box-sizing:border-box;border:1px solid var(--panel2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);line-height:1.2;transition:filter .1s;overflow:hidden;font-weight:700;border-radius:0}}
+.heat-tile:hover{{filter:brightness(1.22);z-index:5}}
+.heat-tile.badge-favorable{{box-shadow:0 0 0 2px #0e8a5f inset}}
+.heat-tile.badge-caution{{box-shadow:0 0 0 2px #a8660a inset}}
+.heat-tile.badge-risk{{box-shadow:0 0 0 2px #c8402c inset}}
 .legend{{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin-top:8px}}
 .legend span{{display:inline-flex;align-items:center;gap:5px}}
 .legend i{{width:10px;height:2px;display:inline-block}}
@@ -9863,9 +9872,95 @@ document.addEventListener('click',(e)=>{{document.querySelectorAll('.help-icon.o
 function toggleAvatarMenu(){{const m=document.getElementById('avatarMenu');m.style.display=m.style.display==='none'?'block':'none'}}
 document.addEventListener('click',()=>{{const m=document.getElementById('avatarMenu');if(m)m.style.display='none'}});
 function showView(v){{currentView=v;document.getElementById('tabList').classList.toggle('active',v==='list');document.getElementById('tabHeatmap').classList.toggle('active',v==='heatmap');document.getElementById('sortbar').style.display=v==='list'?'flex':'none';document.getElementById('list').style.display=v==='list'?'block':'none';document.getElementById('heatmap').style.display=v==='heatmap'?'flex':'none';if(v==='heatmap')loadHeatmap()}}
-function heatColor(chg){{if(chg==null)return '#333';const c=Math.max(-5,Math.min(5,chg));const t=(c+5)/10;const r=Math.round(239+(38-239)*t),g=Math.round(83+(166-83)*t),b=Math.round(80+(154-80)*t);return `rgb(${{r}},${{g}},${{b}})`}}
+const HEAT_FLOOR_CAP=3e9;
+// Squarified treemap (Bruls/Huizing/van Wijk 1999) -- see the /market page's copy of
+// this same function for the full explanation of why squarify (not slice-and-dice)
+// matters once weights are as skewed as market cap.
+function squarify(items,x,y,w,h){{
+  const filtered=items.filter(d=>d.value>0);
+  if(!filtered.length||w<=0||h<=0)return [];
+  const total=filtered.reduce((a,d)=>a+d.value,0);
+  const scale=(w*h)/total;
+  let nodes=filtered.map(d=>({{...d,area:d.value*scale}}));
+  const result=[];
+  let cx=x,cy=y,cw=w,ch=h;
+  function worst(row,length){{
+    let sum=0,max=-Infinity,min=Infinity;
+    row.forEach(r=>{{sum+=r.area;if(r.area>max)max=r.area;if(r.area<min)min=r.area}});
+    const sq=length*length;
+    return Math.max((sq*max)/(sum*sum),(sum*sum)/(sq*min));
+  }}
+  while(nodes.length){{
+    const shortSide=Math.min(cw,ch);
+    let row=[nodes[0]],i=1;
+    while(i<nodes.length){{
+      const trial=row.concat(nodes[i]);
+      if(worst(trial,shortSide)<=worst(row,shortSide)){{row=trial;i++}}else break;
+    }}
+    const rowArea=row.reduce((a,r)=>a+r.area,0);
+    if(cw>=ch){{
+      const rowW=rowArea/ch;let yy=cy;
+      row.forEach(r=>{{const rh=r.area/rowW;r.x0=cx;r.y0=yy;r.x1=cx+rowW;r.y1=yy+rh;yy+=rh}});
+      cx+=rowW;cw-=rowW;
+    }}else{{
+      const rowH=rowArea/cw;let xx=cx;
+      row.forEach(r=>{{const rw=r.area/rowH;r.x0=xx;r.y0=cy;r.x1=xx+rw;r.y1=cy+rowH;xx+=rw}});
+      cy+=rowH;ch-=rowH;
+    }}
+    result.push(...row);
+    nodes=nodes.slice(row.length);
+  }}
+  return result;
+}}
+function heatHex2rgb(hex){{hex=(hex||'').trim().replace('#','');if(hex.length===3)hex=hex.split('').map(c=>c+c).join('');const n=parseInt(hex,16)||0;return [(n>>16)&255,(n>>8)&255,n&255]}}
+function heatColor(chg){{
+  const cs=getComputedStyle(document.documentElement);
+  const green=heatHex2rgb(cs.getPropertyValue('--green')||'#26a69a');
+  const red=heatHex2rgb(cs.getPropertyValue('--red')||'#ef5350');
+  const neutral=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
+  const rgb=chg==null?neutral:(()=>{{
+    const t=Math.min(1,Math.abs(chg)/4);
+    const target=chg>=0?green:red;
+    return neutral.map((n,i)=>Math.round(n+(target[i]-n)*t));
+  }})();
+  // See the /market page's copy of this function for why fixed white text isn't safe
+  // here -- light-theme tiles near 0% resolve close to the pale --panel2 background.
+  const luminance=0.299*rgb[0]+0.587*rgb[1]+0.114*rgb[2];
+  const light=luminance>150;
+  return {{bg:`rgb(${{rgb.join(',')}})`,color:light?'#12201a':'#fff',shadow:light?'0 1px 1px rgba(255,255,255,.6)':'0 1px 2px rgba(0,0,0,.55)'}};
+}}
 function groupByUniverse(items){{const groups={{}};items.forEach(t=>{{const g=t.universe||'Other';(groups[g]=groups[g]||[]).push(t)}});return groups}}
-async function loadHeatmap(){{const el=document.getElementById('heatmap');const r=await fetch(API+'/heatmap');const d=await r.json();if(!d.tiles?.length){{el.innerHTML='<div class="notice">No scan data yet.</div>';return}}const groups=groupByUniverse(d.tiles);el.innerHTML=Object.entries(groups).map(([g,items])=>`<div class="heat-group-header">${{g}} (${{items.length}})</div><div class="heat-grid">`+items.map(t=>`<div class="heat-tile${{t.locked?' locked':''}}" style="background:${{heatColor(t.change_pct)}}" title="${{t.ticker}} · ${{t.change_pct??'-'}}%${{t.locked?' · sign up to see the score':' · Alpha '+(t.alpha_score??'-')}}" onclick="${{t.locked?`demoGate('${{t.ticker}}')`:`showView('list');loadTicker('${{t.ticker}}')`}}">${{t.ticker}}</div>`).join('')+'</div>').join('')}}
+let lastHeatTiles2=[];
+function renderHeatmap2(){{
+  const el=document.getElementById('heatmap');
+  if(!lastHeatTiles2.length){{el.innerHTML='<div class="notice">No scan data yet.</div>';return}}
+  const groups=groupByUniverse(lastHeatTiles2);
+  const W=el.clientWidth||300,H=Math.max(280,el.clientHeight||420);
+  const groupItems=Object.entries(groups).map(([name,items])=>({{name,items,value:items.reduce((a,t)=>a+(t.market_cap||HEAT_FLOOR_CAP),0)}}));
+  const groupRects=squarify(groupItems,0,0,W,H);
+  let html=`<div class="heatmap-tree" style="height:${{H}}px">`;
+  groupRects.forEach(g=>{{
+    const gw=g.x1-g.x0,gh=g.y1-g.y0;
+    html+=`<div class="heat-group-box" style="left:${{g.x0}}px;top:${{g.y0}}px;width:${{gw}}px;height:${{gh}}px"><span class="heat-group-label">${{g.name}}</span></div>`;
+    const tileItems=g.items.map(t=>({{...t,value:t.market_cap||HEAT_FLOOR_CAP}}));
+    const tileRects=squarify(tileItems,0,0,gw,gh);
+    tileRects.forEach(tile=>{{
+      const tw=tile.x1-tile.x0,th=tile.y1-tile.y0,area=tw*th;
+      const left=g.x0+tile.x0,top=g.y0+tile.y0;
+      const showTicker=area>380,fontSize=Math.max(8,Math.min(13,Math.sqrt(area)/4.4));
+      const clickAttr=tile.locked?`demoGate('${{tile.ticker}}')`:`showView('list');loadTicker('${{tile.ticker}}')`;
+      const c=heatColor(tile.change_pct);
+      html+=`<div class="heat-tile${{tile.locked?' locked':''}}" style="left:${{left}}px;top:${{top}}px;width:${{tw}}px;height:${{th}}px;background:${{c.bg}};color:${{c.color}};text-shadow:${{c.shadow}};font-size:${{fontSize}}px" title="${{tile.ticker}} · ${{tile.change_pct??'-'}}%${{tile.locked?' · sign up to see the score':' · Alpha '+(tile.alpha_score??'-')}}" onclick="${{clickAttr}}">`+
+        (showTicker?`<b>${{tile.ticker}}</b>`:'')+
+        `</div>`;
+    }});
+  }});
+  html+='</div>';
+  el.innerHTML=html;
+}}
+async function loadHeatmap(){{const el=document.getElementById('heatmap');const r=await fetch(API+'/heatmap');const d=await r.json();lastHeatTiles2=d.tiles||[];renderHeatmap2()}}
+let heatResizeTimer2=null;
+window.addEventListener('resize',()=>{{clearTimeout(heatResizeTimer2);heatResizeTimer2=setTimeout(()=>{{if(currentView==='heatmap')renderHeatmap2()}},200)}});
 function sparklineSVG(arr){{if(!arr||arr.length<2)return '';const w=48,h=18;const min=Math.min(...arr),max=Math.max(...arr),range=(max-min)||1;const pts=arr.map((v,i)=>`${{(i/(arr.length-1)*w).toFixed(1)}},${{(h-((v-min)/range*h)).toFixed(1)}}`).join(' ');const color=arr[arr.length-1]>=arr[0]?'#26a69a':'#ef5350';return `<svg width="${{w}}" height="${{h}}" style="vertical-align:middle;flex-shrink:0"><polyline points="${{pts}}" fill="none" stroke="${{color}}" stroke-width="1.5"/></svg>`}}
 function verdictClass(v){{return v==='Favorable'?'badge-ok':v==='Caution'?'badge-warn':v==='Risk'?'badge-danger':'badge-pending'}}
 function renderEarnings(e){{const el=document.getElementById('earningsInfo');if(!e||(!e.last&&!e.next)){{el.innerText='Earnings: no data available';return}}const parts=[];if(e.last){{const beat=e.last.beat;const cls=beat===true?'beat':beat===false?'miss':'';const label=beat===true?'Beat':beat===false?'Miss':'Met';const surprise=e.last.surprise_pct!=null?` (${{label}} ${{e.last.surprise_pct>0?'+':''}}${{e.last.surprise_pct}}%)`:'';parts.push(`Last earnings <b>${{e.last.date}}</b>: EPS $${{e.last.eps_actual}} vs $${{e.last.eps_estimate??'-'}} est.<span class="${{cls}}">${{surprise}}</span>`)}}if(e.next){{parts.push(`Next earnings: <b>${{e.next.date}}</b>`)}}el.innerHTML=parts.join(' &middot; ')}}
@@ -10062,15 +10157,105 @@ async def market_page(request: Request):
 <section class="panel"><h3>AI Market Summary <small style="color:var(--dim);font-weight:normal;text-transform:none">(informational only, not investment advice)</small></h3><div id="aiMarketSummaryBody"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>Market Summary</h3><div id="marketSummaryBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
 <section class="panel"><h3>By Universe</h3><div id="byUniverseBody" class="summary-grid"><div class="empty-hint">Loading...</div></div></section>
-<section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart — bigger tiles are larger-cap</small></h3><div class="groupby-row"><span style="font-size:11.5px;color:var(--dim)">Group by</span><select id="heatGroupKey" onchange="renderHeatmap()"><option value="universe">Index</option><option value="sector">Sector</option></select></div><div id="heatmapBody"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel"><h3>Heatmap <small style="color:var(--dim);font-weight:normal;text-transform:none">click any tile to open its chart — bigger tiles are larger-cap</small></h3><div class="groupby-row"><span style="font-size:11.5px;color:var(--dim)">Group by</span><select id="heatGroupKey" onchange="renderHeatmap()"><option value="universe">Index</option><option value="sector">Sector</option></select></div><div id="heatmapBody"><div class="empty-hint">Loading...</div></div><div class="heat-legend"><span>−4%</span><span class="bar"></span><span>+4%</span></div></section>
 <section class="panel"><h3>Today's Market Briefing<span class="help-icon" onclick="event.stopPropagation();this.classList.toggle('open')">?<span class="tip-bubble">8-K: a company reporting a major, one-off event (new CEO, M&amp;A, restructuring). 10-Q: a quarterly earnings report. 10-K: a full annual report. These are the original filings straight from the SEC, not analysis or a stock tip — click one to read it yourself.</span></span> <small style="color:var(--dim);font-weight:normal;text-transform:none">SEC filings, QUANTIFY's own universe only</small></h3><div id="secBriefingBody"><div class="empty-hint">Loading...</div></div></section>
 <script>
 let lastHeatTiles=[];
-function heatColor(chg){if(chg==null)return '#333';const c=Math.max(-5,Math.min(5,chg));const t=(c+5)/10;const r=Math.round(239+(38-239)*t),g=Math.round(83+(166-83)*t),b=Math.round(80+(154-80)*t);return `rgb(${r},${g},${b})`}
+const HEAT_FLOOR_CAP=3e9;
+// Squarified treemap (Bruls/Huizing/van Wijk 1999): packs items into a rectangle so
+// that area is proportional to `value` while keeping tiles as close to square as
+// possible -- this is what makes a Finviz-style heatmap read as a treemap rather than
+// a few oversized tiles next to a wall of slivers, which a naive slice-and-dice layout
+// produces on a skewed distribution like market cap (mega-caps vs. everything else).
+function squarify(items,x,y,w,h){
+  const filtered=items.filter(d=>d.value>0);
+  if(!filtered.length||w<=0||h<=0)return [];
+  const total=filtered.reduce((a,d)=>a+d.value,0);
+  const scale=(w*h)/total;
+  let nodes=filtered.map(d=>({...d,area:d.value*scale}));
+  const result=[];
+  let cx=x,cy=y,cw=w,ch=h;
+  function worst(row,length){
+    let sum=0,max=-Infinity,min=Infinity;
+    row.forEach(r=>{sum+=r.area;if(r.area>max)max=r.area;if(r.area<min)min=r.area});
+    const sq=length*length;
+    return Math.max((sq*max)/(sum*sum),(sum*sum)/(sq*min));
+  }
+  while(nodes.length){
+    const shortSide=Math.min(cw,ch);
+    let row=[nodes[0]],i=1;
+    while(i<nodes.length){
+      const trial=row.concat(nodes[i]);
+      if(worst(trial,shortSide)<=worst(row,shortSide)){row=trial;i++}else break;
+    }
+    const rowArea=row.reduce((a,r)=>a+r.area,0);
+    if(cw>=ch){
+      const rowW=rowArea/ch;let yy=cy;
+      row.forEach(r=>{const rh=r.area/rowW;r.x0=cx;r.y0=yy;r.x1=cx+rowW;r.y1=yy+rh;yy+=rh});
+      cx+=rowW;cw-=rowW;
+    }else{
+      const rowH=rowArea/cw;let xx=cx;
+      row.forEach(r=>{const rw=r.area/rowH;r.x0=xx;r.y0=cy;r.x1=xx+rw;r.y1=cy+rowH;xx+=rw});
+      cy+=rowH;ch-=rowH;
+    }
+    result.push(...row);
+    nodes=nodes.slice(row.length);
+  }
+  return result;
+}
+function heatHex2rgb(hex){hex=(hex||'').trim().replace('#','');if(hex.length===3)hex=hex.split('').map(c=>c+c).join('');const n=parseInt(hex,16)||0;return [(n>>16)&255,(n>>8)&255,n&255]}
+function heatColor(chg){
+  const cs=getComputedStyle(document.documentElement);
+  const green=heatHex2rgb(cs.getPropertyValue('--green')||'#26a69a');
+  const red=heatHex2rgb(cs.getPropertyValue('--red')||'#ef5350');
+  const neutral=heatHex2rgb(cs.getPropertyValue('--panel2')||'#0a0a0a');
+  const rgb=chg==null?neutral:(()=>{
+    const t=Math.min(1,Math.abs(chg)/4);
+    const target=chg>=0?green:red;
+    return neutral.map((n,i)=>Math.round(n+(target[i]-n)*t));
+  })();
+  // Light-theme tiles near 0% resolve close to the pale --panel2 background, where
+  // fixed white text (fine against every dark-theme tile and every saturated green/red
+  // endpoint) becomes nearly unreadable -- pick text color from the tile's own
+  // luminance instead of assuming the tile is always dark.
+  const luminance=0.299*rgb[0]+0.587*rgb[1]+0.114*rgb[2];
+  const light=luminance>150;
+  return {bg:`rgb(${rgb.join(',')})`,color:light?'#12201a':'#fff',shadow:light?'0 1px 1px rgba(255,255,255,.6)':'0 1px 2px rgba(0,0,0,.55)'};
+}
 function badgeClass(v){return v==='Favorable'?'badge-favorable':v==='Caution'?'badge-caution':v==='Risk'?'badge-risk':''}
 function groupTiles(items,key){const groups={};items.forEach(t=>{const g=t[key]||'Other';(groups[g]=groups[g]||[]).push(t)});return groups}
-function renderHeatmap(){const el=document.getElementById('heatmapBody');if(!lastHeatTiles.length){el.innerHTML='<div class="notice">No scan data yet — check back after the next scan.</div>';return}const key=document.getElementById('heatGroupKey').value;const groups=groupTiles(lastHeatTiles,key);const sortedGroups=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);el.innerHTML=sortedGroups.map(([g,items])=>`<div class="heat-group-header">${g} (${items.length})</div><div class="heat-grid">`+[...items].sort((a,b)=>(a.cap_tier??3)-(b.cap_tier??3)).map(t=>`<div class="heat-tile cap-${t.cap_tier??3} ${badgeClass(t.timing_verdict)}" style="background:${heatColor(t.change_pct)}" title="${t.ticker} · ${t.change_pct??'-'}% · Score ${t.alpha_score??'-'} · ${t.timing_verdict||'Not yet reviewed'}${t.sector?' · '+t.sector:''}" onclick="location.href='/terminal?ticker=${t.ticker}'">${t.ticker}</div>`).join('')+'</div>').join('')}
+function renderHeatmap(){
+  const el=document.getElementById('heatmapBody');
+  if(!lastHeatTiles.length){el.innerHTML='<div class="notice">No scan data yet — check back after the next scan.</div>';return}
+  const key=document.getElementById('heatGroupKey').value;
+  const groups=groupTiles(lastHeatTiles,key);
+  const W=el.clientWidth||800,H=Math.max(420,Math.round(W*0.55));
+  const groupItems=Object.entries(groups).map(([name,items])=>({name,items,value:items.reduce((a,t)=>a+(t.market_cap||HEAT_FLOOR_CAP),0)}));
+  const groupRects=squarify(groupItems,0,0,W,H);
+  let html=`<div class="heatmap-tree" style="height:${H}px">`;
+  groupRects.forEach(g=>{
+    const gw=g.x1-g.x0,gh=g.y1-g.y0;
+    html+=`<div class="heat-group-box" style="left:${g.x0}px;top:${g.y0}px;width:${gw}px;height:${gh}px"><span class="heat-group-label">${g.name} (${g.items.length})</span></div>`;
+    const tileItems=g.items.map(t=>({...t,value:t.market_cap||HEAT_FLOOR_CAP}));
+    const tileRects=squarify(tileItems,0,0,gw,gh);
+    tileRects.forEach(tile=>{
+      const tw=tile.x1-tile.x0,th=tile.y1-tile.y0,area=tw*th;
+      const left=g.x0+tile.x0,top=g.y0+tile.y0;
+      const showTicker=area>420,showPct=area>1800;
+      const fontSize=Math.max(9,Math.min(15,Math.sqrt(area)/4.2));
+      const c=heatColor(tile.change_pct);
+      html+=`<div class="heat-tile ${badgeClass(tile.timing_verdict)}" style="left:${left}px;top:${top}px;width:${tw}px;height:${th}px;background:${c.bg};color:${c.color};text-shadow:${c.shadow};font-size:${fontSize}px" title="${tile.ticker} · ${tile.change_pct??'-'}% · Score ${tile.alpha_score??'-'} · ${tile.timing_verdict||'Not yet reviewed'}${tile.sector?' · '+tile.sector:''}" onclick="location.href='/terminal?ticker=${tile.ticker}'">`+
+        (showTicker?`<b>${tile.ticker}</b>`:'')+
+        (showPct?`<span>${tile.change_pct!=null?(tile.change_pct>=0?'+':'')+tile.change_pct+'%':''}</span>`:'')+
+        `</div>`;
+    });
+  });
+  html+='</div>';
+  el.innerHTML=html;
+}
 async function loadHeatmap(){try{const r=await fetch('/api/heatmap');if(r.status===402){location.href='/subscription';return}const d=await r.json();lastHeatTiles=d.tiles||[];renderHeatmap()}catch(e){document.getElementById('heatmapBody').innerHTML='<div class="notice">Could not load the heatmap.</div>';console.error('Heatmap load failed',e)}}
+let heatResizeTimer=null;
+window.addEventListener('resize',()=>{clearTimeout(heatResizeTimer);heatResizeTimer=setTimeout(renderHeatmap,200)});
 async function loadMarketSummary(){try{const r=await fetch('/api/market-summary');if(r.status===402){location.href='/subscription';return}const d=await r.json();const chg=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const cls=(v)=>v==null?'':(v>=0?'gain':'loss');
 const aiEl=document.getElementById('aiMarketSummaryBody');
 if(d.ai_headline&&d.ai_summary){const genTime=d.ai_generated_at?new Date(d.ai_generated_at*1000).toLocaleString([],{hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'}):null;aiEl.innerHTML=`<div class="ai-market-summary"><div class="headline">${d.ai_headline}</div><div class="body">${d.ai_summary}</div>${genTime?`<div class="meta">Generated from this scan cycle's data · ${genTime}</div>`:''}</div>`}
