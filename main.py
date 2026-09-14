@@ -6542,9 +6542,22 @@ h1 .hl{color:var(--green)}
   .qs-input-row{flex-direction:column}
   .qs-join-btn{padding:13px;width:100%}
 }
-.mock{max-width:940px;margin:68px auto 0;border:1px solid var(--border);border-radius:16px;background:var(--panel);text-align:left;box-shadow:0 30px 70px -30px rgba(18,32,26,.25);overflow:hidden}
-.mock-bar{display:flex;gap:6px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--panel2)}
-.mock-dot{width:10px;height:10px;border-radius:50%;background:#d7ddd9}
+.mock-assembly{max-width:980px;margin:68px auto 0}
+.mock-device{text-align:center}
+.mock-frame{padding:14px 14px 0;background:linear-gradient(180deg,#3d4247,#1d2023);border-radius:22px;box-shadow:0 55px 110px -35px rgba(10,22,17,.4),inset 0 1px 0 rgba(255,255,255,.08),inset 0 0 0 1px rgba(0,0,0,.3)}
+.mock{border-radius:10px 10px 0 0;background:var(--panel);text-align:left;overflow:hidden}
+.mock-bar{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--panel2)}
+.mock-dots{display:flex;gap:6px;flex:0 0 auto}
+.mock-dot{width:10px;height:10px;border-radius:50%}
+.mock-dot-r{background:#ff5f57}
+.mock-dot-y{background:#febc2e}
+.mock-dot-g{background:#28c840}
+.mock-url{flex:1;display:flex;justify-content:center;min-width:0}
+.mock-url-pill{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;background:var(--panel);border:1px solid var(--border);border-radius:999px;max-width:260px;font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mock-url-pill svg{flex-shrink:0;opacity:.7}
+.mock-bar-spacer{flex:0 0 42px}
+.mock-stand-neck{width:90px;height:22px;margin:0 auto;background:linear-gradient(180deg,#1d2023,#383c40);clip-path:polygon(18% 0,82% 0,100% 100%,0% 100%)}
+.mock-stand-base{width:240px;height:9px;margin:6px auto 0;background:#1d2023;border-radius:5px;box-shadow:0 10px 22px -10px rgba(0,0,0,.4)}
 .mock-grid{display:grid;grid-template-columns:1.1fr 1.6fr 1.3fr;gap:1px;background:var(--border)}
 .mock-col{background:var(--panel);padding:18px}
 .mock-h{font-size:12px;color:var(--dim);letter-spacing:.4px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:8px;font-weight:700}
@@ -6697,7 +6710,11 @@ footer a{color:var(--dim2);text-decoration:underline}
   .cta-row .btn{display:block;width:100%;white-space:normal;line-height:1.3;padding:15px 12px;font-size:16px}
   /* Pull the scanner mock up so its top edge shows above the fold: the product output is
      the thing that explains the product, and it used to start entirely below it. */
-  .mock{margin-top:30px}
+  .mock-assembly{margin-top:30px}
+  .mock-frame{padding:10px 10px 0;border-radius:16px}
+  .mock-stand-neck{width:56px;height:14px}
+  .mock-stand-base{width:150px;height:7px}
+  .mock-url-pill{font-size:11px;padding:4px 10px;max-width:150px}
   .value-stack{padding:4px 20px}
   .value-row{font-size:14.5px;padding:14px 0}
   .value-price .amount{font-size:38px}
@@ -6737,8 +6754,15 @@ footer a{color:var(--dim2);text-decoration:underline}
 </div>
 <div class="cta-note hero-in hero-in-5">%%QS_NOTE%%</div>
 
-<div class="mock" data-reveal>
-<div class="mock-bar"><div class="mock-dot"></div><div class="mock-dot"></div><div class="mock-dot"></div></div>
+<div class="mock-assembly" data-reveal>
+<div class="mock-device">
+<div class="mock-frame">
+<div class="mock">
+<div class="mock-bar">
+<div class="mock-dots"><span class="mock-dot mock-dot-r"></span><span class="mock-dot mock-dot-y"></span><span class="mock-dot mock-dot-g"></span></div>
+<div class="mock-url"><span class="mock-url-pill"><svg width="10" height="10" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10" width="12" height="9" rx="2"/><path d="M8 10V7a3 3 0 016 0v3"/></svg>quantify.trading</span></div>
+<div class="mock-bar-spacer"></div>
+</div>
 <div class="mock-grid">
 <div class="mock-col">
 <div class="mock-h" id="mockH"><span class="live-dot"></span>MARKET SCANNER · 13 detected / 518</div>
@@ -6766,6 +6790,11 @@ footer a{color:var(--dim2);text-decoration:underline}
 </div>
 </div>
 <div style="text-align:center;padding:8px 0 2px;font-size:10.5px;color:var(--dim)" id="mockFooterNote">Illustrative example</div>
+</div>
+</div>
+<div class="mock-stand-neck"></div>
+<div class="mock-stand-base"></div>
+</div>
 </div>
 <div style="text-align:center;margin-top:28px">
 <p style="color:var(--dim2);font-size:13.5px;margin-bottom:14px">%%MOCK_NOTE%%</p>
