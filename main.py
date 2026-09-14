@@ -6773,6 +6773,27 @@ footer a{color:var(--dim2);text-decoration:underline}
 </div>
 </section>
 
+<section id="value">
+<div class="section-head">
+<div class="kicker">WHAT $30 ACTUALLY BUYS</div>
+<h2>Here's what you're really getting.</h2>
+<p>Priced the way each piece sells on its own elsewhere.</p>
+</div>
+<div class="value-stack" data-reveal>
+<div class="value-row"><b>AI-written risk analysis report on every pick</b><span>$20/mo value</span></div>
+<div class="value-row"><b>Snowflake-style fundamentals, financials at a glance</b><span>$30/mo value</span></div>
+<div class="value-row"><b>Hours saved not hunting for stocks one by one</b><span>$40/mo value</span></div>
+<div class="value-row"><b>Whole-market summary at a glance</b><span>$10/mo value</span></div>
+<div class="value-total"><span class="label">Total value</span><span class="amount">$100/mo</span></div>
+<div class="value-price">
+<div class="now">Your price</div>
+<div class="amount">$30<span>/month</span></div>
+</div>
+<a class="btn" href="/signup" style="display:block;text-align:center">Start Free Trial</a>
+<p style="text-align:center;font-size:13px;color:var(--dim);margin-top:12px">The quant scanner and every ticker's Quant Score are free, no trial needed — this is what Pro adds on top. <a href="/pricing">Compare plans →</a></p>
+</div>
+</section>
+
 <section id="how">
 <div class="section-head">
 <div class="kicker">HOW IT WORKS</div>
@@ -6843,27 +6864,6 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5h16v10H8l-4 4v-4H3z"/></svg></div><h4>Plain-language AI review</h4><p>Every detected ticker gets a written quant review and explicit risk check, in plain English.</p></div>
 <div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 15l5-6 4 3 7-9M19 3h-4v4"/></svg></div><h4>52-week &amp; trend context</h4><p>Distance from the 52-week high/low and 200-day trend, so you see where a stock actually sits.</p></div>
 <div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 3a5 5 0 00-5 5v3l-2 4h14l-2-4V8a5 5 0 00-5-5zM9 18a2 2 0 004 0"/></svg></div><h4>Price alerts &amp; news</h4><p>Set a target price and get emailed when it's hit, with live headlines next to the chart.</p></div>
-</div>
-</section>
-
-<section id="value">
-<div class="section-head">
-<div class="kicker">WHAT $30 ACTUALLY BUYS</div>
-<h2>Here's what you're really getting.</h2>
-<p>Priced the way each piece sells on its own elsewhere.</p>
-</div>
-<div class="value-stack" data-reveal>
-<div class="value-row"><b>AI-written risk analysis report on every pick</b><span>$20/mo value</span></div>
-<div class="value-row"><b>Snowflake-style fundamentals, financials at a glance</b><span>$30/mo value</span></div>
-<div class="value-row"><b>Hours saved not hunting for stocks one by one</b><span>$40/mo value</span></div>
-<div class="value-row"><b>Whole-market summary at a glance</b><span>$10/mo value</span></div>
-<div class="value-total"><span class="label">Total value</span><span class="amount">$100/mo</span></div>
-<div class="value-price">
-<div class="now">Your price</div>
-<div class="amount">$30<span>/month</span></div>
-</div>
-<a class="btn" href="/signup" style="display:block;text-align:center">Start Free Trial</a>
-<p style="text-align:center;font-size:13px;color:var(--dim);margin-top:12px">The quant scanner and every ticker's Quant Score are free, no trial needed — this is what Pro adds on top. <a href="/pricing">Compare plans →</a></p>
 </div>
 </section>
 
