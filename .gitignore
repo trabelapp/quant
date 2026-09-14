@@ -13,6 +13,7 @@ market_ai_summary_cache.json
 sector_cache.json
 sec_ticker_cik.json
 high_score_digest_state.json
+regime_guardrail_state.json
 users.db.bak_*
 venv/
 .claude/

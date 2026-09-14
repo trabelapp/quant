@@ -132,12 +132,24 @@ RISK_FREE_ANNUAL_PCT = 4.5
 # Bump when the shape or meaning of the results changes. A cached result from an older
 # version is discarded and recomputed rather than rendered, so the site never shows
 # numbers whose methodology no longer matches what the page says it did.
-BACKTEST_SCHEMA_VERSION = 3
+BACKTEST_SCHEMA_VERSION = 4
 BACKTEST_CACHE = {"computed_at": None, "results": None, "error": None}
 # Tiny derived-array byproduct of the same backtest run, kept so the /backtest simulator
 # can re-score any pullback band the visitor picks without re-downloading price history --
 # see SIM_CACHE_FILE and simulate_backtest() below.
 _SIM_CACHE_STATE = {"data": None, "mtime": None}
+# Concept-drift guardrail for the regime-adaptive pullback band (PULLBACK_MIN_ELEVATED /
+# ATR_REGIME_LOOKBACK, see calculate_alpha_score): re-checked as a byproduct of the same
+# weekly backtest refresh (no extra downloads -- reuses the OHLC that loop already pulls
+# per ticker), comparing the fixed 10-25% band against the live adaptive band on THIS
+# refresh's data. This only ever emails CONTACT_NOTIFY_EMAIL when the adaptive band's
+# validated edge looks like it has degraded -- it never changes PULLBACK_MIN_ELEVATED,
+# PULLBACK_MAX_ELEVATED or ATR_REGIME_LOOKBACK itself. Those are a deliberate, one-time
+# decision made after a proper walk-forward validation (see regime_adaptive_stress.py);
+# auto-adjusting them on an unreviewed schedule would let the live scoring rule drift
+# without anyone deciding that was the right call.
+REGIME_GUARDRAIL_FILE = DATA_DIR / "regime_guardrail_state.json"
+REGIME_GUARDRAIL_STATE = {"checked_at": None, "fixed": None, "adaptive": None, "degraded": None}
 MARKET_AI_SUMMARY_FILE = DATA_DIR / "market_ai_summary_cache.json"
 MARKET_AI_SUMMARY_CACHE = {"scan_date": None, "generated_at": None, "headline": None, "summary": None, "error": None}
 HIGH_SCORE_ALERT_THRESHOLD = 90
@@ -2020,6 +2032,11 @@ UI_STRINGS = {
     "worst_case": {"en": "Worst case", "ko": "최악의 경우"},
     "sharpe_ratio": {"en": "Sharpe ratio", "ko": "샤프 지수"},
     "sortino_ratio": {"en": "Sortino ratio", "ko": "소르티노 지수"},
+    "equity_curve_title": {"en": "Walk-Forward Equity Curve", "ko": "워크포워드 누적 수익률 곡선"},
+    "equity_curve_hint": {"en": "90-day horizon, in-sample vs out-of-sample, by trade number",
+                           "ko": "90일 기준, 인샘플 vs 아웃오브샘플, 거래 순번 기준"},
+    "equity_curve_empty": {"en": "Not enough signals yet to plot an equity curve.",
+                            "ko": "곡선을 그리기에 신호 수가 아직 부족합니다."},
     "sp500_avg": {"en": "S&amp;P 500 avg (same period)", "ko": "S&amp;P 500 평균 (동일 기간)"},
     "page_portfolio": {"en": "Portfolio", "ko": "포트폴리오"},
     "page_subscription": {"en": "Subscription", "ko": "구독"},
@@ -3283,6 +3300,18 @@ def load_backtest_cache():
         return False
 
 
+def load_regime_guardrail_state():
+    if not REGIME_GUARDRAIL_FILE.exists():
+        return False
+    try:
+        payload = json.loads(REGIME_GUARDRAIL_FILE.read_text(encoding="utf-8"))
+        REGIME_GUARDRAIL_STATE.update(payload)
+        return True
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Regime guardrail state load error: {exc}")
+        return False
+
+
 def load_market_ai_summary_cache():
     if not MARKET_AI_SUMMARY_FILE.exists():
         return False
@@ -3354,6 +3383,25 @@ def _summarize_returns(returns, cost_pct: float = 0.0, horizon_days: Optional[in
         "t_stat": t_stat,
         "low_confidence": n < 30,
     }
+
+
+def _build_equity_curve(events, cost_pct: float = 0.0) -> list:
+    """events: list of (entry_date, return_pct) tuples at a single horizon. Sorts
+    chronologically, subtracts cost_pct per event (matching _summarize_returns' net-of-
+    cost convention), and returns a cumulative, equal-weighted, non-compounding return
+    curve indexed by trade sequence number rather than calendar date. In-sample and out-
+    of-sample cover different, non-overlapping calendar windows by construction, so a
+    date-indexed x-axis would never let them overlap -- indexing by trade number instead
+    (both start at trade 0) is what makes the two shapes comparable on one chart."""
+    if not events:
+        return []
+    events_sorted = sorted(events, key=lambda e: e[0])
+    curve = []
+    cum = 0.0
+    for idx, (entry_date, ret) in enumerate(events_sorted):
+        cum += ret - cost_pct
+        curve.append({"trade": idx, "date": entry_date.strftime("%Y-%m-%d"), "cum_return_pct": round(cum, 2)})
+    return curve
 
 
 def _load_backtest_sim_cache() -> dict:
@@ -3438,12 +3486,22 @@ async def _run_backtest_locked():
     bench_matched = {h: [] for h in horizons}
     signal_dates = []
     signal_count = 0
+    # In-sample vs out-of-sample equity-curve events (entry_date, return_pct) at the 90d
+    # horizon only -- the headline horizon used everywhere else on the validation note.
+    # Turned into two cumulative-return series after the loop (see _build_equity_curve).
+    equity_events_in: list = []
+    equity_events_out: list = []
     # Byproduct of this same loop, kept for the /backtest simulator: the pullback
     # distance and trend series don't depend on PULLBACK_MIN/MAX at all, and neither do
     # the forward returns -- only the entry rule built from them does. Caching these
     # small derived arrays (not the raw OHLCV DataFrame) lets a slider re-score any band
     # instantly later without ever re-downloading price history.
     sim_cache: dict = {}
+    # Regime-guardrail accumulators (see REGIME_GUARDRAIL_STATE above) -- fixed vs.
+    # adaptive-band 90d forward returns on this exact refresh's sample, no separate
+    # download.
+    guardrail_fixed_returns: list = []
+    guardrail_adaptive_returns: list = []
     for i_ticker, ticker in enumerate(sample):
         try:
             # cache=False: this loop touches every ticker in the universe exactly once
@@ -3466,6 +3524,29 @@ async def _run_backtest_locked():
                 "above_trend": (close > close.rolling(200).mean()).to_numpy(),
                 "fwd_ret": {h: ((close.shift(-h) / close - 1) * 100).to_numpy() for h in horizons},
             }
+            # Regime guardrail: fixed 10-25% band vs. the live regime-adaptive band, on
+            # the exact same pct_off_high/above_trend/fwd_ret already computed above --
+            # entirely a byproduct, no extra data or download.
+            pct_off_high_arr = sim_cache[ticker]["pct_off_high"]
+            above_trend_arr = sim_cache[ticker]["above_trend"]
+            fwd90 = sim_cache[ticker]["fwd_ret"][90]
+            valid_idx = np.zeros(len(close), dtype=bool)
+            valid_idx[70:] = True
+            valid90 = valid_idx & ~np.isnan(fwd90)
+
+            fixed_in_zone = above_trend_arr & (pct_off_high_arr >= PULLBACK_MIN) & (pct_off_high_arr <= PULLBACK_MAX)
+            fixed_prev = np.concatenate(([False], fixed_in_zone[:-1]))
+            fixed_fresh = fixed_in_zone & ~fixed_prev & valid90
+            guardrail_fixed_returns.extend(fwd90[fixed_fresh].tolist())
+
+            elevated_arr = _elevated_regime_series(close, high, low).to_numpy()
+            adaptive_min = np.where(elevated_arr, PULLBACK_MIN_ELEVATED, PULLBACK_MIN)
+            adaptive_max = np.where(elevated_arr, PULLBACK_MAX_ELEVATED, PULLBACK_MAX)
+            adaptive_in_zone = above_trend_arr & (pct_off_high_arr >= adaptive_min) & (pct_off_high_arr <= adaptive_max)
+            adaptive_prev = np.concatenate(([False], adaptive_in_zone[:-1]))
+            adaptive_fresh = adaptive_in_zone & ~adaptive_prev & valid90
+            guardrail_adaptive_returns.extend(fwd90[adaptive_fresh].tolist())
+
             scores = calculate_alpha_score_series(close, high, low)
             passed = (scores >= QUANT_PASS_THRESHOLD).to_numpy()
             n = len(close)
@@ -3486,6 +3567,8 @@ async def _run_backtest_locked():
                         ret = float(close.iloc[i + h] / entry - 1) * 100
                         forward_returns[h].append(ret)
                         (in_sample[h] if i < split_idx else out_sample[h]).append(ret)
+                        if h == 90:
+                            (equity_events_in if i < split_idx else equity_events_out).append((entry_date, ret))
                         signal_dates.append((h, entry_date))
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Backtest ticker error ({ticker}): {exc}")
@@ -3538,6 +3621,13 @@ async def _run_backtest_locked():
             **{f"in_sample_{h}d": _summarize_returns(in_sample[h], cost, horizon_days=h) for h in horizons},
             **{f"out_of_sample_{h}d": _summarize_returns(out_sample[h], cost, horizon_days=h) for h in horizons},
         },
+        # 90d-horizon cumulative return curves, in-sample vs out-of-sample, indexed by
+        # trade number (see _build_equity_curve) -- the direct visual evidence behind the
+        # in_sample_90d/out_of_sample_90d summary numbers above.
+        "equity_curve": {
+            "in_sample": _build_equity_curve(equity_events_in, cost),
+            "out_of_sample": _build_equity_curve(equity_events_out, cost),
+        },
         "assumptions": {
             "round_trip_cost_pct": cost,
             "universe": "current S&P 500 + Nasdaq-100 constituents",
@@ -3568,11 +3658,58 @@ async def _run_backtest_locked():
         _SIM_CACHE_STATE["mtime"] = time.time()
     except Exception as exc:
         print(f"[Error: {type(exc).__name__}] Backtest simulator cache save error: {exc}")
+
+    # Regime guardrail (see REGIME_GUARDRAIL_STATE above): compares fixed vs. adaptive
+    # band on this refresh's data and emails CONTACT_NOTIFY_EMAIL only if the adaptive
+    # band's validated edge looks gone. Never writes PULLBACK_MIN_ELEVATED,
+    # PULLBACK_MAX_ELEVATED or ATR_REGIME_LOOKBACK -- those stay a human decision.
+    try:
+        fixed_stat = _summarize_returns(guardrail_fixed_returns, cost, horizon_days=90)
+        adaptive_stat = _summarize_returns(guardrail_adaptive_returns, cost, horizon_days=90)
+        degraded = (
+            fixed_stat is None or adaptive_stat is None
+            or adaptive_stat["avg_return_pct"] <= fixed_stat["avg_return_pct"]
+            or adaptive_stat["low_confidence"]
+        )
+        REGIME_GUARDRAIL_STATE.update({
+            "checked_at": time.time(), "fixed": fixed_stat, "adaptive": adaptive_stat, "degraded": degraded,
+        })
+        try:
+            REGIME_GUARDRAIL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp_g = REGIME_GUARDRAIL_FILE.with_suffix(".tmp")
+            tmp_g.write_text(json.dumps(REGIME_GUARDRAIL_STATE, ensure_ascii=False), encoding="utf-8")
+            tmp_g.replace(REGIME_GUARDRAIL_FILE)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Regime guardrail state save error: {exc}")
+        if degraded:
+            body = (
+                "The regime-adaptive pullback band's validated out-of-sample edge no longer clearly "
+                "beats the fixed 10-25% band on this week's refresh. No live parameter was changed -- "
+                "this is informational only, for manual review.\n\n"
+                f"Fixed band (10-25%), 90d forward returns: {fixed_stat}\n\n"
+                f"Adaptive band (10-25% / 20-40% by regime), 90d forward returns: {adaptive_stat}\n\n"
+                "If this holds for more than one weekly refresh, re-run the full walk-forward "
+                "validation (regime_adaptive_stress.py, or an equivalent against fresh data) before "
+                "deciding whether to keep, retune, or revert PULLBACK_MIN_ELEVATED / "
+                "PULLBACK_MAX_ELEVATED / ATR_REGIME_LOOKBACK in main.py. This alert does not mean the "
+                "band is broken -- one weekly sample is not enough to conclude that on its own."
+            )
+            await asyncio.to_thread(
+                send_email_notification, CONTACT_NOTIFY_EMAIL,
+                "[QUANTIFY] Regime-adaptive band guardrail: review recommended", body,
+            )
+            print("[regime-guardrail] Adaptive band did not beat fixed on this refresh -- alert emailed.")
+        else:
+            print(f"[regime-guardrail] OK -- fixed avg={fixed_stat['avg_return_pct']}% "
+                  f"adaptive avg={adaptive_stat['avg_return_pct']}% (n={adaptive_stat['n']})")
+    except Exception as exc:
+        print(f"[Error: {type(exc).__name__}] Regime guardrail check failed: {exc}")
     gc.collect()
 
 
 async def backtest_scheduler():
     loaded = load_backtest_cache()
+    load_regime_guardrail_state()
     computed_at = BACKTEST_CACHE.get("computed_at")
     age_hr = round((time.time() - computed_at) / 3600, 1) if computed_at else None
     print(f"[backtest] cache file loaded={loaded} computed_at_age_hours={age_hr} "
@@ -5340,6 +5477,18 @@ async def api_admin_reconcile_gumroad(token: Optional[str] = None, token_form: O
         return JSONResponse({"error": "GUMROAD_ACCESS_TOKEN is not configured -- nothing to check against."}, status_code=503)
     await _run_gumroad_reconcile_once()
     return {"ok": True, "message": "Reconciliation pass complete -- see server logs for how many accounts were downgraded."}
+
+
+@app.get("/api/admin/regime-guardrail-status")
+async def api_admin_regime_guardrail_status(token: Optional[str] = None):
+    """Read-only: the regime-adaptive pullback band's most recent fixed-vs-adaptive
+    comparison (see REGIME_GUARDRAIL_STATE), recomputed as a byproduct of every weekly
+    backtest refresh. This never changes a live parameter itself -- it only reports
+    whether the last comparison suggested the adaptive band's edge has degraded, which
+    is otherwise only visible via the alert email or the server logs."""
+    if not _require_admin_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    return REGIME_GUARDRAIL_STATE
 
 
 @app.get("/api/admin/run-batch")
@@ -10525,9 +10674,43 @@ async def backtest_page(request: Request):
     ko_js = str(lang == "ko").lower()
     body = f"""
 <section class="panel"><h3>Strategy Performance <small style="color:var(--dim);font-weight:normal;text-transform:none">(real historical replay, not a guarantee of future results)</small></h3><div id="backtestBody"><div class="empty-hint">Loading...</div></div></section>
+<section class="panel"><h3>{t("equity_curve_title", lang)} <small style="color:var(--dim);font-weight:normal;text-transform:none">{t("equity_curve_hint", lang)}</small></h3><div id="equityCurveBody"><div class="empty-hint">{t("loading", lang)}</div></div></section>
 <section class="panel"><h3>Methodology</h3><p style="font-size:12.5px;line-height:1.7;color:var(--text)">%%BT_METHOD%% %%BT_FAQ%%</p></section>
 <script>
 const KO={ko_js};
+const EQUITY_CURVE_EMPTY_TEXT={json.dumps(t("equity_curve_empty", lang))};
+function renderEquityCurve(inSample,outSample){{
+  const el=document.getElementById('equityCurveBody');
+  if(!el)return;
+  inSample=inSample||[];outSample=outSample||[];
+  if(!inSample.length&&!outSample.length){{el.innerHTML='<div class="empty-hint">'+EQUITY_CURVE_EMPTY_TEXT+'</div>';return}}
+  const W=680,H=260,padL=44,padR=14,padT=14,padB=28;
+  const allVals=[...inSample.map(p=>p.cum_return_pct),...outSample.map(p=>p.cum_return_pct),0];
+  const yMin=Math.min(...allVals),yMax=Math.max(...allVals);
+  const yRange=(yMax-yMin)||1;
+  const maxLen=Math.max(inSample.length,outSample.length,1)-1||1;
+  const xOf=(i)=>padL+(i/maxLen)*(W-padL-padR);
+  const yOf=(v)=>padT+(1-(v-yMin)/yRange)*(H-padT-padB);
+  const pathFor=(pts)=>pts.map((p,i)=>`${{i===0?'M':'L'}}${{xOf(i).toFixed(1)}},${{yOf(p.cum_return_pct).toFixed(1)}}`).join(' ');
+  const zeroY=yOf(0);
+  const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';
+  const inFinal=inSample.length?inSample[inSample.length-1].cum_return_pct:null;
+  const outFinal=outSample.length?outSample[outSample.length-1].cum_return_pct:null;
+  el.innerHTML=`<svg viewBox="0 0 ${{W}} ${{H}}" style="width:100%;height:auto;max-height:280px">
+    <line x1="${{padL}}" y1="${{zeroY}}" x2="${{W-padR}}" y2="${{zeroY}}" stroke="var(--border)" stroke-dasharray="3,3"/>
+    <text x="${{padL}}" y="${{H-8}}" font-size="10" fill="var(--dim)">Trade #0</text>
+    <text x="${{W-padR}}" y="${{H-8}}" font-size="10" fill="var(--dim)" text-anchor="end">Trade #${{maxLen}}</text>
+    <text x="4" y="${{padT+4}}" font-size="10" fill="var(--dim)">${{fmtPct(Math.round(yMax))}}</text>
+    <text x="4" y="${{H-padB}}" font-size="10" fill="var(--dim)">${{fmtPct(Math.round(yMin))}}</text>
+    <path d="${{pathFor(inSample)}}" fill="none" stroke="#5b8def" stroke-width="1.6"/>
+    <path d="${{pathFor(outSample)}}" fill="none" stroke="#26a69a" stroke-width="1.8"/>
+  </svg>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--dim)">
+    <span style="color:#5b8def;font-weight:700">&#9644; In-sample</span> final ${{fmtPct(inFinal)}} (n=${{inSample.length}})
+    <span style="color:#26a69a;font-weight:700;margin-left:14px">&#9644; Out-of-sample</span> final ${{fmtPct(outFinal)}} (n=${{outSample.length}})
+  </div>
+  <div style="margin-top:6px;font-size:11.5px;color:var(--dim);line-height:1.5">${{KO?'각 선은 매 신호마다 동일한 비중을 실었다고 가정하고 90일 수익률을 단순 합산한 값입니다 (복리 아님, 포지션 사이즈·세금 미반영) — 신호가 겹치는 기간에는 여러 종목을 동시에 들고 있다고 가정한 값이라, 실제로 그만큼 벌었다는 뜻이 아니라 전략의 방향성과 인샘플 대비 아웃오브샘플의 형태를 비교하기 위한 것입니다.':'Each line is a simple running sum of every 90-day return, one equal-weighted unit per signal (not compounded, no position sizing or taxes) -- during overlapping signal periods this assumes holding several names at once, so it is not a literal account balance. It is meant to compare shape and direction between in-sample and out-of-sample, not to state an achievable return.'}}</div>`;
+}}
 async function load(){{try{{const r=await fetch('/api/backtest-summary');if(r.status===402){{location.href='/subscription';return}}const d=await r.json();const el=document.getElementById('backtestBody');if(!d.results){{el.innerHTML='<div class="empty-hint">Backtest is still computing on the server — check back soon.</div>';return}}const res=d.results;const fmtPct=(v)=>v==null?'-':(v>=0?'+':'')+v+'%';const fmtRatio=(v)=>v==null?'-':v;const cls=(v)=>v==null?'':(v>=0?'gain':'loss');const lowConfRow=(s)=>s?.low_confidence?`<div class="backtest-row low-confidence">${{KO?`⚠ 신호 ${{s.n}}건뿐 — 이 수익률은 표본이 너무 적어 신뢰하기 어렵습니다.`:`⚠ Only ${{s.n}} signal${{s.n===1?'':'s'}} — too small a sample to trust this number.`}}</div>`:'';const cards=Object.entries(res.horizons).map(([h,v])=>`<div class="backtest-card"><h4>${{h}}-Day Forward Return</h4>
 <div class="backtest-row"><span>Strategy avg</span><b class="${{cls(v.strategy?.avg_return_pct)}}">${{fmtPct(v.strategy?.avg_return_pct)}}</b></div>
 <div class="backtest-row"><span>Strategy win rate</span><b>${{v.strategy?.win_rate_pct??'-'}}%</b></div>
@@ -10537,7 +10720,7 @@ async function load(){{try{{const r=await fetch('/api/backtest-summary');if(r.st
 <div class="backtest-row"><span>Sortino ratio</span><b>${{fmtRatio(v.strategy?.sortino)}}</b></div>
 <div class="backtest-row"><span>S&amp;P 500, same windows</span><b class="${{cls((v.benchmark_matched||v.benchmark)?.avg_return_pct)}}">${{fmtPct((v.benchmark_matched||v.benchmark)?.avg_return_pct)}}</b></div>
 ${{lowConfRow(v.strategy)}}
-</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';const universeText=res.tickers_sampled>=500?`All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${{res.tickers_sampled}} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">${{universeText}}, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which flatters results. Returns are net of a 0.10% round-trip cost for spread and slippage; taxes are not modelled. The S&amp;P figure is its return over the same windows the strategy traded, not its average over the whole period. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`}}catch(e){{console.error('Backtest load failed',e)}}}}
+</div>`).join('');const val=res.validation;const valParts=[30,60,90].filter(h=>val?.[`in_sample_${{h}}d`]&&val?.[`out_of_sample_${{h}}d`]).map(h=>{{const i=val[`in_sample_${{h}}d`],o=val[`out_of_sample_${{h}}d`];return `${{h}}d: in-sample ${{fmtPct(i.avg_return_pct)}} / ${{i.win_rate_pct}}% win (n=${{i.n}}) vs out-of-sample ${{fmtPct(o.avg_return_pct)}} / ${{o.win_rate_pct}}% win (n=${{o.n}})`}});const valLine=valParts.length?`Out-of-sample check at all three horizons (not just the best-looking one) — tuned on the first 70% of the window, measured on the untouched last 30%: ${{valParts.join(' &middot; ')}}.`:'';const universeText=res.tickers_sampled>=500?`All ${{res.tickers_sampled}} tickers in the current S&amp;P 500 + Nasdaq-100 universe (no sampling)`:`${{res.tickers_sampled}} of the ~518 current S&amp;P 500 + Nasdaq-100 tickers`;el.innerHTML=`<div class="backtest-grid">${{cards}}</div><div class="backtest-meta">${{universeText}}, ${{res.signal_count}} historical signals (fresh threshold crossings, not repeat days) over the trailing 2 years. Uses today's index membership — stocks removed from these indices during that window aren't included, which flatters results. Returns are net of a 0.10% round-trip cost for spread and slippage; taxes are not modelled. The S&amp;P figure is its return over the same windows the strategy traded, not its average over the whole period. ${{valLine}} Last computed: ${{d.computed_at?new Date(d.computed_at*1000).toLocaleDateString():'-'}}. Past performance does not guarantee future results.</div>`;renderEquityCurve(res.equity_curve?.in_sample,res.equity_curve?.out_of_sample)}}catch(e){{console.error('Backtest load failed',e)}}}}
 load();
 </script>
 """
