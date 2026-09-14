@@ -6774,7 +6774,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </section>
 
 <section id="value">
-<div class="section-head">
+<div class="section-head" data-reveal>
 <div class="kicker">WHAT $30 ACTUALLY BUYS</div>
 <h2>Here's what you're really getting.</h2>
 <p>Priced the way each piece sells on its own elsewhere.</p>
@@ -6795,7 +6795,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </section>
 
 <section id="how">
-<div class="section-head">
+<div class="section-head" data-reveal>
 <div class="kicker">HOW IT WORKS</div>
 <h2>Two filters. Not one.</h2>
 <p>Most screeners stop at the math. We add a second pass that specifically hunts for the ways a pure quant signal can fool you.</p>
@@ -6808,7 +6808,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </section>
 
 <section id="proof">
-<div class="section-head">
+<div class="section-head" data-reveal>
 <div class="kicker">PROVEN BY THE NUMBERS</div>
 <h2>We tested it against 2 years of real data. Here's what happened.</h2>
 <p>Not cherry-picked winners — replayed against 2 years of real price history using the exact formula running today. See exactly what's covered below.</p>
@@ -6831,7 +6831,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </section>
 
 <section>
-<div class="section-head">
+<div class="section-head" data-reveal>
 <div class="kicker">WHY THIS IS DIFFERENT</div>
 <h2>Most signal services show you a highlight reel.</h2>
 <p>We show you the full validation — including the losses.</p>
@@ -6855,7 +6855,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </section>
 
 <section id="features">
-<div class="section-head">
+<div class="section-head" data-reveal>
 <div class="kicker">FEATURES</div>
 <h2>Built on real data, not vibes</h2>
 </div>
@@ -6868,7 +6868,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </section>
 
 <section>
-<div class="final-wrap">
+<div class="final-wrap" data-reveal>
 <h2>Know which one it is — before you buy, not after.</h2>
 <p>See today's list and every ticker's Quant Score, free, no time limit. Upgrade anytime for AI analysis, financials, and portfolio tools.</p>
 <a class="btn" href="/signup">Get Started Free</a>
