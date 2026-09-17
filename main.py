@@ -305,7 +305,8 @@ EVENT_DEMO_VIEW = "demo_view"
 EVENT_TERMINAL_VIEW = "terminal_view"
 EVENT_SIGNUP = "signup_completed"
 EVENT_PAYMENT = "payment_completed"
-TRACKED_EVENTS = (EVENT_DEMO_VIEW, EVENT_TERMINAL_VIEW, EVENT_SIGNUP, EVENT_PAYMENT)
+EVENT_LEAD_CAPTURED = "lead_captured"
+TRACKED_EVENTS = (EVENT_DEMO_VIEW, EVENT_TERMINAL_VIEW, EVENT_LEAD_CAPTURED, EVENT_SIGNUP, EVENT_PAYMENT)
 _EVENT_PATHS = {"/demo": EVENT_DEMO_VIEW, "/terminal": EVENT_TERMINAL_VIEW}
 
 
@@ -502,6 +503,9 @@ SEND_CODE_MAX_ATTEMPTS = 5
 
 SIGNUP_ATTEMPTS = {}
 SIGNUP_MAX_ATTEMPTS = 5
+
+LEAD_CAPTURE_ATTEMPTS = {}
+LEAD_CAPTURE_MAX_ATTEMPTS = 8
 
 CONTACT_ATTEMPTS = {}
 CONTACT_MAX_ATTEMPTS = 5
@@ -706,6 +710,25 @@ def init_db():
             created_at REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
+        -- Top-of-funnel capture from the squeeze page (/free-scan): a visitor who isn't
+        -- ready for the zero-friction quick-signup yet, but will trade an email for this
+        -- week's scan results. Deliberately separate from users -- a lead never gets a
+        -- password, a session, or product access, only the nurture sequence below, so
+        -- there is no way for a lead row to accidentally grant anything.
+        CREATE TABLE IF NOT EXISTS leads (
+            email TEXT PRIMARY KEY,
+            source_page TEXT,
+            utm_source TEXT,
+            referrer TEXT,
+            captured_at REAL NOT NULL,
+            unsub_token TEXT,
+            unsubscribed INTEGER NOT NULL DEFAULT 0,
+            magnet_sent_at REAL,
+            nurture1_sent_at REAL,
+            nurture2_sent_at REAL,
+            nurture3_sent_at REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_leads_captured_at ON leads(captured_at);
         -- Survives account deletion on purpose: without it, "delete account, sign up
         -- again" hands out an unlimited number of free trials. Stores no readable
         -- address -- only a peppered one-way hash that can be compared but not reversed.
@@ -4053,6 +4076,159 @@ def send_trial_ended_email(email: str) -> bool:
     return send_email_notification(email, "[QUANTIFY.] Your free trial has ended", body)
 
 
+def _lead_unsub_token_for(conn, email: str) -> str:
+    """Same pattern as _unsub_token_for, scoped to the leads table -- a lead never has a
+    users row, so it needs its own token rather than borrowing that one."""
+    row = conn.execute("SELECT unsub_token FROM leads WHERE email=?", (email,)).fetchone()
+    token = row["unsub_token"] if row else None
+    if not token:
+        token = secrets.token_urlsafe(24)
+        conn.execute("UPDATE leads SET unsub_token=? WHERE email=?", (token, email))
+        conn.commit()
+    return token
+
+
+def send_lead_magnet_email(email: str, token: str, winners, losers) -> bool:
+    """The squeeze page's actual product: delivered immediately on capture, not on the
+    next scheduler tick, because a lead magnet that shows up an hour later has already
+    lost most of its person's attention."""
+    def line(x):
+        return f"  {x['ticker']} — flagged {x['date']} at ${x['entry']}, now ${x['now']} ({x['chg']:+}%)"
+    if winners:
+        picks_block = ("What the scanner caught recently:\n\n" + "\n".join(line(w) for w in winners)
+                        + ("\n\nAnd one it missed:\n\n" + "\n".join(line(l) for l in losers) if losers else ""))
+    else:
+        picks_block = ("The scanner's public record is still building up its first week of history -- "
+                        "you'll get the winners-and-losers breakdown as soon as there's enough of it to show honestly.")
+    body = (
+        "Here's what you signed up for -- no account needed to read it.\n\n"
+        + picks_block +
+        "\n\nEvery pick the scanner has ever made, wins and misses both, is public here:\n"
+        f"{SITE_URL}/record\n\n"
+        "I send the losses too, on purpose. A screener that only shows you its wins isn't worth trusting, "
+        "let alone paying for.\n\n"
+        f"Want to see today's live scan? {SITE_URL}/signup -- free, no card."
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "This week's scan — the wins and the miss", body,
+                                   headers=_unsub_headers(token))
+
+
+def send_lead_nurture1_email(email: str, token: str) -> bool:
+    body = (
+        "Quick follow-up on why QUANTIFY publishes its losses instead of just its wins.\n\n"
+        "Most \"stock picks\" accounts are a highlight reel: a handful of cherry-picked screenshots, "
+        "a chart with an arrow drawn on it after the fact, \"this one's about to explode\" with no "
+        "disclosed method behind it. That's entertainment, not a system -- and it's exactly the kind "
+        "of FOMO setup that gets people buying the top.\n\n"
+        "QUANTIFY runs one disclosed rule (long-term uptrend, pulled back from its recent high) against "
+        "the S&P 500 and Nasdaq-100, and every hit -- win or lose -- goes on the public record, "
+        "in-sample and out-of-sample both:\n\n"
+        f"{SITE_URL}/record\n\n"
+        "That's the whole pitch. Not a hot tip, a method you can check."
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "Why most \"stock picks\" emails are a highlight reel", body,
+                                   headers=_unsub_headers(token))
+
+
+def send_lead_nurture2_email(email: str, token: str) -> bool:
+    body = (
+        "How the filter actually works, in two passes:\n\n"
+        "1. A quant pass scans the S&P 500 and Nasdaq-100 for one rule -- long-term uptrend, pulled back "
+        "10-25% from its recent high (deeper in high-volatility stretches) -- and scores every hit with a "
+        "t-statistic, not a gut feeling.\n\n"
+        "2. An AI second pass reads every hit that clears the bar and checks it for two specific failure "
+        "modes: a blow-off top and a dead-cat bounce. Anything that looks like either gets flagged Caution "
+        "or Risk instead of Favorable.\n\n"
+        "Two filters, not one -- because a stock that's merely statistically cheap can still be falling "
+        "for a reason the statistics alone won't catch.\n\n"
+        f"Today's scan, live: {SITE_URL}/signup"
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "How the filter actually works (two passes, not one)", body,
+                                   headers=_unsub_headers(token))
+
+
+def send_lead_nurture3_email(email: str, token: str) -> bool:
+    body = (
+        "Last note from this sequence.\n\n"
+        "If the last few emails made sense, the fastest way to judge whether this is useful is to look "
+        "at today's actual scan -- not another recap, the live one.\n\n"
+        f"{SITE_URL}/signup -- one email address, no card, no password to invent. Free trial, "
+        "then $30/month if you keep it, cancel anytime.\n\n"
+        "If it wasn't useful, no hard feelings -- this is the last email in this particular sequence "
+        "either way."
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "Ready to see today's scan?", body,
+                                   headers=_unsub_headers(token))
+
+
+async def lead_nurture_scheduler():
+    """Top-of-funnel nurture for /free-scan captures, run on the same hourly cadence and
+    *_sent_at-guarded pattern as trial_lifecycle_scheduler below. Every step excludes
+    emails that now have a users row -- once a lead converts to a trial, the onboarding
+    drip above takes over and this sequence has done its job."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            now = time.time()
+            conn = db()
+            sent_counts = {"nurture1": 0, "nurture2": 0, "nurture3": 0}
+
+            n1 = conn.execute(
+                "SELECT email FROM leads WHERE unsubscribed=0 AND nurture1_sent_at IS NULL "
+                "AND captured_at <= ? AND email NOT IN (SELECT email FROM users)",
+                (now - 2 * 86400,),
+            ).fetchall()
+            for row in n1:
+                try:
+                    token = _lead_unsub_token_for(conn, row["email"])
+                    if await asyncio.to_thread(send_lead_nurture1_email, row["email"], token):
+                        conn.execute("UPDATE leads SET nurture1_sent_at=? WHERE email=?", (now, row["email"]))
+                        conn.commit()
+                        sent_counts["nurture1"] += 1
+                except Exception as exc:
+                    print(f"[Error: {type(exc).__name__}] Lead nurture-1 email failed for {row['email']}: {exc}", flush=True)
+
+            n2 = conn.execute(
+                "SELECT email FROM leads WHERE unsubscribed=0 AND nurture2_sent_at IS NULL "
+                "AND captured_at <= ? AND email NOT IN (SELECT email FROM users)",
+                (now - 4 * 86400,),
+            ).fetchall()
+            for row in n2:
+                try:
+                    token = _lead_unsub_token_for(conn, row["email"])
+                    if await asyncio.to_thread(send_lead_nurture2_email, row["email"], token):
+                        conn.execute("UPDATE leads SET nurture2_sent_at=? WHERE email=?", (now, row["email"]))
+                        conn.commit()
+                        sent_counts["nurture2"] += 1
+                except Exception as exc:
+                    print(f"[Error: {type(exc).__name__}] Lead nurture-2 email failed for {row['email']}: {exc}", flush=True)
+
+            n3 = conn.execute(
+                "SELECT email FROM leads WHERE unsubscribed=0 AND nurture3_sent_at IS NULL "
+                "AND captured_at <= ? AND email NOT IN (SELECT email FROM users)",
+                (now - 6 * 86400,),
+            ).fetchall()
+            for row in n3:
+                try:
+                    token = _lead_unsub_token_for(conn, row["email"])
+                    if await asyncio.to_thread(send_lead_nurture3_email, row["email"], token):
+                        conn.execute("UPDATE leads SET nurture3_sent_at=? WHERE email=?", (now, row["email"]))
+                        conn.commit()
+                        sent_counts["nurture3"] += 1
+                except Exception as exc:
+                    print(f"[Error: {type(exc).__name__}] Lead nurture-3 email failed for {row['email']}: {exc}", flush=True)
+            conn.close()
+            if any(sent_counts.values()):
+                print(f"[leads] nurture sent: {sent_counts['nurture1']} nurture-1, "
+                      f"{sent_counts['nurture2']} nurture-2, {sent_counts['nurture3']} nurture-3", flush=True)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Lead nurture scheduler error: {exc}", flush=True)
+
+
 async def trial_lifecycle_scheduler():
     while True:
         await asyncio.sleep(3600)
@@ -4617,6 +4793,7 @@ async def startup():
     # was the actual cause of tonight's OOM restarts, not the scheduler itself.
     asyncio.create_task(backtest_scheduler())
     asyncio.create_task(trial_lifecycle_scheduler())
+    asyncio.create_task(lead_nurture_scheduler())
     asyncio.create_task(gumroad_reconcile_scheduler())
     asyncio.create_task(sec_filings_scheduler())
     asyncio.create_task(fundamentals_scheduler())
@@ -5675,6 +5852,7 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
             "page_views": channel_views.get(b, 0),
             "demo_views": ev.get(EVENT_DEMO_VIEW, 0),
             "terminal_views": ev.get(EVENT_TERMINAL_VIEW, 0),
+            "leads_captured": ev.get(EVENT_LEAD_CAPTURED, 0),
             "signups": ev.get(EVENT_SIGNUP, 0),
             "payments": ev.get(EVENT_PAYMENT, 0),
             "signup_rate_pct": round(ev.get(EVENT_SIGNUP, 0) / visitors * 100, 1) if visitors else 0.0,
@@ -6881,6 +7059,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div class="diff-item"><span class="mark">&#10003;</span><span>One Pro plan, openly priced. Every Pro subscriber sees the same data, the same day.</span></div>
 </div>
 </div>
+<p style="text-align:center;margin-top:8px;color:var(--dim2,#6b7873);font-size:14.5px">Not ready to sign up? <a href="/free-scan">Get this week's scan by email instead</a> — free, no account.</p>
 </section>
 
 <section id="features">
@@ -8605,6 +8784,110 @@ async def quick_signup(request: Request, email: str = Form(...)):
     return response
 
 
+@app.post("/api/lead-capture")
+async def lead_capture(request: Request, email: str = Form(...), source_page: str = Form("/free-scan")):
+    """Email-only capture for cold traffic that isn't ready for quick-signup yet. No
+    password, no session, no product access -- just the nurture sequence in
+    lead_nurture_scheduler. Someone who already has an account is sent straight to
+    login instead of getting a duplicate, parallel row."""
+    client_ip = request.client.host if request.client else "unknown"
+    if _is_locked_out(LEAD_CAPTURE_ATTEMPTS, client_ip, LEAD_CAPTURE_MAX_ATTEMPTS):
+        return JSONResponse({"error": "Too many requests from this network. Try again later."}, status_code=429)
+    _register_failed_attempt(LEAD_CAPTURE_ATTEMPTS, client_ip)
+    email = email.strip().lower()
+    if not validate_email(email):
+        return JSONResponse({"error": "Enter a valid email address."}, status_code=400)
+
+    channel = getattr(request.state, "qtfy_channel", None)
+    visitor_id = getattr(request.state, "qtfy_visitor_id", None)
+    referrer = request.headers.get("referer", "")[:300]
+
+    conn = db()
+    existing_user = conn.execute("SELECT email FROM users WHERE email=?", (email,)).fetchone()
+    if existing_user:
+        conn.close()
+        return JSONResponse({"error": "That email already has an account.", "existing": True}, status_code=409)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO leads(email,source_page,utm_source,referrer,captured_at) VALUES(?,?,?,?,?)",
+        (email, source_page[:120], channel, referrer, time.time()),
+    )
+    conn.commit()
+    token = _lead_unsub_token_for(conn, email)
+    winners, losers = _week1_picks(conn, days=14)
+    already_sent = conn.execute("SELECT magnet_sent_at FROM leads WHERE email=?", (email,)).fetchone()
+    conn.close()
+
+    asyncio.create_task(asyncio.to_thread(_log_event, EVENT_LEAD_CAPTURED, visitor_id, channel, email))
+
+    if not already_sent or not already_sent["magnet_sent_at"]:
+        async def _deliver():
+            sent = await asyncio.to_thread(send_lead_magnet_email, email, token, winners, losers)
+            if sent:
+                c = db()
+                c.execute("UPDATE leads SET magnet_sent_at=? WHERE email=?", (time.time(), email))
+                c.commit(); c.close()
+        asyncio.create_task(_deliver())
+
+    return JSONResponse({"ok": True})
+
+
+@app.get("/free-scan", response_class=HTMLResponse)
+async def free_scan_page(request: Request):
+    lang = resolve_lang(request)
+    body = '''
+<div class="eyebrow">FREE, NO ACCOUNT NEEDED</div>
+<h1>Get this week's scan by email — wins and the miss, both.</h1>
+<p class="sublead">Not ready to create an account? Fair enough. Drop your email and we'll send you exactly
+what the quant scanner caught recently on the S&amp;P 500 and Nasdaq-100 — including the pick that
+didn't work out. No card, no password, unsubscribe with one click.</p>
+<form id="leadForm" style="max-width:420px;margin:0 0 10px" autocomplete="off">
+<label for="leadEmail" style="display:block;font-size:13px;font-weight:700;color:var(--dim2);margin-bottom:6px">Email</label>
+<input id="leadEmail" type="email" required placeholder="you@example.com"
+style="width:100%;padding:13px 14px;border:1px solid var(--border);border-radius:8px;font-size:16px;margin-bottom:12px;box-sizing:border-box">
+<button id="leadSubmit" class="btn" type="submit" style="width:100%;text-align:center;border:none;font-size:16px;padding:14px">Send me this week's scan</button>
+<div id="leadStatus" style="margin-top:10px;font-size:14px;color:var(--dim2)"></div>
+</form>
+<p style="font-size:13.5px;color:var(--dim)">Already convinced? <a href="/signup">Skip straight to the free trial</a> —
+full live scan, same $0 to start.</p>
+<script>
+(function(){
+  var form=document.getElementById('leadForm');
+  var input=document.getElementById('leadEmail');
+  var btn=document.getElementById('leadSubmit');
+  var status=document.getElementById('leadStatus');
+  form.addEventListener('submit', async function(e){
+    e.preventDefault();
+    var email=input.value.trim();
+    btn.disabled=true;
+    status.textContent='Sending...';
+    try{
+      var res=await fetch('/api/lead-capture',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        credentials:'same-origin',
+        body:'email='+encodeURIComponent(email)+'&source_page='+encodeURIComponent(location.pathname),
+      });
+      var data=await res.json().catch(function(){return {};});
+      if(!res.ok){
+        btn.disabled=false;
+        status.textContent=data.existing?'That email already has an account -- log in instead.':(data.error||'Something went wrong. Try again.');
+        return;
+      }
+      form.style.display='none';
+      status.textContent='Check your inbox -- this week\\'s scan is on its way.';
+    }catch(err){
+      btn.disabled=false;
+      status.textContent='Something went wrong. Try again.';
+    }
+  });
+})();
+</script>
+'''
+    return render_marketing_page("Free weekly scan by email", "See what the quant scanner caught this week — wins and losses — no account required.",
+                                 body, path="/free-scan", lang=lang)
+
+
 @app.post("/api/auth/signup")
 async def signup(request: Request, email: str = Form(...), password: str = Form(...)):
     client_ip = request.client.host if request.client else "unknown"
@@ -9298,6 +9581,12 @@ def _do_unsubscribe(token: str):
                 conn.commit()
                 ok = True
                 lang = get_user_lang(row["email"])
+            else:
+                lead_row = conn.execute("SELECT email FROM leads WHERE unsub_token=?", (token,)).fetchone()
+                if lead_row:
+                    conn.execute("UPDATE leads SET unsubscribed=1 WHERE unsub_token=?", (token,))
+                    conn.commit()
+                    ok = True
             conn.close()
         except Exception as exc:
             print(f"[Error: {type(exc).__name__}] Unsubscribe failed: {exc}")
