@@ -4000,6 +4000,7 @@ def send_welcome_email(email: str, token: str) -> bool:
         "plain-English note under any FAVORABLE ticker. That note is the whole point of "
         "this thing. If it doesn't make sense to you, tell me and I'll fix how it's written.\n\n"
         f"Today's scan: {SITE_URL}/terminal"
+        "\n\n— Ryan"
         + _unsub_footer(token)
     )
     return send_email_notification(email, "One thing to try first", body,
@@ -4049,6 +4050,7 @@ def send_week1_email(email: str, token: str, winners, losers) -> bool:
         + f"\n\nEvery pick the scanner has ever made, winners and losers, is public here:\n"
         f"{SITE_URL}/record\n\n"
         "I send this because a screener that only shows you its wins isn't worth paying for."
+        "\n\n— Ryan"
         + _unsub_footer(token)
     )
     return send_email_notification(email, "What the scanner caught this week (and one it missed)",
@@ -4061,6 +4063,7 @@ def send_trial_ending_email(email: str, token: str) -> bool:
         "at $30/month. If you're not, I'd really like to know why. One line is enough. "
         "That answer is worth more to me than the $30.\n\n"
         f"Manage your subscription: {_trial_subscribe_link()}"
+        "\n\n— Ryan"
         + _unsub_footer(token)
     )
     return send_email_notification(email, "Your trial ends tomorrow", body,
@@ -4071,7 +4074,8 @@ def send_trial_ended_email(email: str) -> bool:
     body = (
         f"Your {TRIAL_DAYS}-day QUANTIFY free trial has ended.\n\n"
         f"Subscribe to keep using the scanner and AI reports: {_trial_subscribe_link()}\n\n"
-        f"Questions? Just reply to this email."
+        f"Questions? Just reply to this email.\n\n"
+        f"— Ryan"
     )
     return send_email_notification(email, "[QUANTIFY.] Your free trial has ended", body)
 
@@ -4107,7 +4111,8 @@ def send_lead_magnet_email(email: str, token: str, winners, losers) -> bool:
         f"{SITE_URL}/record\n\n"
         "I send the losses too, on purpose. A screener that only shows you its wins isn't worth trusting, "
         "let alone paying for.\n\n"
-        f"Want to see today's live scan? {SITE_URL}/signup -- free, no card."
+        f"Want to see today's live scan? {SITE_URL}/signup -- free, no card.\n\n"
+        "— Ryan"
         + _unsub_footer(token)
     )
     return send_email_notification(email, "This week's scan — the wins and the miss", body,
@@ -4125,7 +4130,8 @@ def send_lead_nurture1_email(email: str, token: str) -> bool:
         "the S&P 500 and Nasdaq-100, and every hit -- win or lose -- goes on the public record, "
         "in-sample and out-of-sample both:\n\n"
         f"{SITE_URL}/record\n\n"
-        "That's the whole pitch. Not a hot tip, a method you can check."
+        "That's the whole pitch. Not a hot tip, a method you can check.\n\n"
+        "— Ryan"
         + _unsub_footer(token)
     )
     return send_email_notification(email, "Why most \"stock picks\" emails are a highlight reel", body,
@@ -4143,7 +4149,8 @@ def send_lead_nurture2_email(email: str, token: str) -> bool:
         "or Risk instead of Favorable.\n\n"
         "Two filters, not one -- because a stock that's merely statistically cheap can still be falling "
         "for a reason the statistics alone won't catch.\n\n"
-        f"Today's scan, live: {SITE_URL}/signup"
+        f"Today's scan, live: {SITE_URL}/signup\n\n"
+        "— Ryan"
         + _unsub_footer(token)
     )
     return send_email_notification(email, "How the filter actually works (two passes, not one)", body,
@@ -4158,7 +4165,8 @@ def send_lead_nurture3_email(email: str, token: str) -> bool:
         f"{SITE_URL}/signup -- one email address, no card, no password to invent. Free trial, "
         "then $30/month if you keep it, cancel anytime.\n\n"
         "If it wasn't useful, no hard feelings -- this is the last email in this particular sequence "
-        "either way."
+        "either way.\n\n"
+        "— Ryan"
         + _unsub_footer(token)
     )
     return send_email_notification(email, "Ready to see today's scan?", body,
@@ -8230,6 +8238,10 @@ async def about_page(request: Request):
 <p>QUANTIFY is not a broker, not a licensed investment adviser, and not a signal service telling you when to buy or sell. It doesn't place trades, hold your money, or know your financial situation. It surfaces one specific pattern and flags risk around it — sizing, diversification, and the actual decision are entirely yours.</p>
 <h2>Why one strategy</h2>
 <p>Most retail screening tools bury you in adjustable filters that are easy to overfit and hard to trust. QUANTIFY ships one entry rule at a time, validated against real out-of-sample data before it goes live, rather than a wall of knobs that look sophisticated but were never actually tested.</p>
+<h2>Who's behind this</h2>
+<p>I'm Ryan. I've been in and out of the US market since I was a teenager, and the one question that never got a straight answer was "what do I actually buy next" — every path I tried led to either a gut feeling or someone else's paywalled opinion. I built QUANTIFY to get a real, testable answer for myself first, then decided that answer was more useful public than kept as a personal edge.</p>
+<p>Fair warning on how I'm wired: I lean hard on data over gut feel, and once I'm into a problem I stay on it until it's actually solved — this site exists because I got stuck on one specific question and didn't stop until the quant behind it held up out-of-sample, not just in a backtest that looked good.</p>
+<p>The belief that hasn't changed since: hunting for tickers alone, one gut call at a time, is slow and it's a real way to lose money. A disclosed, tested rule beats a hunch — mine or yours.</p>
 <div class="disclaimer">QUANTIFY is an informational and educational tool. Nothing on this page or in the app is investment advice. Questions: <a href="mailto:quantify.app.official@gmail.com">quantify.app.official@gmail.com</a>.</div>
 """
     return render_marketing_page("About", "What QUANTIFY is and isn't — one validated quant strategy with an AI risk check, not investment advice.", body, path="/about", lang=resolve_lang(request, get_logged_in_user(request)))
