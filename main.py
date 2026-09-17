@@ -222,6 +222,32 @@ def _looks_like_bot(user_agent: str) -> bool:
     return any(marker in ua for marker in _PAGE_VIEW_BOT_UA_MARKERS)
 
 
+# Staff/internal traffic exclusion, automatic rather than relying on remembering to
+# visit ?notrack=1 from every new browser or incognito window. Two triggers, either one
+# sets the same long-lived qtfy_notrack cookie the manual link already used:
+#   1. The request's IP is in INTERNAL_IPS (a comma-separated allowlist, e.g. a home/
+#      office IP) -- set INTERNAL_IPS in the environment once and every request from
+#      that network is excluded from the moment this deploys, no cookie needed first.
+#   2. The request carries a valid admin token (however it's being used -- checking
+#      /api/admin/stats, running a manual batch, etc.) -- the instant this browser has
+#      proven it's us, it's marked for good, so clicking around the marketing pages
+#      afterward in the same browser doesn't pollute the funnel either.
+INTERNAL_IPS = {ip.strip() for ip in os.getenv("INTERNAL_IPS", "").split(",") if ip.strip()}
+
+
+def _is_internal_ip(request: Request) -> bool:
+    if not INTERNAL_IPS:
+        return False
+    client_ip = request.client.host if request.client else ""
+    return client_ip in INTERNAL_IPS
+
+
+def _request_has_admin_token(request: Request) -> bool:
+    # Reuses _require_admin_token's comparison (defined further down, but resolved at
+    # call time) rather than a second copy of the same hmac logic that could drift.
+    return _require_admin_token(request.query_params.get("token"))
+
+
 # Vulnerability scanners (probing for /wp-admin, /.git/config, etc.) fake a real
 # browser User-Agent, so the UA check above doesn't catch them -- an allowlist of the
 # site's actual page routes is the only reliable filter, since a scanner's made-up path
@@ -230,7 +256,7 @@ _PAGE_VIEW_ALLOWED_PATHS = {
     "/", "/pricing", "/faq", "/about", "/demo", "/stocks", "/record", "/terms", "/privacy", "/accept-disclaimer",
     "/login", "/signup", "/check-email", "/verify-email", "/forgot-password",
     "/reset-password", "/terminal", "/market", "/watchlist", "/backtest",
-    "/portfolio", "/subscription", "/contact", "/settings",
+    "/portfolio", "/subscription", "/contact", "/settings", "/free-scan",
 }
 
 
@@ -343,11 +369,14 @@ def _log_payment_event(email: str):
 @app.middleware("http")
 async def track_page_views(request: Request, call_next):
     path = request.url.path
-    # Visit any page once with ?notrack=1 (e.g. https://quantify.trading/?notrack=1) to
-    # opt this browser out of analytics permanently -- for recording demo videos etc.
-    # without polluting real visitor stats. Sets a long-lived cookie; to undo it, clear
-    # cookies for the site.
-    opted_out = request.cookies.get("qtfy_notrack") == "1" or request.query_params.get("notrack") == "1"
+    # Three ways a browser stops counting as a real visitor, all converging on the same
+    # long-lived qtfy_notrack cookie (clear cookies for the site to undo any of them):
+    # manually visiting ?notrack=1 once (e.g. for recording demo videos), being on an
+    # INTERNAL_IPS network, or having presented a valid admin token anywhere on the site
+    # -- see _is_internal_ip / _request_has_admin_token above.
+    internal_this_request = _is_internal_ip(request) or _request_has_admin_token(request)
+    opted_out = (request.cookies.get("qtfy_notrack") == "1" or request.query_params.get("notrack") == "1"
+                 or internal_this_request)
     should_track = (
         request.method == "GET"
         # /stock/<TICKER> is one real page per ticker, so it can't be an exact-match
@@ -383,7 +412,7 @@ async def track_page_views(request: Request, call_next):
     # arrives from Reddit and later clicks an X link still counts as Reddit.
     if channel and not _normalize_channel(request.cookies.get("qtfy_src")):
         response.set_cookie("qtfy_src", channel, max_age=365 * 86400, httponly=True, samesite="lax")
-    if request.query_params.get("notrack") == "1" and request.cookies.get("qtfy_notrack") != "1":
+    if (request.query_params.get("notrack") == "1" or internal_this_request) and request.cookies.get("qtfy_notrack") != "1":
         response.set_cookie("qtfy_notrack", "1", max_age=5 * 365 * 86400, httponly=True, samesite="lax")
     return response
 
@@ -5905,6 +5934,70 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         "last_7d": temperature,
     }
 
+    # --- Page flow: where people leave, where they linger --------------------------
+    # Sessionizes each visitor's page_views (a 30-minute gap starts a new session) and
+    # walks each session in order. A page's exit_rate is how often it was the LAST page
+    # someone saw in a session (a real drop-off, not just "got visited") -- avg_dwell is
+    # how long they sat on it before moving on, which is the closest signal available to
+    # "found this interesting" without adding any new client-side tracking. Same
+    # view_rows as the blocks above, still no extra query.
+    _SESSION_GAP_SECONDS = 30 * 60
+    # Must be well below _SESSION_GAP_SECONDS to ever do anything -- consecutive same-
+    # session views are already <= _SESSION_GAP_SECONDS apart by construction below, so a
+    # cap equal to it can never trigger. 10 minutes is generous dwell for a marketing
+    # page while still keeping a backgrounded tab from reading as rapt attention.
+    _DWELL_CAP_SECONDS = 10 * 60
+    visitor_views: dict = {}
+    for r in view_rows:
+        visitor_views.setdefault(r["visitor_id"], []).append((r["created_at"], r["path"]))
+    page_visits: dict = {}
+    page_exits: dict = {}
+    page_dwell_sum: dict = {}
+    page_dwell_n: dict = {}
+    page_next: dict = {}
+    for vid, views in visitor_views.items():
+        views.sort(key=lambda v: v[0])
+        sessions, current = [], [views[0]]
+        for i in range(1, len(views)):
+            if views[i][0] - views[i - 1][0] > _SESSION_GAP_SECONDS:
+                sessions.append(current)
+                current = []
+            current.append(views[i])
+        sessions.append(current)
+        for session in sessions:
+            for i, (ts, path) in enumerate(session):
+                page_visits[path] = page_visits.get(path, 0) + 1
+                if i == len(session) - 1:
+                    page_exits[path] = page_exits.get(path, 0) + 1
+                else:
+                    next_ts, next_path = session[i + 1]
+                    page_dwell_sum[path] = page_dwell_sum.get(path, 0) + min(next_ts - ts, _DWELL_CAP_SECONDS)
+                    page_dwell_n[path] = page_dwell_n.get(path, 0) + 1
+                    page_next.setdefault(path, {})
+                    page_next[path][next_path] = page_next[path].get(next_path, 0) + 1
+    page_flow = {}
+    for path, visits in page_visits.items():
+        exits = page_exits.get(path, 0)
+        dwell_n = page_dwell_n.get(path, 0)
+        top_next = max(page_next[path].items(), key=lambda x: x[1])[0] if page_next.get(path) else None
+        page_flow[path] = {
+            "visits": visits,
+            "exits": exits,
+            "exit_rate_pct": round(exits / visits * 100, 1),
+            "avg_dwell_seconds": round(page_dwell_sum.get(path, 0) / dwell_n, 1) if dwell_n else None,
+            "top_next_page": top_next,
+        }
+    page_flow_block = {
+        "note": ("Sessions split on a 30-minute gap. exit_rate_pct = share of visits to this page "
+                 "that were the last thing seen in that session (a real drop-off point, not just "
+                 "traffic). avg_dwell_seconds = time spent before moving to the next page, capped "
+                 "at 10 minutes so a backgrounded tab cannot inflate it -- null means every visit "
+                 "to this page was an exit, so there is no dwell time to average. top_next_page is "
+                 "the most common page people went to from here, when they didn't leave."),
+        "session_gap_minutes": 30,
+        "pages": dict(sorted(page_flow.items(), key=lambda x: -x[1]["visits"])[:20]),
+    }
+
     def _et_day(ts):
         return datetime.fromtimestamp(ts, ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
@@ -5995,6 +6088,7 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         },
         "channels": channels_block,
         "visitor_temperature": visitor_temperature_block,
+        "page_flow": page_flow_block,
         "events_last_24h": events_24h,
         "events_last_7d": events_7d,
     }
@@ -8941,17 +9035,28 @@ async def lead_capture(request: Request, email: str = Form(...), source_page: st
     conn.commit()
     token = _lead_unsub_token_for(conn, email)
     winners, losers = _week1_picks(conn, days=14)
-    already_sent = conn.execute("SELECT magnet_sent_at FROM leads WHERE email=?", (email,)).fetchone()
+    # Claim the send right now, atomically, rather than reading magnet_sent_at and
+    # deciding what to do with it in a separate step -- two near-simultaneous requests
+    # for the same email (e.g. an impatient double-click on the exit-intent card, which
+    # has no submit-button disable) would otherwise both see "not sent yet" and both
+    # queue a send. Only the request whose UPDATE actually flips a NULL row sends.
+    claimed = conn.execute(
+        "UPDATE leads SET magnet_sent_at=? WHERE email=? AND magnet_sent_at IS NULL",
+        (time.time(), email),
+    ).rowcount > 0
+    conn.commit()
     conn.close()
 
     asyncio.create_task(asyncio.to_thread(_log_event, EVENT_LEAD_CAPTURED, visitor_id, channel, email))
 
-    if not already_sent or not already_sent["magnet_sent_at"]:
+    if claimed:
         async def _deliver():
             sent = await asyncio.to_thread(send_lead_magnet_email, email, token, winners, losers)
-            if sent:
+            if not sent:
+                # Delivery failed -- release the claim so a retry (or the next capture
+                # attempt) can send it instead of the lead never getting anything.
                 c = db()
-                c.execute("UPDATE leads SET magnet_sent_at=? WHERE email=?", (time.time(), email))
+                c.execute("UPDATE leads SET magnet_sent_at=NULL WHERE email=?", (email,))
                 c.commit(); c.close()
         asyncio.create_task(_deliver())
 
