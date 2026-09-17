@@ -5875,6 +5875,36 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
         "funnel_last_7d": funnel,
     }
 
+    # --- Visitor temperature -------------------------------------------------------
+    # A visitor is "hot" the moment they convert (signup/payment), "warm" if they showed
+    # real intent without converting (hit the demo/terminal, gave an email to /free-scan,
+    # or browsed 3+ pages), and "cold" otherwise -- a single pageview that never came back.
+    # Reuses the same 7-day view_rows/event_rows already pulled above rather than a
+    # second query, so this costs nothing extra to compute.
+    visitor_pageviews: dict = {}
+    for r in view_rows:
+        visitor_pageviews[r["visitor_id"]] = visitor_pageviews.get(r["visitor_id"], 0) + 1
+    visitor_events: dict = {}
+    for r in event_rows:
+        if r["visitor_id"]:
+            visitor_events.setdefault(r["visitor_id"], set()).add(r["name"])
+    temperature = {"hot": 0, "warm": 0, "cold": 0}
+    for vid, views in visitor_pageviews.items():
+        ev_names = visitor_events.get(vid, set())
+        if EVENT_SIGNUP in ev_names or EVENT_PAYMENT in ev_names:
+            temperature["hot"] += 1
+        elif EVENT_LEAD_CAPTURED in ev_names or EVENT_DEMO_VIEW in ev_names or EVENT_TERMINAL_VIEW in ev_names or views >= 3:
+            temperature["warm"] += 1
+        else:
+            temperature["cold"] += 1
+    visitor_temperature_block = {
+        "note": ("hot = signed up or paid; warm = gave an email, viewed the demo/terminal, or "
+                 "browsed 3+ pages without converting; cold = a single-page (or two-page) visit "
+                 "with no other signal. Computed over the same last-7-days visitor set as the "
+                 "channel funnel above."),
+        "last_7d": temperature,
+    }
+
     def _et_day(ts):
         return datetime.fromtimestamp(ts, ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
@@ -5964,6 +5994,7 @@ async def api_admin_stats(request: Request, token: Optional[str] = None):
             "scheduler": dict(FUNDAMENTALS_STATUS),
         },
         "channels": channels_block,
+        "visitor_temperature": visitor_temperature_block,
         "events_last_24h": events_24h,
         "events_last_7d": events_7d,
     }
@@ -6836,6 +6867,18 @@ footer a{color:var(--dim2);text-decoration:underline}
 .sticky-cta span{color:var(--dim2);font-size:15px}
 .sticky-cta span b{color:var(--head)}
 @media(max-width:560px){.sticky-cta span{display:none}}
+.exit-card{position:fixed;right:20px;bottom:20px;z-index:25;max-width:340px;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px 22px;box-shadow:0 20px 50px -20px rgba(18,32,26,.3);display:none;transform:translateY(12px);opacity:0;transition:transform .3s cubic-bezier(.16,1,.3,1),opacity .3s}
+.exit-card.show{display:block}
+.exit-card.in{transform:translateY(0);opacity:1}
+.exit-card .exit-close{position:absolute;top:10px;right:12px;background:none;border:none;color:var(--dim);font-size:18px;cursor:pointer;line-height:1;padding:4px}
+.exit-card .exit-close:hover{color:var(--head)}
+.exit-card h4{color:var(--head);font-size:16px;margin:0 0 6px;padding-right:20px}
+.exit-card p{color:var(--dim2);font-size:13.5px;line-height:1.55;margin:0 0 12px}
+.exit-card input{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14.5px;margin-bottom:8px;box-sizing:border-box}
+.exit-card button.submit{width:100%;padding:11px;border:none;border-radius:8px;background:var(--green);color:#fff;font-weight:700;font-size:14.5px;cursor:pointer}
+.exit-card button.submit:hover{background:var(--green-bright)}
+.exit-card .exit-status{font-size:13px;color:var(--dim2);margin-top:8px}
+@media(max-width:560px){.exit-card{left:16px;right:16px;bottom:16px;max-width:none}}
 .btn-ghost:hover{box-shadow:none}
 .step,.feature,.proof-card,.diff-col{transition:transform .2s ease,border-color .2s ease}
 .step:hover,.feature:hover,.proof-card:hover{transform:translateY(-3px);border-color:var(--dim2)}
@@ -7045,7 +7088,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </div>
 </section>
 
-<section>
+<section id="proofSection">
 <div class="section-head" data-reveal>
 <div class="kicker">WHY THIS IS DIFFERENT</div>
 <h2>Most signal services show you a highlight reel.</h2>
@@ -7102,6 +7145,16 @@ QUANTIFY. — informational and educational only, not investment advice.<br>
 <div class="sticky-cta" id="stickyCta">
 <span>%%STICKY_NOTE%%</span>
 <a class="btn" href="/demo">%%STICKY_CTA%%</a>
+</div>
+<div class="exit-card" id="exitCard">
+<button class="exit-close" id="exitClose" type="button" aria-label="Close">&times;</button>
+<h4>Not ready to sign up?</h4>
+<p>I'll just email you this week's scan instead -- wins and the miss both. No account, no card.</p>
+<form id="exitForm">
+<input id="exitEmail" type="email" required placeholder="you@example.com">
+<button class="submit" type="submit">Send it to me</button>
+<div class="exit-status" id="exitStatus"></div>
+</form>
 </div>
 <script>
 if('IntersectionObserver' in window){
@@ -7164,6 +7217,67 @@ if(stickyCta&&heroSection){
     new IntersectionObserver((entries)=>{entries.forEach(e=>stickyCta.classList.toggle('show',!e.isIntersecting))}).observe(heroSection);
   }
 }
+
+// Exit-intent capture: the one moment this can show without competing with anything
+// else on the page is when someone is actually leaving, so it never fires alongside
+// the sticky bar or the hero form. Cookie-gated for good after a real capture or
+// signup; sessionStorage-gated to at most once per visit either way. Desktop uses the
+// classic mouse-toward-the-tab-bar signal; touch devices get a dwell+scroll fallback
+// since there's no cursor to leave with.
+(function(){
+  const card=document.getElementById('exitCard');
+  const proof=document.getElementById('proofSection');
+  if(!card)return;
+  function hasSeenCookie(){return document.cookie.split('; ').some(c=>c.startsWith('qtfy_lead_seen='))}
+  let shown=false;
+  function reveal(){
+    if(shown||hasSeenCookie())return;
+    try{if(sessionStorage.getItem('qtfy_exit_shown'))return}catch(e){}
+    shown=true;
+    try{sessionStorage.setItem('qtfy_exit_shown','1')}catch(e){}
+    card.classList.add('show');
+    requestAnimationFrame(()=>card.classList.add('in'));
+  }
+  function dismiss(){
+    card.classList.remove('in');
+    setTimeout(()=>card.classList.remove('show'),300);
+  }
+  document.addEventListener('mouseleave',(e)=>{if(e.clientY<=0)reveal()});
+  if(proof&&'IntersectionObserver' in window){
+    let seenProof=false;
+    const startedAt=Date.now();
+    new IntersectionObserver((entries)=>{entries.forEach(e=>{if(e.isIntersecting)seenProof=true})},{threshold:0.4}).observe(proof);
+    document.addEventListener('scroll',()=>{
+      if(seenProof&&Date.now()-startedAt>20000)reveal();
+    },{passive:true});
+  }
+  document.getElementById('exitClose').addEventListener('click',dismiss);
+  const form=document.getElementById('exitForm');
+  const input=document.getElementById('exitEmail');
+  const status=document.getElementById('exitStatus');
+  form.addEventListener('submit',async function(e){
+    e.preventDefault();
+    const email=input.value.trim();
+    status.textContent='Sending...';
+    try{
+      const res=await fetch('/api/lead-capture',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        credentials:'same-origin',
+        body:'email='+encodeURIComponent(email)+'&source_page='+encodeURIComponent('/#exit-intent'),
+      });
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok){
+        status.textContent=data.existing?'That email already has an account -- log in instead.':(data.error||'Something went wrong.');
+        return;
+      }
+      document.cookie='qtfy_lead_seen=1; path=/; max-age=31536000';
+      form.innerHTML='<p style="margin:0;color:var(--green)">Check your inbox -- it\\'s on its way.</p>';
+    }catch(err){
+      status.textContent='Something went wrong. Try again.';
+    }
+  });
+})();
 
 // Hero quick-signup: type an email, press Enter (or click Join), land signed in. One
 // form, one submit, one destination -- an earlier version added a second in-page step
@@ -8850,7 +8964,7 @@ async def free_scan_page(request: Request):
     body = '''
 <div class="eyebrow">FREE, NO ACCOUNT NEEDED</div>
 <h1>Get this week's scan by email — wins and the miss, both.</h1>
-<p class="sublead">Not ready to create an account? Fair enough. Drop your email and we'll send you exactly
+<p class="sublead">Not ready to create an account? Fair enough. Drop your email and I'll send you exactly
 what the quant scanner caught recently on the S&amp;P 500 and Nasdaq-100 — including the pick that
 didn't work out. No card, no password, unsubscribe with one click.</p>
 <form id="leadForm" style="max-width:420px;margin:0 0 10px" autocomplete="off">
@@ -8886,6 +9000,7 @@ full live scan, same $0 to start.</p>
         status.textContent=data.existing?'That email already has an account -- log in instead.':(data.error||'Something went wrong. Try again.');
         return;
       }
+      document.cookie='qtfy_lead_seen=1; path=/; max-age=31536000';
       form.style.display='none';
       status.textContent='Check your inbox -- this week\\'s scan is on its way.';
     }catch(err){
