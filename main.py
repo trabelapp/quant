@@ -1024,11 +1024,21 @@ init_db()
 
 
 def today_str():
-    return datetime.now().strftime("%Y-%m-%d")
+    # Every "today" this app cares about (scan_date, the scan schedule itself, retention
+    # day-boundaries, ...) is the US market's trading day, not whatever timezone the
+    # server process happens to be running in (UTC in production, per render.yaml/no TZ
+    # override). Using naive local time here meant that for several hours every evening
+    # (from UTC midnight until the real America/New_York midnight), this returned
+    # tomorrow's date while daily_scans/scan_history rows for the actual, just-finished
+    # ET trading day were still correctly stored under today's date -- so lookups keyed
+    # on today_str() (market summary, score history, the /api/auto-scan "has today
+    # already run" check) went empty and, worse, auto-scan concluded no scan had run
+    # yet and kicked off a full, redundant universe rescan.
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
 
 def display_date():
-    return datetime.now().strftime("%B %d, %Y")
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%B %d, %Y")
 
 
 # -----------------------------------------------------------------------------
@@ -1124,13 +1134,19 @@ def claim_trial(email: str) -> float:
     try:
         h = trial_email_hash(email)
         conn = db()
-        row = conn.execute("SELECT first_trial_at FROM trial_ledger WHERE email_hash=?", (h,)).fetchone()
-        if row:
-            conn.close()
-            return float(row["first_trial_at"]) + TRIAL_DAYS * 86400
+        # INSERT first, then read back whichever row is actually stored -- this call's
+        # own insert, or a near-simultaneous request's if it won the race. Reading
+        # first and deciding what to do in a separate step let two concurrent signups
+        # for the same canonical email (e.g. two Gmail plus-aliases, or a double-click
+        # on quick-signup) both see "no row yet" before either INSERT ran, so both
+        # handed out a full fresh trial instead of the second one getting the
+        # already-claimed (expired) end date back.
         conn.execute("INSERT OR IGNORE INTO trial_ledger(email_hash,first_trial_at) VALUES(?,?)", (h, now))
         conn.commit()
+        row = conn.execute("SELECT first_trial_at FROM trial_ledger WHERE email_hash=?", (h,)).fetchone()
         conn.close()
+        if row:
+            return float(row["first_trial_at"]) + TRIAL_DAYS * 86400
     except Exception as e:
         # Never block a signup on the ledger -- a broken anti-abuse check must not cost
         # a real customer their account.
@@ -3211,6 +3227,7 @@ def verify_track_chain(rows):
 async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
     async with BATCH_LOCK:
         BATCH_STATUS.update({"running": True, "processed": 0, "total": len(UNIVERSE), "saved": 0, "started_at": time.time(), "finished_at": None, "error": None})
+        conn = None
         try:
             if not UNIVERSE:
                 await refresh_universe()
@@ -3334,6 +3351,20 @@ async def run_eod_batch_process(mode="Long-Term Momentum Pullback"):
             BATCH_STATUS.update({"error": str(exc)})
             raise
         finally:
+            # conn is only None if we failed before opening it (e.g. "Universe is
+            # unavailable" above, which returns early rather than raising) or if the
+            # normal path already closed it. Any OTHER exception between opening conn
+            # and that normal-path close (e.g. a DB hiccup in write_track_record, or an
+            # uncaught error from the alert-checking loop's get_current_price/
+            # send_email_notification calls) used to leak this connection -- an
+            # exception's traceback keeps its frame (and conn) alive via a reference
+            # cycle, so it would sit open until the next full GC pass rather than being
+            # released immediately, on a job that runs on every scheduled scan.
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             BATCH_STATUS.update({"running": False, "finished_at": time.time()})
             gc.collect()
 
@@ -3985,7 +4016,8 @@ async def cache_prune_scheduler():
             removed_earnings = _prune_timed_cache(CACHE["earnings"], SHORT_INTEREST_TTL * 2)
             removed_attempts = sum(
                 _prune_attempt_dict(d, LOGIN_LOCKOUT_SECONDS)
-                for d in (LOGIN_ATTEMPTS, RESET_ATTEMPTS, SEND_CODE_ATTEMPTS, SIGNUP_ATTEMPTS, CONTACT_ATTEMPTS)
+                for d in (LOGIN_ATTEMPTS, RESET_ATTEMPTS, SEND_CODE_ATTEMPTS, SIGNUP_ATTEMPTS, CONTACT_ATTEMPTS,
+                          LEAD_CAPTURE_ATTEMPTS, PAYMENT_CLAIM_ATTEMPTS)
             )
             if removed_hist or removed_news or removed_earnings or removed_attempts:
                 print(f"[cache] Pruned stale entries — historical:{removed_hist} news:{removed_news} "
@@ -7998,7 +8030,6 @@ PUBLIC_KO: dict[str, str] = {
     ">Terms<": ">이용약관<",
     ">Privacy<": ">개인정보처리방침<",
     ">Start free trial<": ">무료 체험 시작<",
-    ">Get Started Free<": ">무료로 시작하기<",
     ">Email<": ">이메일<",
     ">Password<": ">비밀번호<",
     ">Create account<": ">계정 만들기<",
@@ -9763,6 +9794,9 @@ def _record_section(rows, label):
     def box(k, v, c=""):
         return f'<div class="rec-box"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
 
+    def pct(v):
+        return f"{v:+}%" if v is not None else "—"
+
     summary = ('<div class="rec-summary">'
                + box("Records", len(rows))
                + box("Up", winners, "up") + box("Down", losers, "down")
@@ -9779,8 +9813,8 @@ def _record_section(rows, label):
         f'<td>${d["entry_price"]}</td>'
         f'<td>{d["alpha_score"]}</td>'
         f'<td>{"$" + str(d["current_price"]) if d["current_price"] is not None else "—"}</td>'
-        f'<td class="{cls(d["change_pct"])}">{f"{d['change_pct']:+}%" if d["change_pct"] is not None else "—"}</td>'
-        f'<td>{f"{d['bench_change_pct']:+}%" if d["bench_change_pct"] is not None else "—"}</td></tr>'
+        f'<td class="{cls(d["change_pct"])}">{pct(d["change_pct"])}</td>'
+        f'<td>{pct(d["bench_change_pct"])}</td></tr>'
         for d in sorted(rows, key=lambda x: (x["record_date"], x["ticker"]), reverse=True)
     )
     table = ('<div class="rec-wrap"><table class="rec"><thead><tr>'
@@ -11499,7 +11533,9 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
                               '<a href="https://app.gumroad.com/library" target="_blank" rel="noopener">'
                               f'app.gumroad.com/library</a>{"에 로그인해서 확인하세요." if ko else " while logged into the account you paid with."}</p>')
         elif row and row["ls_subscription_id"]:
-            checkout_html = (f'<p>{"결제 취소나 관리는 Lemon Squeezy 구매 영수증 이메일의 \'Manage Subscription\' 링크를 이용하세요." if ko else "To cancel or manage billing, use the \"Manage Subscription\" link in your Lemon Squeezy purchase receipt email."}</p>')
+            ls_manage_note = ("결제 취소나 관리는 Lemon Squeezy 구매 영수증 이메일의 'Manage Subscription' 링크를 이용하세요." if ko
+                              else 'To cancel or manage billing, use the "Manage Subscription" link in your Lemon Squeezy purchase receipt email.')
+            checkout_html = f'<p>{ls_manage_note}</p>'
         else:
             # No processor subscription ID on file means there's no external recurring
             # charge this account could still be billed for -- access was granted
