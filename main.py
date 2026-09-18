@@ -4244,28 +4244,63 @@ def send_lead_nurture3_email(email: str, token: str) -> bool:
 # email for; the scan is why they keep the subscription. Each entry is (episode title,
 # cold-open body) so the subject line and the joke always match -- a mismatched subject
 # is the fastest way for this to read like a template instead of a person.
-_DIGEST_BITS = [
-    ("The Plant Update Nobody Asked For",
-     "State of the office plant: still alive. I want credit for this. I keep a database running at 99.9% uptime and I've nearly lost to a fern twice this month. The fern is winning on vibes alone."),
-    ("I Talked to My Monitor Today",
-     "Caught myself saying \"come on, come ON\" out loud to a backtest that was taking forty seconds to finish. Nobody else was in the room. This is apparently just a normal Tuesday for me now."),
-    ("A Brief Rant About Pop-Tarts",
-     "Ate a Pop-Tart cold, out of the box, standing over the sink, staring at a chart. If you're picturing something sadder than that, you're probably right. The chart looked fine, for what it's worth."),
-    ("My One Real Friend Is a Cron Job",
-     "Someone asked what I did this weekend. I said \"debugged a race condition.\" They did not ask a follow-up question. I don't blame them. The race condition and I, however, have a real bond now."),
-    ("Three Hours, One Semicolon",
-     "Lost an entire evening to a bug that turned out to be one missing comma in a query. Stared at it long enough that I started reading it out loud like a poem. It was not a good poem."),
-    ("An Update on My Nemesis",
-     "There's a ticker that has personally rejected this model's entry rule four separate times this year and then ripped 20% each time right after. I'm not naming it. It knows what it did."),
-    ("I Explained My Job at a Party, Badly",
-     "Got about one sentence into \"it's a long-term trend filter with an AI risk check on top\" before watching a stranger's soul leave their body in real time. Anyway, that filter's still running."),
-    ("The Coffee Order Nobody Can Read",
-     "Same order for three years straight, to the point the guy at the coffee place starts making it before I say anything. Not sure if that's loyalty or just the most predictable data point in my life."),
-    ("A Weighted Blanket Update",
-     "Bought one for sleep, allegedly. Mostly it's just become the place I sit while debugging at 1am, which was already a problem before the blanket got involved."),
-    ("On Naming Variables",
-     "Spent twenty minutes today naming a boolean instead of writing the logic it belongs to. It is now called `isActuallyFavorableOrJustVibes`. I stand by it."),
+# Not a joke-of-the-day bank -- a real continuing storyline, like a soap opera, so
+# reading today's email only makes full sense if you remember (or half-remember)
+# yesterday's. Each arc is a fixed, ordered sequence of chapters; the digest works
+# through one chapter a day and moves to the next arc when one wraps. No "Ep. N" label
+# anywhere -- the continuity is supposed to live in the writing itself (callbacks,
+# "last time," an actual resolution), not in a subtitle-style counter stamped on it.
+_DIGEST_ARCS = [
+    [  # Arc: the office plant
+        ("We need to talk about the plant",
+         "Okay so. The plant on my desk has started going yellow at the edges and I've been ignoring it for four days like that fixes anything. Looked it up. The internet's answer was \"it depends.\" Thanks, internet.",
+         False),
+        ("The plant situation has escalated",
+         "Update on the plant, because apparently it's a whole thing now: moved it closer to the window. This is either going to save it or it's a nice gesture before the end, and I genuinely don't know which yet.",
+         False),
+        ("I named the plant. This means something.",
+         "I named it. Not telling you what — saying it out loud made me confront some things about my own coping mechanisms I'd rather not get into. If you're new here: naming it means I've accepted this might not end well.",
+         False),
+        ("Okay, the plant thing took a turn",
+         "The plant is not dying. The plant is, in fact, thriving — aggressively, to the point it's now taller than my second monitor. I have complicated feelings about losing a growth competition to a fern I'd basically given up on.",
+         False),
+        ("Closing the book on the plant saga",
+         "Final update, because a story needs an ending: the plant's fine. Great, actually. I learned nothing from this except that I catastrophize about houseplants the exact same way I used to catastrophize about backtests before I had real data to check them against.",
+         True),
+    ],
+    [  # Arc: the nemesis ticker
+        ("There's a stock I need to vent about",
+         "There's a ticker that has rejected this model's entry signal four separate times this year and then ripped 20% right after, every single time. Not naming it. I don't trust myself not to say something unprofessional.",
+         False),
+        ("It happened again",
+         "The ticker from last time. It did the thing again — fired the signal, and some small, unhinged part of me is now taking this personally, which is not how statistics work and I am fully aware of that.",
+         False),
+        ("I may have a problem",
+         "Started a private note file. Just for tracking this one ticker's history against the model. Four rejections, logged with timestamps. This is not a healthy relationship between a person and a spreadsheet.",
+         False),
+        ("The nemesis arc has a twist",
+         "This time the model got it right. First time all year. I did a small, private, deeply embarrassing fist pump at my desk. We don't need to revisit the last three emails about this.",
+         False),
+        ("A quiet victory lap",
+         "Letting myself enjoy the one win for exactly one day before the market reminds me there's always another nemesis waiting. There's probably already a new one. Haven't checked yet, on purpose.",
+         True),
+    ],
+    [  # Arc: the bug
+        ("Something broke and I don't know why yet",
+         "Something in the pipeline broke overnight and threw an error I've genuinely never seen before. Nothing's on fire, the scan's fine, but I'm going to be quietly obsessed with this for the rest of the week.",
+         False),
+        ("The fix did not fix it",
+         "Thought I fixed it. Deployed the fix. It broke in a new, more interesting way an hour later. Somehow worse than not being fixed at all, because now I have hope.",
+         False),
+        ("It's 1am and I have a theory",
+         "Later than I'd like to admit, and I have a theory involving a timezone edge case that's either brilliant or completely wrong. Sleeping on it, which is the one responsible decision I've made all night.",
+         False),
+        ("Found it. It was one comma.",
+         "One missing comma in a query. That's the whole bug. Three days, one comma. Read the line out loud like a poem when I found it. Not a good poem. Finally a correct one, though.",
+         True),
+    ],
 ]
+_DIGEST_SEQUENCE = [chapter for arc in _DIGEST_ARCS for chapter in arc]
 _DIGEST_TRANSITIONS = [
     "Okay. The actual reason you're getting this email:",
     "Anyway -- here's what the scan actually found today:",
@@ -4276,41 +4311,35 @@ _DIGEST_QUIET_TRANSITIONS = [
     "Anyway. Market news: the scan ran, nothing cleared the bar today. That's the system working, not broken -- some days there isn't a clean setup, and forcing one would be exactly the kind of gut call this whole thing exists to avoid.",
     "Right, the actual update: nothing passed both filters today. No pick beats a bad pick, so here's an honest nothing instead of a stretch.",
 ]
-_DIGEST_STINGERS = [
-    "Tomorrow: probably another crisis involving the plant. Stay tuned.",
-    "Same time tomorrow. Making no promises about my mental state by then.",
-    "Next episode: unclear, even to me. Find out tomorrow.",
-    "See you tomorrow, same weird hour, same deal.",
-    "More tomorrow -- both the scan and whatever nonsense I'm dealing with by then.",
-]
-# Episode 1 is the day this shipped. Deterministic across every recipient on the same
-# day without needing a counter in the database.
+# Chapter 1 is the day this shipped. Deterministic across every recipient on the same
+# day, cycling back to the start once every arc has run -- no counter to maintain.
 _DIGEST_LAUNCH_DATE = date(2026, 9, 18)
 
 
-def _digest_episode_number(date_et: str) -> int:
+def _digest_chapter(date_et: str) -> tuple:
     d = datetime.strptime(date_et, "%Y-%m-%d").date()
-    return max(1, (d - _DIGEST_LAUNCH_DATE).days + 1)
+    idx = max(0, (d - _DIGEST_LAUNCH_DATE).days) % len(_DIGEST_SEQUENCE)
+    return _DIGEST_SEQUENCE[idx]
 
 
 def send_daily_digest_email(email: str, token: str, picks: list, date_et: str) -> bool:
-    """A daily 'episode' -- mostly Ryan being a person, a short honest stretch about the
-    actual scan, then a stinger teasing tomorrow. Never a full row-dump of the scan; the
-    picks (or the honest lack of them) are the whole point of the 10% that isn't a joke."""
-    ep = _digest_episode_number(date_et)
-    title, bit = random.choice(_DIGEST_BITS)
-    stinger = random.choice(_DIGEST_STINGERS)
+    """A day's chapter of a running storyline -- mostly Ryan's life continuing from
+    yesterday, then a short honest stretch about the actual scan. Never a full row-dump;
+    the picks (or the honest lack of them) are the whole point of the non-story part."""
+    subject, chapter_body, arc_end = _digest_chapter(date_et)
+    closer = ("(That's a wrap on this one. New one starts soon.)" if arc_end
+              else "(More on this tomorrow.)")
 
     if not picks:
         body = (
-            bit + "\n\n"
+            chapter_body + "\n\n"
             + random.choice(_DIGEST_QUIET_TRANSITIONS)
             + f"\n\nFull scan (updated four times a day): {SITE_URL}/terminal\n\n"
-            + stinger
+            + closer
             + "\n\n— Ryan"
             + _unsub_footer(token)
         )
-        return send_email_notification(email, f"Ep. {ep}: {title}", body, headers=_unsub_headers(token))
+        return send_email_notification(email, subject, body, headers=_unsub_headers(token))
 
     def line(p):
         verdict_note = {"Favorable": "looks clean", "Caution": "clears the quant bar but the AI flagged some risk",
@@ -4319,17 +4348,17 @@ def send_daily_digest_email(email: str, token: str, picks: list, date_et: str) -
         return f"  {p['ticker']} — score {score}/100" + (f", {verdict_note}" if verdict_note else "") + f" — ${p['price']}"
 
     body = (
-        bit + "\n\n"
+        chapter_body + "\n\n"
         + random.choice(_DIGEST_TRANSITIONS) + "\n\n"
         + "\n".join(line(p) for p in picks)
         + f"\n\nFull write-up on each (AI risk review, financials, Snowflake): {SITE_URL}/terminal\n\n"
         "Same as always -- this flags entry timing, it's not telling you what to do with your money. "
         "Size it however fits the rest of your portfolio."
-        + "\n\n" + stinger
+        + "\n\n" + closer
         + "\n\n— Ryan"
         + _unsub_footer(token)
     )
-    return send_email_notification(email, f"Ep. {ep}: {title}", body, headers=_unsub_headers(token))
+    return send_email_notification(email, subject, body, headers=_unsub_headers(token))
 
 
 async def daily_digest_scheduler():
