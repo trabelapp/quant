@@ -18,7 +18,7 @@ import sqlite3
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -4239,31 +4239,78 @@ def send_lead_nurture3_email(email: str, token: str) -> bool:
                                    headers=_unsub_headers(token))
 
 
-_DIGEST_OPENERS = [
-    "Ran the scan after the close. Here's what actually cleared the bar today:",
-    "Quick one before you close the laptop -- today's scan is in:",
-    "Here's what the numbers said today, not what anyone felt about the market:",
-    "Today's scan finished a few minutes ago. Worth a look:",
+# Format: a daily "episode" -- 90% of it is whatever nonsense Ryan is dealing with that
+# day, 10% is the actual scan + a nudge to go look at it. The bit is what people open the
+# email for; the scan is why they keep the subscription. Each entry is (episode title,
+# cold-open body) so the subject line and the joke always match -- a mismatched subject
+# is the fastest way for this to read like a template instead of a person.
+_DIGEST_BITS = [
+    ("The Plant Update Nobody Asked For",
+     "State of the office plant: still alive. I want credit for this. I keep a database running at 99.9% uptime and I've nearly lost to a fern twice this month. The fern is winning on vibes alone."),
+    ("I Talked to My Monitor Today",
+     "Caught myself saying \"come on, come ON\" out loud to a backtest that was taking forty seconds to finish. Nobody else was in the room. This is apparently just a normal Tuesday for me now."),
+    ("A Brief Rant About Pop-Tarts",
+     "Ate a Pop-Tart cold, out of the box, standing over the sink, staring at a chart. If you're picturing something sadder than that, you're probably right. The chart looked fine, for what it's worth."),
+    ("My One Real Friend Is a Cron Job",
+     "Someone asked what I did this weekend. I said \"debugged a race condition.\" They did not ask a follow-up question. I don't blame them. The race condition and I, however, have a real bond now."),
+    ("Three Hours, One Semicolon",
+     "Lost an entire evening to a bug that turned out to be one missing comma in a query. Stared at it long enough that I started reading it out loud like a poem. It was not a good poem."),
+    ("An Update on My Nemesis",
+     "There's a ticker that has personally rejected this model's entry rule four separate times this year and then ripped 20% each time right after. I'm not naming it. It knows what it did."),
+    ("I Explained My Job at a Party, Badly",
+     "Got about one sentence into \"it's a long-term trend filter with an AI risk check on top\" before watching a stranger's soul leave their body in real time. Anyway, that filter's still running."),
+    ("The Coffee Order Nobody Can Read",
+     "Same order for three years straight, to the point the guy at the coffee place starts making it before I say anything. Not sure if that's loyalty or just the most predictable data point in my life."),
+    ("A Weighted Blanket Update",
+     "Bought one for sleep, allegedly. Mostly it's just become the place I sit while debugging at 1am, which was already a problem before the blanket got involved."),
+    ("On Naming Variables",
+     "Spent twenty minutes today naming a boolean instead of writing the logic it belongs to. It is now called `isActuallyFavorableOrJustVibes`. I stand by it."),
 ]
-_DIGEST_QUIET_OPENERS = [
-    "Ran the scan after the close -- nothing cleared the bar today. That's the system working, not broken: some days the market just doesn't offer a clean setup, and forcing one would be exactly the kind of gut call this whole thing exists to avoid.",
-    "Quiet one today -- the scan ran, nothing passed both filters. No pick beats a bad pick, so here's an honest nothing instead of a stretch.",
+_DIGEST_TRANSITIONS = [
+    "Okay. The actual reason you're getting this email:",
+    "Anyway -- here's what the scan actually found today:",
+    "Right, business time. Today's scan:",
+    "Ok, enough of that. Today's actual scan:",
 ]
+_DIGEST_QUIET_TRANSITIONS = [
+    "Anyway. Market news: the scan ran, nothing cleared the bar today. That's the system working, not broken -- some days there isn't a clean setup, and forcing one would be exactly the kind of gut call this whole thing exists to avoid.",
+    "Right, the actual update: nothing passed both filters today. No pick beats a bad pick, so here's an honest nothing instead of a stretch.",
+]
+_DIGEST_STINGERS = [
+    "Tomorrow: probably another crisis involving the plant. Stay tuned.",
+    "Same time tomorrow. Making no promises about my mental state by then.",
+    "Next episode: unclear, even to me. Find out tomorrow.",
+    "See you tomorrow, same weird hour, same deal.",
+    "More tomorrow -- both the scan and whatever nonsense I'm dealing with by then.",
+]
+# Episode 1 is the day this shipped. Deterministic across every recipient on the same
+# day without needing a counter in the database.
+_DIGEST_LAUNCH_DATE = date(2026, 9, 18)
+
+
+def _digest_episode_number(date_et: str) -> int:
+    d = datetime.strptime(date_et, "%Y-%m-%d").date()
+    return max(1, (d - _DIGEST_LAUNCH_DATE).days + 1)
 
 
 def send_daily_digest_email(email: str, token: str, picks: list, date_et: str) -> bool:
-    """One a day, after the market close, written to read like a person skimmed the scan
-    and picked what was worth flagging -- not a templated dump of every row. Rotates its
-    opener and skips entirely on a day with no picks worth forcing (see the scheduler)."""
+    """A daily 'episode' -- mostly Ryan being a person, a short honest stretch about the
+    actual scan, then a stinger teasing tomorrow. Never a full row-dump of the scan; the
+    picks (or the honest lack of them) are the whole point of the 10% that isn't a joke."""
+    ep = _digest_episode_number(date_et)
+    title, bit = random.choice(_DIGEST_BITS)
+    stinger = random.choice(_DIGEST_STINGERS)
+
     if not picks:
         body = (
-            random.choice(_DIGEST_QUIET_OPENERS)
-            + f"\n\nFull scan (locked to the current universe, updated four times a day): {SITE_URL}/terminal"
+            bit + "\n\n"
+            + random.choice(_DIGEST_QUIET_TRANSITIONS)
+            + f"\n\nFull scan (updated four times a day): {SITE_URL}/terminal\n\n"
+            + stinger
             + "\n\n— Ryan"
             + _unsub_footer(token)
         )
-        return send_email_notification(email, f"Nothing cleared the bar today ({date_et})", body,
-                                       headers=_unsub_headers(token))
+        return send_email_notification(email, f"Ep. {ep}: {title}", body, headers=_unsub_headers(token))
 
     def line(p):
         verdict_note = {"Favorable": "looks clean", "Caution": "clears the quant bar but the AI flagged some risk",
@@ -4272,16 +4319,17 @@ def send_daily_digest_email(email: str, token: str, picks: list, date_et: str) -
         return f"  {p['ticker']} — score {score}/100" + (f", {verdict_note}" if verdict_note else "") + f" — ${p['price']}"
 
     body = (
-        random.choice(_DIGEST_OPENERS) + "\n\n"
+        bit + "\n\n"
+        + random.choice(_DIGEST_TRANSITIONS) + "\n\n"
         + "\n".join(line(p) for p in picks)
         + f"\n\nFull write-up on each (AI risk review, financials, Snowflake): {SITE_URL}/terminal\n\n"
         "Same as always -- this flags entry timing, it's not telling you what to do with your money. "
         "Size it however fits the rest of your portfolio."
+        + "\n\n" + stinger
         + "\n\n— Ryan"
         + _unsub_footer(token)
     )
-    return send_email_notification(email, f"Today's scan: {picks[0]['ticker']}" + (f" + {len(picks)-1} more" if len(picks) > 1 else "") + f" ({date_et})",
-                                   body, headers=_unsub_headers(token))
+    return send_email_notification(email, f"Ep. {ep}: {title}", body, headers=_unsub_headers(token))
 
 
 async def daily_digest_scheduler():
