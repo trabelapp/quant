@@ -10,6 +10,7 @@ import json
 import math
 import os
 import pickle
+import random
 import re
 import secrets
 import smtplib
@@ -913,6 +914,10 @@ def init_db():
         # asks them to confirm with their password is impossible for them to satisfy.
         if "auth_provider" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT")
+        # One ET date string per account, so the daily digest can never double-send on a
+        # scheduler restart or a slow tick that overlaps the next one.
+        if "last_digest_sent_date" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_digest_sent_date TEXT")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + TRIAL_DAYS * 86400,))
@@ -4234,6 +4239,94 @@ def send_lead_nurture3_email(email: str, token: str) -> bool:
                                    headers=_unsub_headers(token))
 
 
+_DIGEST_OPENERS = [
+    "Ran the scan after the close. Here's what actually cleared the bar today:",
+    "Quick one before you close the laptop -- today's scan is in:",
+    "Here's what the numbers said today, not what anyone felt about the market:",
+    "Today's scan finished a few minutes ago. Worth a look:",
+]
+_DIGEST_QUIET_OPENERS = [
+    "Ran the scan after the close -- nothing cleared the bar today. That's the system working, not broken: some days the market just doesn't offer a clean setup, and forcing one would be exactly the kind of gut call this whole thing exists to avoid.",
+    "Quiet one today -- the scan ran, nothing passed both filters. No pick beats a bad pick, so here's an honest nothing instead of a stretch.",
+]
+
+
+def send_daily_digest_email(email: str, token: str, picks: list, date_et: str) -> bool:
+    """One a day, after the market close, written to read like a person skimmed the scan
+    and picked what was worth flagging -- not a templated dump of every row. Rotates its
+    opener and skips entirely on a day with no picks worth forcing (see the scheduler)."""
+    if not picks:
+        body = (
+            random.choice(_DIGEST_QUIET_OPENERS)
+            + f"\n\nFull scan (locked to the current universe, updated four times a day): {SITE_URL}/terminal"
+            + "\n\n— Ryan"
+            + _unsub_footer(token)
+        )
+        return send_email_notification(email, f"Nothing cleared the bar today ({date_et})", body,
+                                       headers=_unsub_headers(token))
+
+    def line(p):
+        verdict_note = {"Favorable": "looks clean", "Caution": "clears the quant bar but the AI flagged some risk",
+                        "Risk": "clears the quant bar but the AI is not a fan"}.get(p["timing_verdict"], "")
+        score = round((p["alpha_score"] + p["timing_score"]) / 2, 1) if p["timing_score"] is not None else p["alpha_score"]
+        return f"  {p['ticker']} — score {score}/100" + (f", {verdict_note}" if verdict_note else "") + f" — ${p['price']}"
+
+    body = (
+        random.choice(_DIGEST_OPENERS) + "\n\n"
+        + "\n".join(line(p) for p in picks)
+        + f"\n\nFull write-up on each (AI risk review, financials, Snowflake): {SITE_URL}/terminal\n\n"
+        "Same as always -- this flags entry timing, it's not telling you what to do with your money. "
+        "Size it however fits the rest of your portfolio."
+        + "\n\n— Ryan"
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, f"Today's scan: {picks[0]['ticker']}" + (f" + {len(picks)-1} more" if len(picks) > 1 else "") + f" ({date_et})",
+                                   body, headers=_unsub_headers(token))
+
+
+async def daily_digest_scheduler():
+    """Runs hourly; only actually sends once per account per ET day, once the day's
+    final scan slot (16:00 ET, see SCAN_TIMES_ET) has had time to complete. Gated by
+    the same pref_marketing_emails flag as every other non-transactional email --
+    unsubscribing from marketing mail turns this off too, no separate toggle to manage."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            if now_et.hour < 16 or (now_et.hour == 16 and now_et.minute < 30):
+                continue  # today's last scan slot (16:00 ET) needs time to finish first
+            today = today_str()
+            conn = db()
+            rows = conn.execute(
+                "SELECT ticker,alpha_score,timing_score,timing_verdict,price FROM daily_scans "
+                "WHERE scan_date=? AND quant_pass=1 AND timing_score IS NOT NULL "
+                "ORDER BY (alpha_score+timing_score)/2.0 DESC LIMIT 3",
+                (today,),
+            ).fetchall()
+            picks = [dict(r) for r in rows]
+            recipients = conn.execute(
+                "SELECT email FROM users WHERE is_active=1 AND pref_marketing_emails=1 "
+                "AND (last_digest_sent_date IS NULL OR last_digest_sent_date<>?) "
+                "AND (subscription_status='active' OR (subscription_status<>'cancelled' AND trial_ends_at>?))",
+                (today, time.time()),
+            ).fetchall()
+            sent = 0
+            for row in recipients:
+                try:
+                    token = _unsub_token_for(conn, row["email"])
+                    if await asyncio.to_thread(send_daily_digest_email, row["email"], token, picks, today):
+                        conn.execute("UPDATE users SET last_digest_sent_date=? WHERE email=?", (today, row["email"]))
+                        conn.commit()
+                        sent += 1
+                except Exception as exc:
+                    print(f"[Error: {type(exc).__name__}] Daily digest failed for {row['email']}: {exc}", flush=True)
+            conn.close()
+            if sent:
+                print(f"[digest] {sent} daily digest email(s) sent for {today} ({len(picks)} picks)", flush=True)
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] Daily digest scheduler error: {exc}", flush=True)
+
+
 async def lead_nurture_scheduler():
     """Top-of-funnel nurture for /free-scan captures, run on the same hourly cadence and
     *_sent_at-guarded pattern as trial_lifecycle_scheduler below. Every step excludes
@@ -4863,6 +4956,7 @@ async def startup():
     asyncio.create_task(backtest_scheduler())
     asyncio.create_task(trial_lifecycle_scheduler())
     asyncio.create_task(lead_nurture_scheduler())
+    asyncio.create_task(daily_digest_scheduler())
     asyncio.create_task(gumroad_reconcile_scheduler())
     asyncio.create_task(sec_filings_scheduler())
     asyncio.create_task(fundamentals_scheduler())
@@ -6954,6 +7048,10 @@ section{padding:80px 24px;border-top:1px solid var(--border)}
 .step:nth-child(3) .num{color:var(--teal)}
 .step h3{color:var(--head);font-size:19px;font-weight:700;margin-bottom:12px}
 .step p{color:var(--dim2);font-size:15.5px;line-height:1.7}
+.urgency-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:26px;max-width:1040px;margin:0 auto}
+.urgency-item{background:var(--panel);border:1px solid var(--border);border-top:3px solid var(--orange);border-radius:10px;padding:26px}
+.urgency-item h4{color:var(--head);font-size:16.5px;font-weight:700;margin-bottom:10px}
+.urgency-item p{color:var(--dim2);font-size:14.5px;line-height:1.65}
 .features{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--border);max-width:800px;margin:0 auto;border:1px solid var(--border);border-radius:12px;overflow:hidden}
 .feature{background:var(--panel);padding:30px}
 .feature .icon{color:var(--green);font-size:22px;margin-bottom:14px}
@@ -7061,7 +7159,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 .value-price .amount span{font-size:17px;font-weight:700;color:var(--dim)}
 @media(max-width:820px){
   h1{font-size:38px}
-  .steps,.features,.proof-grid,.diff-grid{grid-template-columns:1fr}
+  .steps,.features,.proof-grid,.diff-grid,.urgency-grid{grid-template-columns:1fr}
   .mock-grid{grid-template-columns:1fr}
   .navlinks{gap:16px;font-size:14px}
   .section-head h2{font-size:28px}
@@ -7275,6 +7373,21 @@ footer a{color:var(--dim2);text-decoration:underline}
 <div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5h16v10H8l-4 4v-4H3z"/></svg></div><h4>Plain-language AI review</h4><p>Every detected ticker gets a written quant review and explicit risk check, in plain English.</p></div>
 <div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 15l5-6 4 3 7-9M19 3h-4v4"/></svg></div><h4>52-week &amp; trend context</h4><p>Distance from the 52-week high/low and 200-day trend, so you see where a stock actually sits.</p></div>
 <div class="feature"><div class="icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 3a5 5 0 00-5 5v3l-2 4h14l-2-4V8a5 5 0 00-5-5zM9 18a2 2 0 004 0"/></svg></div><h4>Price alerts &amp; news</h4><p>Set a target price and get emailed when it's hit, with live headlines next to the chart.</p></div>
+</div>
+</section>
+
+<section id="urgency">
+<div class="section-head" data-reveal>
+<div class="kicker">WHY TODAY, NOT SOMEDAY</div>
+<h2>Waiting isn't the safe option. It's still a gut call.</h2>
+<p>Not signing up doesn't pause anything. It just means the next pullback gets judged the same way it always has — on a feeling — with nothing checking it.</p>
+</div>
+<div class="urgency-grid" data-reveal>
+<div class="urgency-item"><h4>The setups don't wait</h4><p>A pullback that clears the bar today has usually moved past the entry zone within days — up if the trade works, down if it doesn't. Either way, today's scan and next week's are not the same list.</p></div>
+<div class="urgency-item"><h4>The cost isn't one stock</h4><p>It's every decision between now and whenever you do start using a system — each one made the same undisciplined way this page has been arguing against the whole time.</p></div>
+<div class="urgency-item"><h4>There's nothing to lose by looking</h4><p>The scanner and every ticker's Quant Score are free, permanently, no card. The only thing waiting costs you is more days decided on a feeling instead of a check.</p></div>
+</div>
+<p style="text-align:center;margin-top:18px"><a class="btn btn-hero" href="/signup">See today's scan — free, no card</a></p>
 </div>
 </section>
 
@@ -8155,6 +8268,22 @@ PUBLIC_KO: dict[str, str] = {
     ">Price alerts &amp; news<": ">가격 알림 &amp; 뉴스<",
     "Set a target price and get emailed when it's hit, with live headlines next to the chart.":
         "목표가를 설정하면 도달했을 때 이메일로 알려주고, 차트 옆에 실시간 헤드라인을 함께 보여줍니다.",
+
+    # --- urgency section
+    ">WHY TODAY, NOT SOMEDAY<": ">왜 나중이 아니라 오늘인가<",
+    "Waiting isn't the safe option. It's still a gut call.": "기다리는 게 안전한 선택은 아닙니다. 그것도 결국 감으로 하는 결정입니다.",
+    "Not signing up doesn't pause anything. It just means the next pullback gets judged the same way it always has — on a feeling — with nothing checking it.":
+        "가입하지 않는다고 아무것도 멈추지 않습니다. 다음 눌림목도 지금까지와 똑같이 — 감으로 — 판단하게 될 뿐이고, 그걸 점검해줄 건 아무것도 없습니다.",
+    ">The setups don't wait<": ">셋업은 기다려주지 않습니다<",
+    "A pullback that clears the bar today has usually moved past the entry zone within days — up if the trade works, down if it doesn't. Either way, today's scan and next week's are not the same list.":
+        "오늘 기준을 통과한 눌림목은 보통 며칠 안에 진입 구간을 벗어납니다 — 잘 풀리면 위로, 아니면 아래로. 어느 쪽이든 오늘의 스캔과 다음 주의 스캔은 같은 목록이 아닙니다.",
+    ">The cost isn't one stock<": ">비용은 종목 하나가 아닙니다<",
+    "It's every decision between now and whenever you do start using a system — each one made the same undisciplined way this page has been arguing against the whole time.":
+        "지금부터 시스템을 쓰기 시작하는 그날까지의 모든 결정입니다 — 이 페이지가 계속 반대해온 바로 그 방식, 즉 원칙 없이 내리는 결정들이죠.",
+    ">There's nothing to lose by looking<": ">확인해보는 데는 잃을 게 없습니다<",
+    "The scanner and every ticker's Quant Score are free, permanently, no card. The only thing waiting costs you is more days decided on a feeling instead of a check.":
+        "스캐너와 모든 종목의 Quant Score는 카드 등록 없이 영구 무료입니다. 기다려서 치르는 비용은 오직, 점검이 아니라 감으로 결정하는 날이 하루 더 늘어난다는 것뿐입니다.",
+    ">See today's scan — free, no card<": ">오늘의 스캔 보기 — 무료, 카드 불필요<",
 
     # --- final CTA + disclaimer
     ">Know which one it is — before you buy, not after.<": ">사고 나서가 아니라, 사기 전에 구분하세요.<",
@@ -9126,9 +9255,10 @@ async def free_scan_page(request: Request):
     body = '''
 <div class="eyebrow">FREE, NO ACCOUNT NEEDED</div>
 <h1>Get this week's scan by email — wins and the miss, both.</h1>
-<p class="sublead">Not ready to create an account? Fair enough. Drop your email and I'll send you exactly
-what the quant scanner caught recently on the S&amp;P 500 and Nasdaq-100 — including the pick that
-didn't work out. No card, no password, unsubscribe with one click.</p>
+<p class="sublead">You've probably felt this before: a stock-picks account posts a big win, you follow it, and the
+three losses that never got a post are the reason it "worked" for them and not for you. Fair warning before
+you even give me your email — I'm not going to do that. Drop it below and I'll send exactly what the quant
+scanner caught recently, including the pick that didn't work out. No card, no password, unsubscribe with one click.</p>
 <form id="leadForm" style="max-width:420px;margin:0 0 10px" autocomplete="off">
 <label for="leadEmail" style="display:block;font-size:13px;font-weight:700;color:var(--dim2);margin-bottom:6px">Email</label>
 <input id="leadEmail" type="email" required placeholder="you@example.com"
@@ -9138,6 +9268,17 @@ style="width:100%;padding:13px 14px;border:1px solid var(--border);border-radius
 </form>
 <p style="font-size:13.5px;color:var(--dim)">Already convinced? <a href="/signup">Skip straight to the free trial</a> —
 full live scan, same $0 to start.</p>
+
+<div style="margin:40px 0;padding:24px 0;border-top:1px solid var(--border)">
+<h2 style="font-size:19px;margin-bottom:14px">What's actually behind the email</h2>
+<div style="display:grid;gap:14px">
+<div style="display:flex;gap:12px;align-items:flex-start"><span style="color:var(--green);font-weight:700;flex:none">01</span><p style="margin:0;font-size:14.5px;color:var(--dim2);line-height:1.6"><b style="color:var(--head)">One disclosed rule, not a black box.</b> Long-term uptrend, pulled back from its recent high — scored on real S&amp;P 500 and Nasdaq-100 price data, not a hunch.</p></div>
+<div style="display:flex;gap:12px;align-items:flex-start"><span style="color:var(--green);font-weight:700;flex:none">02</span><p style="margin:0;font-size:14.5px;color:var(--dim2);line-height:1.6"><b style="color:var(--head)">A second AI pass checks for the trap.</b> Every hit gets reviewed again specifically for a blow-off top or a dead-cat bounce disguised as a real setup.</p></div>
+<div style="display:flex;gap:12px;align-items:flex-start"><span style="color:var(--green);font-weight:700;flex:none">03</span><p style="margin:0;font-size:14.5px;color:var(--dim2);line-height:1.6"><b style="color:var(--head)">The full record is public, wins and losses.</b> Nothing in this email is cherry-picked — you can check every past call at <a href="/record">/record</a>.</p></div>
+</div>
+</div>
+
+<p style="font-size:14px;color:var(--dim2);line-height:1.6;padding-top:6px;border-top:1px solid var(--border)">One honest note: the scan that goes out this week won't be the same list next week — a pullback that clears the bar today is usually gone from the zone within days. Reading about it later doesn't cost you anything either way; it just means another week decided on a feeling instead of a check.</p>
 <script>
 (function(){
   var form=document.getElementById('leadForm');
