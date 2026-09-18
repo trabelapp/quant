@@ -80,6 +80,26 @@ def _checkout_url_for(email: str) -> str:
         sep = "&" if "?" in LEMONSQUEEZY_CHECKOUT_URL else "?"
         return f"{LEMONSQUEEZY_CHECKOUT_URL}{sep}checkout%5Bemail%5D={urllib.parse.quote(email)}"
     return ""
+# Portfolio X-Ray add-on. Separate checkout links (a second product/variant in each
+# processor's own dashboard -- not created by this codebase) and separate IDs so the
+# webhooks below can tell an X-Ray purchase apart from the base Pro subscription. Unset
+# until that product exists on each processor's side; _xray_checkout_url returns "" and
+# the webhooks simply never match the (empty) ID, so nothing here does anything until
+# both are configured.
+XRAY_GUMROAD_CHECKOUT_URL = os.getenv("XRAY_GUMROAD_CHECKOUT_URL", "")
+XRAY_GUMROAD_PRODUCT_ID = os.getenv("XRAY_GUMROAD_PRODUCT_ID", "")
+XRAY_LEMONSQUEEZY_CHECKOUT_URL = os.getenv("XRAY_LEMONSQUEEZY_CHECKOUT_URL", "")
+XRAY_LEMONSQUEEZY_VARIANT_ID = os.getenv("XRAY_LEMONSQUEEZY_VARIANT_ID", "")
+
+
+def _xray_checkout_url(email: str) -> str:
+    if XRAY_GUMROAD_CHECKOUT_URL:
+        sep = "&" if "?" in XRAY_GUMROAD_CHECKOUT_URL else "?"
+        return f"{XRAY_GUMROAD_CHECKOUT_URL}{sep}email={urllib.parse.quote(email)}"
+    if XRAY_LEMONSQUEEZY_CHECKOUT_URL:
+        sep = "&" if "?" in XRAY_LEMONSQUEEZY_CHECKOUT_URL else "?"
+        return f"{XRAY_LEMONSQUEEZY_CHECKOUT_URL}{sep}checkout%5Bemail%5D={urllib.parse.quote(email)}"
+    return ""
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
 POLYGON_BASE_URL = "https://api.polygon.io"
 SITE_URL = os.getenv("SITE_URL", "https://quantify.trading")
@@ -759,6 +779,19 @@ def init_db():
             nurture3_sent_at REAL
         );
         CREATE INDEX IF NOT EXISTS idx_leads_captured_at ON leads(captured_at);
+        -- Every upsell touch ever sent, any campaign. UNIQUE(email,campaign,trigger_name)
+        -- means each of a campaign's named triggers can fire at most once per person --
+        -- for a 3-trigger campaign that is a hard, permanent cap of 3 touches ever, by
+        -- construction, not by a counter that could be reset or miscounted.
+        CREATE TABLE IF NOT EXISTS upsell_touches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            campaign TEXT NOT NULL,
+            trigger_name TEXT NOT NULL,
+            sent_at REAL NOT NULL,
+            UNIQUE(email, campaign, trigger_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_upsell_touches_email ON upsell_touches(email, campaign);
         -- Survives account deletion on purpose: without it, "delete account, sign up
         -- again" hands out an unlimited number of free trials. Stores no readable
         -- address -- only a peppered one-way hash that can be compared but not reversed.
@@ -918,6 +951,12 @@ def init_db():
         # scheduler restart or a slow tick that overlaps the next one.
         if "last_digest_sent_date" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN last_digest_sent_date TEXT")
+        # Portfolio X-Ray: a paid add-on on top of Pro, not a replacement tier, so it
+        # gets its own flag rather than overloading subscription_status.
+        if "xray_active" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN xray_active INTEGER NOT NULL DEFAULT 0")
+        if "xray_started_at" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN xray_started_at REAL")
         now_ts = time.time()
         conn.execute("UPDATE users SET created_at=? WHERE created_at IS NULL", (now_ts,))
         conn.execute("UPDATE users SET trial_ends_at=? WHERE trial_ends_at IS NULL", (now_ts + TRIAL_DAYS * 86400,))
@@ -1242,6 +1281,18 @@ def has_active_access(email: str) -> bool:
         return False
     trial_ends_at = row["trial_ends_at"]
     return bool(trial_ends_at and time.time() < trial_ends_at)
+
+
+def has_xray_access(email: str) -> bool:
+    """X-Ray is an add-on to Pro, not a standalone tier -- it requires both the flag
+    from its own purchase AND a currently-active Pro/trial, so cancelling Pro also
+    turns X-Ray off without needing a second place that revokes it."""
+    if not has_active_access(email):
+        return False
+    conn = db()
+    row = conn.execute("SELECT xray_active FROM users WHERE email=?", (email,)).fetchone()
+    conn.close()
+    return bool(row and row["xray_active"])
 
 
 def set_subscription_status(conn, email: str, new_status: str, source: str, detail: str = "") -> int:
@@ -4404,6 +4455,134 @@ async def daily_digest_scheduler():
             print(f"[Error: {type(exc).__name__}] Daily digest scheduler error: {exc}", flush=True)
 
 
+def send_xray_upsell_depth_email(email: str, token: str) -> bool:
+    body = (
+        "Quick thing, unrelated to today's scan.\n\n"
+        "You've saved a handful of tickers now, which means there's a question this product has "
+        "never actually answered for you: not \"is this one stock a good entry,\" but \"is my whole "
+        "portfolio quietly betting on one sector without me deciding to.\"\n\n"
+        "That's what Portfolio X-Ray does. It's not more signals -- it's a different read entirely: "
+        "which single holding would hurt the most if it dropped hard, and how much of your actual "
+        f"dollar exposure is sitting in names the AI has already flagged Caution or Risk. $12/mo on "
+        f"top of Pro, and it's live on your portfolio page right now: {SITE_URL}/portfolio"
+        + "\n\n— Ryan"
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "A different question about your portfolio", body,
+                                   headers=_unsub_headers(token))
+
+
+def send_xray_upsell_risk_email(email: str, token: str, ticker: str, pct: float) -> bool:
+    body = (
+        f"{ticker} just moved {pct:+.1f}% in your portfolio.\n\n"
+        "Not writing to say I told you so -- the model doesn't predict single-day moves, that's not "
+        "what it's for. But it's exactly the kind of moment that makes \"how concentrated am I, "
+        "really\" worth an honest answer instead of a guess.\n\n"
+        f"Portfolio X-Ray shows you that across everything you're holding, not one ticker at a time: "
+        f"{SITE_URL}/portfolio"
+        + "\n\n— Ryan"
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, f"About {ticker}", body, headers=_unsub_headers(token))
+
+
+def send_xray_upsell_lastchance_email(email: str, token: str) -> bool:
+    body = (
+        "Been meaning to bring this up and kept not doing it, so -- last time I'll mention it.\n\n"
+        "Portfolio X-Ray looks at everything you've saved together, not one ticker at a time: which "
+        "single holding is doing the most damage if it goes wrong, and how much of your actual money "
+        f"is sitting in names the AI has already flagged risky. {SITE_URL}/portfolio\n\n"
+        "If it's genuinely not for you, that's fine -- I won't bring it up again after this."
+        + "\n\n— Ryan"
+        + _unsub_footer(token)
+    )
+    return send_email_notification(email, "Last time I'll mention this", body, headers=_unsub_headers(token))
+
+
+async def _send_xray_touch(conn, email: str, trigger_name: str, **kwargs) -> bool:
+    token = _unsub_token_for(conn, email)
+    sender = {
+        "depth": send_xray_upsell_depth_email,
+        "risk_hit": send_xray_upsell_risk_email,
+        "last_chance": send_xray_upsell_lastchance_email,
+    }[trigger_name]
+    sent = await asyncio.to_thread(sender, email, token, **kwargs)
+    if sent:
+        try:
+            conn.execute(
+                "INSERT INTO upsell_touches(email,campaign,trigger_name,sent_at) VALUES(?,?,?,?)",
+                (email, "xray", trigger_name, time.time()),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass  # already sent this exact touch (a concurrent tick) -- never send twice
+    return sent
+
+
+async def xray_upsell_scheduler():
+    """Portfolio X-Ray upsell: three named triggers, each firing at most once per
+    account ever (UNIQUE(email,campaign,trigger_name) in upsell_touches), which caps the
+    whole campaign at 3 touches ever by construction -- not a counter that could be
+    reset or miscounted. Each trigger is tied to something that actually happened
+    (portfolio grew past a size where a whole-portfolio view matters, a real adverse
+    move in a saved holding, meaningful tenure as a paying customer), never a calendar-
+    blind drip."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            now = time.time()
+            conn = db()
+
+            depth_candidates = conn.execute(
+                "SELECT email FROM users WHERE is_active=1 AND xray_active=0 AND pref_marketing_emails=1 "
+                "AND (subscription_status='active' OR (subscription_status<>'cancelled' AND trial_ends_at>?)) "
+                "AND (SELECT COUNT(*) FROM portfolio_items p WHERE p.email=users.email) >= 3 "
+                "AND NOT EXISTS (SELECT 1 FROM upsell_touches t WHERE t.email=users.email AND t.campaign='xray' AND t.trigger_name='depth')",
+                (now,),
+            ).fetchall()
+            for row in depth_candidates:
+                await _send_xray_touch(conn, row["email"], "depth")
+
+            risk_candidates = conn.execute(
+                "SELECT email FROM users WHERE is_active=1 AND xray_active=0 AND pref_marketing_emails=1 "
+                "AND (subscription_status='active' OR (subscription_status<>'cancelled' AND trial_ends_at>?)) "
+                "AND EXISTS (SELECT 1 FROM portfolio_items p WHERE p.email=users.email AND p.shares IS NOT NULL AND p.price IS NOT NULL) "
+                "AND NOT EXISTS (SELECT 1 FROM upsell_touches t WHERE t.email=users.email AND t.campaign='xray' AND t.trigger_name='risk_hit')",
+                (now,),
+            ).fetchall()
+            for row in risk_candidates:
+                items = conn.execute(
+                    "SELECT ticker,price FROM portfolio_items WHERE email=? AND shares IS NOT NULL AND price IS NOT NULL",
+                    (row["email"],),
+                ).fetchall()
+                worst = None
+                for it in items:
+                    cur = await get_current_price(it["ticker"])
+                    if cur and it["price"]:
+                        pct = (cur - it["price"]) / it["price"] * 100
+                        if pct <= -8 and (worst is None or pct < worst[1]):
+                            worst = (it["ticker"], pct)
+                if worst:
+                    await _send_xray_touch(conn, row["email"], "risk_hit", ticker=worst[0], pct=worst[1])
+
+            tenure_candidates = conn.execute(
+                "SELECT email FROM users WHERE is_active=1 AND xray_active=0 AND pref_marketing_emails=1 "
+                "AND subscription_status='active' "
+                "AND NOT EXISTS (SELECT 1 FROM upsell_touches t WHERE t.email=users.email AND t.campaign='xray' AND t.trigger_name='last_chance')"
+            ).fetchall()
+            for row in tenure_candidates:
+                since = conn.execute(
+                    "SELECT MIN(created_at) c FROM subscription_audit WHERE email=? AND new_status='active'",
+                    (row["email"],),
+                ).fetchone()
+                if since and since["c"] and now - since["c"] >= 60 * 86400:
+                    await _send_xray_touch(conn, row["email"], "last_chance")
+
+            conn.close()
+        except Exception as exc:
+            print(f"[Error: {type(exc).__name__}] X-Ray upsell scheduler error: {exc}", flush=True)
+
+
 async def lead_nurture_scheduler():
     """Top-of-funnel nurture for /free-scan captures, run on the same hourly cadence and
     *_sent_at-guarded pattern as trial_lifecycle_scheduler below. Every step excludes
@@ -5034,6 +5213,7 @@ async def startup():
     asyncio.create_task(trial_lifecycle_scheduler())
     asyncio.create_task(lead_nurture_scheduler())
     asyncio.create_task(daily_digest_scheduler())
+    asyncio.create_task(xray_upsell_scheduler())
     asyncio.create_task(gumroad_reconcile_scheduler())
     asyncio.create_task(sec_filings_scheduler())
     asyncio.create_task(fundamentals_scheduler())
@@ -5883,12 +6063,17 @@ async def api_admin_user_status(email: str, token: Optional[str] = None):
 @app.get("/api/admin/grant-access")
 @app.post("/api/admin/grant-access")
 async def api_admin_grant_access(request: Request, email: Optional[str] = None, token: Optional[str] = None,
+                                 xray: bool = False,
                                  email_form: Optional[str] = Form(None, alias="email"),
                                  token_form: Optional[str] = Form(None, alias="token")):
     """Manual remedy for the same failure mode: a verified real payment whose webhook
     never matched an account (wrong email at checkout, or the processor's token/secret
     wasn't configured on Render when the sale happened). Sets subscription_status
     directly rather than waiting on a processor's webhook to eventually reconcile.
+
+    &xray=true grants the Portfolio X-Ray add-on instead of (base) Pro access -- the
+    same manual escape hatch, for the add-on's own checkout/webhook wiring before it's
+    fully configured, or for any payment its webhook didn't match.
 
     Takes GET query params as well as POST form fields -- pasting a URL into a browser
     address bar is the path most people actually have available, same as the read-only
@@ -5900,6 +6085,16 @@ async def api_admin_grant_access(request: Request, email: Optional[str] = None, 
     if not email:
         return JSONResponse({"error": "email is required"}, status_code=400)
     conn = db()
+    if xray:
+        rowcount = conn.execute(
+            "UPDATE users SET xray_active=1,xray_started_at=COALESCE(xray_started_at,?) WHERE email=?",
+            (time.time(), email),
+        ).rowcount
+        conn.commit()
+        conn.close()
+        if not rowcount:
+            return JSONResponse({"error": f"No account found for {email}"}, status_code=404)
+        return {"ok": True, "email": email, "xray_active": True}
     rowcount = set_subscription_status(conn, email, "active", "admin_grant")
     conn.commit()
     conn.close()
@@ -6750,19 +6945,12 @@ async def get_current_price(ticker: str):
         return None
 
 
-@app.get("/api/portfolio")
-async def portfolio_list(request: Request):
-    user = get_logged_in_user(request)
-    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if not disclaimer_accepted(user):
-        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
-    if not has_active_access(user):
-        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your portfolio."}, status_code=402)
+async def _portfolio_items_with_prices(email: str) -> list:
     conn = db()
     rows = conn.execute("""
         SELECT id,ticker,scan_date,price,change_pct,alpha_score,rsi,macd,timing_score,timing_verdict,ai_report,note,saved_at,shares
         FROM portfolio_items WHERE email=? ORDER BY saved_at DESC
-    """, (user,)).fetchall()
+    """, (email,)).fetchall()
     conn.close()
     tickers = list({r["ticker"] for r in rows})
     prices = await asyncio.gather(*(get_current_price(t) for t in tickers))
@@ -6788,7 +6976,67 @@ async def portfolio_list(request: Request):
             d["pl_dollar"] = None
         d["sector"] = (SECTOR_CACHE.get(d["ticker"]) or {}).get("sector")
         items.append(d)
+    return items
+
+
+def _portfolio_xray_analysis(items: list) -> dict:
+    """The free /portfolio view (renderConcentration, client-side) answers one question:
+    how spread out is this across sectors. X-Ray answers two the free view doesn't:
+    which single holding would hurt the most if it dropped hard, and how much of the
+    portfolio's actual dollar value the AI has already flagged Caution/Risk on -- both
+    computed from data already stored per portfolio item, no extra AI calls."""
+    with_dollars = [it for it in items if it.get("shares") and it.get("current_price") is not None]
+    total_value = sum(it["shares"] * it["current_price"] for it in with_dollars)
+    if not total_value:
+        return {"available": False,
+                "reason": "Add a share count to your holdings (edit when saving from the terminal) to unlock X-Ray."}
+    ranked = sorted(with_dollars, key=lambda it: it["shares"] * it["current_price"], reverse=True)
+    top = ranked[0]
+    top_value = top["shares"] * top["current_price"]
+    risk_items = [it for it in with_dollars if it.get("timing_verdict") in ("Caution", "Risk")]
+    risk_value = sum(it["shares"] * it["current_price"] for it in risk_items)
+    return {
+        "available": True,
+        "total_value": round(total_value, 2),
+        "single_point_of_failure": {
+            "ticker": top["ticker"],
+            "pct_of_portfolio": round(top_value / total_value * 100, 1),
+            "value": round(top_value, 2),
+            "hypothetical_20pct_drop": round(top_value * 0.20, 2),
+        },
+        "risk_exposure": {
+            "pct_of_portfolio": round(risk_value / total_value * 100, 1) if total_value else 0.0,
+            "value": round(risk_value, 2),
+            "tickers": [it["ticker"] for it in risk_items],
+        },
+    }
+
+
+@app.get("/api/portfolio")
+async def portfolio_list(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not disclaimer_accepted(user):
+        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your portfolio."}, status_code=402)
+    items = await _portfolio_items_with_prices(user)
     return {"items": items}
+
+
+@app.get("/api/portfolio/xray")
+async def portfolio_xray(request: Request):
+    user = get_logged_in_user(request)
+    if not user: return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    if not disclaimer_accepted(user):
+        return JSONResponse({"error": "Please accept the disclaimer before using QUANTIFY."}, status_code=403)
+    if not has_active_access(user):
+        return JSONResponse({"error": "Your free trial has ended. Subscribe to keep using your portfolio."}, status_code=402)
+    if not has_xray_access(user):
+        return JSONResponse({"error": "Portfolio X-Ray is a separate add-on on top of Pro.",
+                             "xray_locked": True, "checkout_url": _xray_checkout_url(user)}, status_code=402)
+    items = await _portfolio_items_with_prices(user)
+    return _portfolio_xray_analysis(items)
 
 
 @app.post("/api/portfolio/remove")
@@ -8664,6 +8912,7 @@ async def pricing_page(request: Request):
 <p>Your card is charged $30 when the 7-day Pro trial ends, unless you cancel first from Settings. If you cancel, you don't lose access to QUANTIFY — you keep the Free plan's scanner and Quant Score, you just lose the AI review, financials, Snowflake, and portfolio tools until you resubscribe.</p>
 <h2>Questions?</h2>
 <p>See the <a href="/faq">FAQ</a>, or <a href="mailto:quantify.app.official@gmail.com">email us directly</a>.</p>
+<p style="font-size:14px;color:var(--dim)">There's also an optional Portfolio X-Ray add-on ($12/month on top of Pro) — whole-portfolio risk analysis, not another ticker signal. It's not something you need to decide on now; it shows up on your portfolio page once you've actually saved enough holdings for it to say something useful.</p>
 <div class="disclaimer">QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer. Nothing on this page or in the app is investment advice.</div>
 """
     return render_marketing_page("Pricing", "QUANTIFY pricing: a permanent free plan for the quant scanner and Quant Score, plus a $30/month Pro plan (7-day free trial) for the AI risk review, financials, and portfolio tools.", body, path="/pricing", lang=resolve_lang(request, get_logged_in_user(request)))
@@ -11708,6 +11957,7 @@ button:hover{{background:var(--border)}}
 <div class="wrap" id="list">Loading...</div>
 <div class="wrap">
 <div class="item"><b style="color:var(--head);font-size:17px">Sector Concentration</b><div id="concentrationBody" style="margin-top:12px"><div class="meta">Loading...</div></div></div>
+<div class="item"><b style="color:var(--head);font-size:17px">Portfolio X-Ray</b><div id="xrayBody" style="margin-top:12px"><div class="meta">Loading...</div></div></div>
 <div class="item" id="sizing"><b style="color:var(--head);font-size:17px">Position Sizing Calculator</b>
 <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
 <label style="font-size:13px;color:var(--dim)">Account size $<br><input id="szAccount" type="number" placeholder="10000" style="width:120px;background:var(--panel2);border:1px solid var(--border);color:var(--head);padding:8px;border-radius:6px;margin-top:5px;font-size:14.5px"></label>
@@ -11731,7 +11981,9 @@ function renderConcentration(items){{const el=document.getElementById('concentra
 function calcSize(){{const acct=parseFloat(document.getElementById('szAccount').value);const riskPct=parseFloat(document.getElementById('szRisk').value);const entry=parseFloat(document.getElementById('szEntry').value);const stopPct=parseFloat(document.getElementById('szStop').value);const el=document.getElementById('szResult');if(!(acct>0)||!(riskPct>0)||!(entry>0)||!(stopPct>0)){{el.innerHTML='<span style="color:var(--red)">Fill in all four fields with positive numbers.</span>';return}}const riskDollar=acct*(riskPct/100);const stopDollar=entry*(stopPct/100);const shares=Math.floor(riskDollar/stopDollar);const positionValue=shares*entry;el.innerHTML=`Suggested size: <b>${{shares}} shares</b> (~$${{positionValue.toLocaleString()}}) — risking ~$${{riskDollar.toFixed(2)}} if the stop is hit.`}}
 async function load(){{const r=await fetch('/api/portfolio');const d=await r.json();const el=document.getElementById('list');if(!d.items?.length){{el.innerHTML='<div class="empty">Nothing saved yet. Open a ticker in the terminal and click ☆ Save to Portfolio.</div>';document.getElementById('concentrationBody').innerHTML='<div class="meta">Nothing saved yet.</div>';return}}el.innerHTML=d.items.map(it=>{{const sec=it.ai_report&&typeof it.ai_report==='object'?it.ai_report:null;const summary=sec?.quant_review||(typeof it.ai_report==='string'?it.ai_report:'');const date=new Date(it.saved_at*1000).toLocaleString();const plClass=it.return_pct==null?'':(it.return_pct>=0?'gain':'loss');const posLine=it.shares?`<div class="meta">${{it.shares}} sh @ $${{it.price}} → $${{it.current_price??'-'}}${{it.return_pct!=null?` · <span class="${{plClass}}">${{it.return_pct>=0?'+':''}}${{it.return_pct}}%${{it.pl_dollar!=null?` (${{it.pl_dollar>=0?'+':''}}$${{it.pl_dollar}})`:''}}</span>`:''}}</div>`:(it.return_pct!=null?`<div class="meta">$${{it.price}} → $${{it.current_price}} · <span class="${{plClass}}">${{it.return_pct>=0?'+':''}}${{it.return_pct}}%</span></div>`:'');return `<div class="item"><div class="item-head"><b>${{it.ticker}}</b><div>${{it.timing_verdict?`<span class="badge ${{badgeClass(it.timing_verdict)}}">${{it.timing_verdict}}</span> `:''}}<button class="remove" onclick="remove(${{it.id}})">Remove</button></div></div>${{posLine}}<div class="meta">Saved ${{date}} · Scan date ${{it.scan_date}} · RSI ${{it.rsi}}${{it.overall_score!=null?' · Score '+it.overall_score+'/100':''}}${{it.sector?' · '+it.sector:''}}</div>${{summary?`<div class="note">${{escapeHtml(summary)}}</div>`:''}}</div>`}}).join('');renderConcentration(d.items)}}
 async function remove(id){{const f=new FormData();f.append('id',id);await fetch('/api/portfolio/remove',{{method:'POST',body:f}});load()}}
+async function loadXray(){{const el=document.getElementById('xrayBody');try{{const r=await fetch('/api/portfolio/xray');const d=await r.json();if(r.status===402&&d.xray_locked){{el.innerHTML=`<p class="meta" style="margin-bottom:10px">Sector concentration above is the free view. X-Ray goes further: which single holding would hurt the most if it dropped hard, and how much of your actual dollar exposure the AI has already flagged Caution or Risk on.</p><a class="btn" href="${{d.checkout_url||'/pricing'}}" style="display:inline-block">Unlock Portfolio X-Ray</a>`;return}}if(!d.available){{el.innerHTML=`<div class="meta">${{d.reason||'Not enough data yet.'}}</div>`;return}}const sp=d.single_point_of_failure,rx=d.risk_exposure;el.innerHTML=`<div style="margin-bottom:14px"><div class="meta" style="margin-bottom:4px">Single point of failure</div><div style="font-size:14.5px"><b>${{sp.ticker}}</b> is ${{sp.pct_of_portfolio}}% of this portfolio ($${{sp.value.toLocaleString()}}). A 20% drop there alone costs about $${{sp.hypothetical_20pct_drop.toLocaleString()}}.</div></div><div><div class="meta" style="margin-bottom:4px">AI risk exposure</div><div style="font-size:14.5px">${{rx.pct_of_portfolio}}% of your portfolio's dollar value (${{rx.tickers.join(', ')||'none'}}) is currently flagged Caution or Risk.</div></div>`}}catch(e){{el.innerHTML='<div class="meta">Could not load X-Ray right now.</div>'}}}}
 load();
+loadXray();
 </script></body></html>'''
     html = translate_body(html, lang, [
         (">Portfolio ·", f">{t('page_portfolio', lang)} ·"),
@@ -12098,9 +12350,27 @@ async def lemonsqueezy_webhook(request: Request):
     if not email:
         return {"ok": True}
 
+    # A subscription event for the X-Ray add-on's own variant is about that product, not
+    # Pro -- branch off before anything below touches subscription_status, which is only
+    # ever about the base Pro subscription.
+    is_xray_variant = bool(XRAY_LEMONSQUEEZY_VARIANT_ID) and str(attrs.get("variant_id") or "") == XRAY_LEMONSQUEEZY_VARIANT_ID
+
     conn = db()
     try:
-        if event_name in ("subscription_created", "subscription_updated", "subscription_resumed"):
+        if is_xray_variant:
+            if event_name in ("subscription_created", "subscription_updated", "subscription_resumed"):
+                ls_status = attrs.get("status")
+                active = ls_status in ("active", "on_trial")
+                rowcount = conn.execute(
+                    "UPDATE users SET xray_active=?,xray_started_at=COALESCE(xray_started_at,?) WHERE email=?",
+                    (1 if active else 0, time.time(), email),
+                ).rowcount
+                if not rowcount:
+                    asyncio.create_task(asyncio.to_thread(
+                        _notify_unmatched_payment, "Lemon Squeezy (X-Ray)", email, f"event={event_name}"))
+            elif event_name in ("subscription_cancelled", "subscription_expired"):
+                conn.execute("UPDATE users SET xray_active=0 WHERE email=?", (email,))
+        elif event_name in ("subscription_created", "subscription_updated", "subscription_resumed"):
             ls_status = attrs.get("status")
             sub_status = "active" if ls_status in ("active", "on_trial") else (ls_status or "active")
             was_active = (conn.execute("SELECT subscription_status FROM users WHERE email=?",
@@ -12228,7 +12498,11 @@ async def gumroad_webhook(request: Request):
                                        and (sale.get("refunded") or sale.get("ended") or sale.get("cancelled")))
                 detail += f" verified_email={verified_email or '(lookup failed)'} refunded={sale.get('refunded')} ended={sale.get('ended')} cancelled={sale.get('cancelled')}"
             if verified_refund:
-                rowcount = set_subscription_status(conn, email, "expired", "gumroad_webhook_refund", detail)
+                is_xray_product = bool(XRAY_GUMROAD_PRODUCT_ID) and str(sale.get("product_id") or "") == XRAY_GUMROAD_PRODUCT_ID
+                if is_xray_product:
+                    rowcount = conn.execute("UPDATE users SET xray_active=0 WHERE email=?", (email,)).rowcount
+                else:
+                    rowcount = set_subscription_status(conn, email, "expired", "gumroad_webhook_refund", detail)
                 conn.commit()
                 if not rowcount:
                     print(f"[gumroad] Verified refund for {email} matched no QUANTIFY account.", flush=True)
@@ -12239,7 +12513,24 @@ async def gumroad_webhook(request: Request):
             data = await asyncio.to_thread(_gumroad_api_get, f"/sales/{sale_id}", {})
             sale = (data or {}).get("sale") or {}
             verified_email = (sale.get("email") or "").strip().lower()
+            # An X-Ray purchase is a separate Gumroad product from the base Pro
+            # subscription -- distinguished by product_id, never touches
+            # subscription_status, and (being an add-on) requires Pro to already exist.
+            is_xray_product = bool(XRAY_GUMROAD_PRODUCT_ID) and str(sale.get("product_id") or "") == XRAY_GUMROAD_PRODUCT_ID
             if verified_email and verified_email == email and not sale.get("ended") and not sale.get("cancelled"):
+                if is_xray_product:
+                    rowcount = conn.execute(
+                        "UPDATE users SET xray_active=1,xray_started_at=COALESCE(xray_started_at,?) WHERE email=?",
+                        (time.time(), email),
+                    ).rowcount
+                    conn.commit()
+                    if not rowcount:
+                        print(f"[gumroad] Verified X-Ray sale for {email} (sale_id={sale_id}) matched no QUANTIFY account.", flush=True)
+                        asyncio.create_task(asyncio.to_thread(
+                            _notify_unmatched_payment, "Gumroad (X-Ray)", email, f"sale_id={sale_id}"))
+                    else:
+                        print(f"[gumroad] Granted X-Ray access to {email} (sale_id={sale_id})", flush=True)
+                    return {"ok": True}
                 conn.execute("UPDATE users SET gumroad_subscription_id=? WHERE email=?",
                             (str(sale.get("subscription_id") or ""), email))
                 rowcount = set_subscription_status(conn, email, "active", "gumroad_webhook_sale",
