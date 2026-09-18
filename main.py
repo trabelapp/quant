@@ -61,6 +61,11 @@ LEMONSQUEEZY_CHECKOUT_URL = os.getenv("LEMONSQUEEZY_CHECKOUT_URL", "")
 LEMONSQUEEZY_WEBHOOK_SECRET = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
 GUMROAD_CHECKOUT_URL = os.getenv("GUMROAD_CHECKOUT_URL", "")
 GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
+# Single kill switch: while regulatory status (유사투자자문업 신고) is unresolved, nobody
+# gets charged and everything Pro/X-Ray normally gates is open to every account. Defaults
+# to paused (on) so a forgotten env var errs toward not charging anyone, not the other
+# way around -- flip PAYMENTS_PAUSED=0 to resume normal billing once that's sorted.
+PAYMENTS_PAUSED = os.getenv("PAYMENTS_PAUSED", "1") == "1"
 
 
 def _checkout_url_for(email: str) -> str:
@@ -73,6 +78,8 @@ def _checkout_url_for(email: str) -> str:
     buyer is stuck bouncing between /subscription and /terminal with no idea why.
     Pre-filling doesn't force the field (a buyer can still edit it), but it fixes the
     default for everyone who doesn't."""
+    if PAYMENTS_PAUSED:
+        return ""
     if GUMROAD_CHECKOUT_URL:
         sep = "&" if "?" in GUMROAD_CHECKOUT_URL else "?"
         return f"{GUMROAD_CHECKOUT_URL}{sep}email={urllib.parse.quote(email)}"
@@ -93,6 +100,8 @@ XRAY_LEMONSQUEEZY_VARIANT_ID = os.getenv("XRAY_LEMONSQUEEZY_VARIANT_ID", "")
 
 
 def _xray_checkout_url(email: str) -> str:
+    if PAYMENTS_PAUSED:
+        return ""
     if XRAY_GUMROAD_CHECKOUT_URL:
         sep = "&" if "?" in XRAY_GUMROAD_CHECKOUT_URL else "?"
         return f"{XRAY_GUMROAD_CHECKOUT_URL}{sep}email={urllib.parse.quote(email)}"
@@ -1272,6 +1281,8 @@ def has_active_access(email: str) -> bool:
     conn.close()
     if not row:
         return False
+    if PAYMENTS_PAUSED:
+        return True
     if row["subscription_status"] == "active":
         return True
     # An explicit cancellation always denies immediately, even if trial_ends_at happens
@@ -1289,6 +1300,8 @@ def has_xray_access(email: str) -> bool:
     turns X-Ray off without needing a second place that revokes it."""
     if not has_active_access(email):
         return False
+    if PAYMENTS_PAUSED:
+        return True
     conn = db()
     row = conn.execute("SELECT xray_active FROM users WHERE email=?", (email,)).fetchone()
     conn.close()
@@ -2188,6 +2201,9 @@ UI_STRINGS = {
     "cancelled_badge": {"en": "Subscription Cancelled", "ko": "구독 취소됨"},
     "subscribe_btn": {"en": "Subscribe", "ko": "구독하기"},
     "paid_plans_soon": {"en": "Paid plans coming soon", "ko": "유료 플랜 준비 중"},
+    "payments_paused_badge": {"en": "Everything's free right now", "ko": "지금은 전체 무료로 제공 중"},
+    "payments_paused_desc": {"en": "Every feature — AI reports, financials, Snowflake, portfolio tools, X-Ray — is open on every account with no charge while we sort out some paperwork. No card needed, nothing to cancel.",
+                             "ko": "행정 절차를 정리하는 동안 AI 리포트, 재무제표, 스노우플레이크, 포트폴리오 도구, X-Ray까지 모든 기능을 모든 계정에서 무료로 이용할 수 있습니다. 카드 등록도, 취소할 것도 없습니다."},
     "cancel_subscription_btn": {"en": "Cancel Subscription", "ko": "구독 취소"},
     "cancel_subscription_confirm": {"en": "Cancel your subscription? This ends access to the scanner and AI reports immediately.",
                                     "ko": "구독을 취소할까요? 스캐너와 AI 리포트 이용이 즉시 종료됩니다."},
@@ -4530,6 +4546,9 @@ async def xray_upsell_scheduler():
     while True:
         await asyncio.sleep(3600)
         try:
+            if PAYMENTS_PAUSED:
+                continue  # nothing to upsell into while X-Ray is free; don't burn a
+                          # lifetime touch pitching a price that isn't charging anyone
             now = time.time()
             conn = db()
 
@@ -4693,12 +4712,17 @@ async def trial_lifecycle_scheduler():
                         except Exception as exc:
                             print(f"[Error: {type(exc).__name__}] Week-1 email failed for {row['email']}: {exc}", flush=True)
 
+            # Both of these threaten a charge or say access ended -- neither is true
+            # while PAYMENTS_PAUSED, so they're skipped entirely rather than sent with
+            # wrong content. Nothing about this queries or writes anything while paused,
+            # so flipping PAYMENTS_PAUSED back off later picks up exactly where trial
+            # timers already are, no backlog to work through.
             ending = conn.execute(
                 "SELECT email FROM users WHERE subscription_status='trial' "
                 "AND trial_end_sent_at IS NULL AND pref_marketing_emails=1 "
                 "AND trial_ends_at IS NOT NULL AND trial_ends_at > ? AND trial_ends_at <= ?",
                 (now, now + 24 * 3600),
-            ).fetchall()
+            ).fetchall() if not PAYMENTS_PAUSED else []
             for row in ending:
                 try:
                     token = _unsub_token_for(conn, row["email"])
@@ -4713,7 +4737,7 @@ async def trial_lifecycle_scheduler():
                 "SELECT email FROM users WHERE subscription_status='trial' "
                 "AND trial_ended_email_sent_at IS NULL AND trial_ends_at IS NOT NULL AND trial_ends_at <= ?",
                 (now,),
-            ).fetchall()
+            ).fetchall() if not PAYMENTS_PAUSED else []
             for row in ended:
                 try:
                     if await asyncio.to_thread(send_trial_ended_email, row["email"]):
@@ -7250,12 +7274,7 @@ LANDING_HTML = """<!doctype html><html lang="%%LANG%%"><head><meta charset="utf-
 "description": "S&P 500 & Nasdaq 518개 종목 전수 조사. 단 3초 만에 AI가 찾아낸 반등 기대주와 리스크 분석 결과를 확인하세요.",
 "applicationCategory": "FinanceApplication",
 "operatingSystem": "Web",
-"offers": {
-"@type": "Offer",
-"price": "30",
-"priceCurrency": "USD",
-"description": "7-day free trial, then $30/month, cancel anytime"
-}
+"offers": %%OFFER_JSONLD%%
 }
 </script>
 <style>
@@ -7606,26 +7625,7 @@ footer a{color:var(--dim2);text-decoration:underline}
 </div>
 </section>
 
-<section id="value">
-<div class="section-head" data-reveal>
-<div class="kicker">WHAT $30 ACTUALLY BUYS</div>
-<h2>Here's what you're really getting.</h2>
-<p>Priced the way each piece sells on its own elsewhere.</p>
-</div>
-<div class="value-stack" data-reveal>
-<div class="value-row"><b>AI-written risk analysis report on every pick</b><span>$20/mo value</span></div>
-<div class="value-row"><b>Snowflake-style fundamentals, financials at a glance</b><span>$30/mo value</span></div>
-<div class="value-row"><b>Hours saved not hunting for stocks one by one</b><span>$40/mo value</span></div>
-<div class="value-row"><b>Whole-market summary at a glance</b><span>$10/mo value</span></div>
-<div class="value-total"><span class="label">Total value</span><span class="amount">$100/mo</span></div>
-<div class="value-price">
-<div class="now">Your price</div>
-<div class="amount">$30<span>/month</span></div>
-</div>
-<a class="btn" href="/signup" style="display:block;text-align:center">Start Free Trial</a>
-<p style="text-align:center;font-size:13px;color:var(--dim);margin-top:12px">The quant scanner and every ticker's Quant Score are free, no trial needed — this is what Pro adds on top. <a href="/pricing">Compare plans →</a></p>
-</div>
-</section>
+%%VALUE_SECTION%%
 
 <section id="how">
 <div class="section-head" data-reveal>
@@ -8000,14 +8000,17 @@ details button{margin-top:6px;padding:12px}
 }
 """
 
-AUTH_BRAND_HTML = """<div class="authbrand">
+def _auth_brand_html() -> str:
+    third_point = ("Everything free right now — no card, nothing to cancel" if PAYMENTS_PAUSED else
+                   "Free scanner &amp; Quant Score, forever — Pro adds AI review for $30/mo")
+    return f"""<div class="authbrand">
 <a class="brand" href="/">QUANTIFY<span>.</span></a>
 <h1>Quant-detected stocks,<br>AI risk-checked.</h1>
 <p>A daily scan of the S&amp;P 500 and Nasdaq-100, cross-checked by AI for blow-off-top and dead-cat-bounce risk before it ever reaches your screen.</p>
 <div class="points">
 <div class="point"><b>&#9670;</b> Live market data, never simulated</div>
 <div class="point"><b>&#9670;</b> Plain-language AI risk review on every pick</div>
-<div class="point"><b>&#9670;</b> Free scanner &amp; Quant Score, forever — Pro adds AI review for $30/mo</div>
+<div class="point"><b>&#9670;</b> {third_point}</div>
 </div>
 </div>"""
 
@@ -8024,7 +8027,7 @@ def render_auth_page(title: str, form_html: str, path: str = "",
 .lang-toggle:hover{{border-color:var(--green);color:var(--green)}}
 .lang-toggle.app{{border-color:var(--sb-border,#232b2f);color:var(--sb-text,#9aa7ac);padding:5px 10px;font-size:12.5px}}
 .lang-toggle.app:hover{{border-color:var(--green);color:var(--green)}}
-</style></head><body><div class="authwrap">{AUTH_BRAND_HTML}<div class="authform"><div style="text-align:right;margin-bottom:10px">{toggle}</div>{form_html}</div></div></body></html>''', lang))
+</style></head><body><div class="authwrap">{_auth_brand_html()}<div class="authform"><div style="text-align:right;margin-bottom:10px">{toggle}</div>{form_html}</div></div></body></html>''', lang))
 
 
 def _render_validation_note(results: dict) -> str:
@@ -8318,8 +8321,53 @@ async def landing(request: Request):
         return RedirectResponse("/terminal", status_code=303)
     lang = resolve_lang(request)
     cards, note, validation_note, universe_note = _render_proof_section()
+    if PAYMENTS_PAUSED:
+        # The normal "$100/mo value for $30" pitch is a specific commercial claim that
+        # would be false right now -- checkout is disabled site-wide, so replaced
+        # entirely rather than shown crossed out or with a disclaimer bolted on.
+        value_section = """<section id="value">
+<div class="section-head" data-reveal>
+<div class="kicker">EVERYTHING'S FREE RIGHT NOW</div>
+<h2>Here's what you're really getting.</h2>
+<p>No tiers to compare -- every account gets all of it, no charge, while we sort out some paperwork.</p>
+</div>
+<div class="value-stack" data-reveal>
+<div class="value-row"><b>AI-written risk analysis report on every pick</b><span>Included</span></div>
+<div class="value-row"><b>Snowflake-style fundamentals, financials at a glance</b><span>Included</span></div>
+<div class="value-row"><b>Full quant scan, four times a day</b><span>Included</span></div>
+<div class="value-row"><b>Watchlist, portfolio tools, and Portfolio X-Ray</b><span>Included</span></div>
+<div class="value-total"><span class="label">Your price</span><span class="amount">$0</span></div>
+<a class="btn" href="/signup" style="display:block;text-align:center">Get Started Free</a>
+<p style="text-align:center;font-size:13px;color:var(--dim);margin-top:12px">No card, nothing to cancel. <a href="/pricing">See the details →</a></p>
+</div>
+</section>"""
+    else:
+        value_section = """<section id="value">
+<div class="section-head" data-reveal>
+<div class="kicker">WHAT $30 ACTUALLY BUYS</div>
+<h2>Here's what you're really getting.</h2>
+<p>Priced the way each piece sells on its own elsewhere.</p>
+</div>
+<div class="value-stack" data-reveal>
+<div class="value-row"><b>AI-written risk analysis report on every pick</b><span>$20/mo value</span></div>
+<div class="value-row"><b>Snowflake-style fundamentals, financials at a glance</b><span>$30/mo value</span></div>
+<div class="value-row"><b>Hours saved not hunting for stocks one by one</b><span>$40/mo value</span></div>
+<div class="value-row"><b>Whole-market summary at a glance</b><span>$10/mo value</span></div>
+<div class="value-total"><span class="label">Total value</span><span class="amount">$100/mo</span></div>
+<div class="value-price">
+<div class="now">Your price</div>
+<div class="amount">$30<span>/month</span></div>
+</div>
+<a class="btn" href="/signup" style="display:block;text-align:center">Start Free Trial</a>
+<p style="text-align:center;font-size:13px;color:var(--dim);margin-top:12px">The quant scanner and every ticker's Quant Score are free, no trial needed — this is what Pro adds on top. <a href="/pricing">Compare plans →</a></p>
+</div>
+</section>"""
+    offer_jsonld = ('{"@type": "Offer", "price": "0", "priceCurrency": "USD", "description": "Free, every feature, no card"}'
+                    if PAYMENTS_PAUSED else
+                    '{"@type": "Offer", "price": "30", "priceCurrency": "USD", "description": "7-day free trial, then $30/month, cancel anytime"}')
     html = (LANDING_HTML.replace("%%PROOF_CARDS%%", cards).replace("%%PROOF_NOTE%%", note)
-            .replace("%%VALIDATION_NOTE%%", validation_note).replace("%%UNIVERSE_NOTE%%", universe_note))
+            .replace("%%VALIDATION_NOTE%%", validation_note).replace("%%UNIVERSE_NOTE%%", universe_note)
+            .replace("%%VALUE_SECTION%%", value_section).replace("%%OFFER_JSONLD%%", offer_jsonld))
     for placeholder, value in _landing_cta_copy(lang).items():
         html = html.replace(placeholder, value)
     for placeholder, value in _quick_signup_copy(lang).items():
@@ -8877,6 +8925,37 @@ def render_marketing_page(title: str, description: str, body_html: str, path: st
 
 @app.get("/pricing", response_class=HTMLResponse)
 async def pricing_page(request: Request):
+    if PAYMENTS_PAUSED:
+        # No price tiers, no billing claims -- both would be actively false right now
+        # (checkout is disabled site-wide; nobody can pay even if they wanted to), not
+        # just an incomplete picture. This replaces the normal pricing grid entirely
+        # rather than showing it disabled or crossed out.
+        body = """
+<div class="eyebrow">EVERYTHING'S FREE RIGHT NOW</div>
+<h1>Every feature, every account, no charge.</h1>
+<p class="sublead">While we sort out some paperwork, there's no paid tier to choose between — the quant scanner, AI risk review, financials, Snowflake breakdown, portfolio tools, and Portfolio X-Ray are all open on every account. No card, nothing to cancel, no trial clock.</p>
+<div class="price-grid" data-reveal>
+<div class="price-card featured">
+<div class="plan-name">Everything</div>
+<div class="amount">$0</div>
+<p style="color:var(--dim);font-size:13px;margin:6px 0 0">No credit card. Nothing to cancel.</p>
+<ul>
+<li>Full S&amp;P 500 + Nasdaq-100 quant scan, updated four times a day around the market open and close</li>
+<li>Every ticker's Quant Score, price chart, and technicals</li>
+<li>AI risk review (Favorable / Caution / Risk) on every ticker that clears the quant bar</li>
+<li>Financials, Snowflake multi-factor breakdown</li>
+<li>Watchlist, portfolio tracking, price alerts, and Portfolio X-Ray</li>
+<li>Full backtest published openly, in-sample and out-of-sample</li>
+</ul>
+<a class="btn" href="/signup" style="display:block;text-align:center">Get Started Free</a>
+</div>
+</div>
+<h2>Questions?</h2>
+<p>See the <a href="/faq">FAQ</a>, or <a href="mailto:quantify.app.official@gmail.com">email us directly</a>.</p>
+<div class="disclaimer">QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer. Nothing on this page or in the app is investment advice.</div>
+"""
+        return render_marketing_page("Pricing", "Every QUANTIFY feature is free on every account right now — no paid tier, no card required.",
+                                     body, path="/pricing", lang=resolve_lang(request, get_logged_in_user(request)))
     body = """
 <div class="eyebrow">SIMPLE PRICING</div>
 <h1>Free to scan. Pay for the AI, financials, and portfolio tools.</h1>
@@ -8926,10 +9005,16 @@ async def faq_page(request: Request):
         ("What's the strategy behind the scan?", 'QUANTIFY looks for stocks in a long-term uptrend (price above its 200-day moving average) that have pulled back from their own recent 20-day high — a "buy the dip in an uptrend" pattern, not a breakout or momentum chase. The pullback required is 10-25% in normal conditions, or a deeper 20-40% when the stock\'s own recent volatility (ATR) is running above its own trailing-year median, so a genuinely choppy stretch needs a bigger dip before it counts as a signal. This exact rule was validated by backtesting thousands of alternative entry rules against two years of real price history and comparing in-sample results against a held-out out-of-sample period never used for tuning. See the full numbers on the <a href="/#proof">home page</a>.'),
         ("How often does the data update?", "The full S&amp;P 500 + Nasdaq-100 scan recomputes four times a day on trading days — before the open, at the open, about an hour in, and after the close — using a licensed market data feed."),
         ("Can I run my own custom screener?", "Not yet — today there's one validated strategy, and you can filter the results by badge and by index (S&amp;P 500 / Nasdaq-100). A configurable multi-strategy screener is on the roadmap."),
-        ("Is my payment information secure?", "Yes. Billing is handled by Gumroad — QUANTIFY never sees or stores your card details."),
-        ("How do I cancel?", "From Settings or the Subscription page once you're logged in. Cancelling stops future billing; you keep Pro access through the end of the period you already paid for. After that, you're not locked out of QUANTIFY — you drop to the Free plan (the quant scanner and every ticker's Quant Score, no time limit) rather than losing access entirely."),
-        ("Is there a free plan?", "Yes. Every account, with or without a Pro subscription, gets the full quant scanner and every ticker's Quant Score for free, permanently — no card, no trial clock. Pro ($30/month, 7-day free trial) adds the AI risk review, financials, Snowflake breakdown, and portfolio tools. See <a href=\"/pricing\">Pricing</a> for the full comparison."),
     ]
+    if PAYMENTS_PAUSED:
+        faq_items.append(("Is there a free plan?",
+            "Right now, everything is free on every account — the quant scanner, AI risk review, financials, Snowflake, portfolio tools, and Portfolio X-Ray, no card and no trial clock. See <a href=\"/pricing\">Pricing</a> for details."))
+    else:
+        faq_items += [
+            ("Is my payment information secure?", "Yes. Billing is handled by Gumroad — QUANTIFY never sees or stores your card details."),
+            ("How do I cancel?", "From Settings or the Subscription page once you're logged in. Cancelling stops future billing; you keep Pro access through the end of the period you already paid for. After that, you're not locked out of QUANTIFY — you drop to the Free plan (the quant scanner and every ticker's Quant Score, no time limit) rather than losing access entirely."),
+            ("Is there a free plan?", "Yes. Every account, with or without a Pro subscription, gets the full quant scanner and every ticker's Quant Score for free, permanently — no card, no trial clock. Pro ($30/month, 7-day free trial) adds the AI risk review, financials, Snowflake breakdown, and portfolio tools. See <a href=\"/pricing\">Pricing</a> for the full comparison."),
+        ]
     body = ('<div class="eyebrow">FAQ</div>\n<h1>Frequently asked questions</h1>\n'
             + "".join(f'<div class="faq-item"><h2>{q}</h2><p>{a}</p></div>' for q, a in faq_items)
             + '<div class="disclaimer">QUANTIFY is an informational and educational tool, not a licensed investment adviser or broker-dealer.</div>')
@@ -9435,7 +9520,10 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
 @app.get("/signup", response_class=HTMLResponse)
 async def signup_page(request: Request, error: Optional[str] = None):
     error = html_lib.escape(error) if error else ''
-    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">Free scanner &amp; Quant Score, forever. Try Pro free for 7 days, then $30/month if you keep it.</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="new-password"><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
+    subtitle = ("Every feature, free on every account right now — no card, nothing to cancel."
+                if PAYMENTS_PAUSED else
+                "Free scanner &amp; Quant Score, forever. Try Pro free for 7 days, then $30/month if you keep it.")
+    form = f'''<div class="card"><h2>Create your account</h2><div class="subtitle">{subtitle}</div><div class="error">{error}</div><a class="google-btn" href="/auth/google/login">{GOOGLE_ICON_SVG}Continue with Google</a><div class="divider">or</div><form action="/api/auth/signup" method="post"><label>Email</label><input type="email" name="email" required autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off"><label>Password</label><input type="password" name="password" required autocomplete="new-password"><p class="hint">10+ characters, with at least 1 letter and 1 number</p><button>Create account</button></form><p style="text-align:center;font-size:11.5px;color:#6b8a7e;margin-top:14px">By creating an account you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p><div class="links"><a href="/login">Already have an account? Log in</a></div></div>'''
     return render_auth_page("QUANTIFY. Sign up", form, path="/signup", lang=resolve_lang(request))
 
 
@@ -12033,7 +12121,13 @@ async def subscription_page(request: Request, reason: Optional[str] = None):
     # trial_ends_at, so this page has to agree -- otherwise a cancelled account could
     # read "Free Trial, N days left" here while /terminal is already blocking it.
     trial_active = bool(sub_status != "cancelled" and trial_ends_at and time.time() < trial_ends_at)
-    if sub_status == "active":
+    if PAYMENTS_PAUSED:
+        # Overrides the trial/active/cancelled badge logic entirely -- has_active_access()
+        # already grants everyone full access while paused, so showing "your trial
+        # ended, subscribe below" underneath a fully-working account would flatly
+        # contradict what the rest of the site is doing.
+        plan_html = f'<span class="badge">{t("payments_paused_badge", lang)}</span><p>{t("payments_paused_desc", lang)}</p>'
+    elif sub_status == "active":
         plan_html = f'<span class="badge">{t("active_subscription", lang)}</span><p>{t("active_sub_thanks", lang)}</p>'
     elif sub_status == "cancelled":
         # A voluntary cancellation is a different outcome from a trial simply running
